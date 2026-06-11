@@ -18,17 +18,73 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use camera::Camera;
 use oc_renderer::{FrameCamera, Renderer};
 use oc_world::raycast::{RayHit, raycast};
+use oc_world::store::FolderStore;
 use oc_world::{BlockId, blocks};
 use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
 
 /// Fixed world seed until there is a world-selection UI.
 const WORLD_SEED: u64 = 20260611;
+/// Save location, relative to the working directory (proper platform dirs
+/// come with the launcher/UI work).
+const SAVE_DIR: &str = "saves/world";
 /// How far the player can reach to break/place blocks.
 const REACH: f64 = 6.0;
+
+/// Per-world metadata persisted in `level.txt` (key=value lines; becomes a
+/// real header with the §9 region format).
+struct LevelMeta {
+    seed: u64,
+    day_fraction: f64,
+    position: DVec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+fn load_level(path: &Path) -> Option<LevelMeta> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut map = std::collections::HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    let get = |k: &str| map.get(k);
+    Some(LevelMeta {
+        seed: get("seed")?.parse().ok()?,
+        day_fraction: get("day")?.parse().ok()?,
+        position: DVec3::new(
+            get("px")?.parse().ok()?,
+            get("py")?.parse().ok()?,
+            get("pz")?.parse().ok()?,
+        ),
+        yaw: get("yaw")?.parse().ok()?,
+        pitch: get("pitch")?.parse().ok()?,
+    })
+}
+
+fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
+    let text = format!(
+        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\n",
+        meta.seed,
+        meta.day_fraction,
+        meta.position.x,
+        meta.position.y,
+        meta.position.z,
+        meta.yaw,
+        meta.pitch,
+    );
+    let tmp = path.with_extension("txt.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 /// Nearest dry land to the origin (outward ring search over the pure
 /// heightmap), standing just above the surface.
@@ -57,7 +113,7 @@ fn find_spawn(world: &oc_world::World) -> DVec3 {
 pub fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new();
+    let mut app = App::new()?;
     event_loop.run_app(&mut app)?;
     match app.error.take() {
         Some(err) => Err(err),
@@ -85,7 +141,14 @@ struct App {
     /// Time of day in [0, 1); see `sky::sky_at` for the phase convention.
     day_fraction: f64,
     perf: PerfLog,
+    level_path: PathBuf,
+    seed: u64,
+    last_autosave: Instant,
 }
+
+/// Dirty columns and level metadata are also written on this cadence, so a
+/// crash or force-quit loses at most this much progress.
+const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets,
 /// until the in-game HUD exists).
@@ -125,15 +188,29 @@ impl PerfLog {
 }
 
 impl App {
-    fn new() -> Self {
-        let streamer = ChunkStreamer::new(WORLD_SEED);
-        let player = Player::new(find_spawn(streamer.world()));
-        Self {
+    fn new() -> Result<Self> {
+        let store = Arc::new(FolderStore::open(SAVE_DIR)?);
+        let level_path = PathBuf::from(SAVE_DIR).join("level.txt");
+        let level = load_level(&level_path);
+
+        let seed = level.as_ref().map_or(WORLD_SEED, |l| l.seed);
+        let streamer = ChunkStreamer::new(seed, store);
+        let player = Player::new(match &level {
+            Some(l) => l.position,
+            None => find_spawn(streamer.world()),
+        });
+        let mut camera = Camera::new(player.eye());
+        if let Some(l) = &level {
+            camera.yaw = l.yaw;
+            camera.pitch = l.pitch;
+            info!("resumed world from {}", level_path.display());
+        }
+        Ok(Self {
             renderer: None,
             window: None,
             error: None,
             streamer,
-            camera: Camera::new(player.eye()),
+            camera,
             player,
             input: MoveInput::default(),
             selected_block: blocks::STONE,
@@ -141,9 +218,29 @@ impl App {
             place_clicked: false,
             mouse_captured: false,
             last_frame: Instant::now(),
-            // Start mid-morning so the first impression is a lit world.
-            day_fraction: 0.15,
+            // Start mid-morning so a new world's first impression is lit.
+            day_fraction: level.as_ref().map_or(0.15, |l| l.day_fraction),
             perf: PerfLog::new(),
+            level_path,
+            seed,
+            last_autosave: Instant::now(),
+        })
+    }
+
+    /// Persists edited columns and the level metadata.
+    fn save_world(&mut self) {
+        let saved = self.streamer.save_dirty();
+        let meta = LevelMeta {
+            seed: self.seed,
+            day_fraction: self.day_fraction,
+            position: self.player.position,
+            yaw: self.camera.yaw,
+            pitch: self.camera.pitch,
+        };
+        if let Err(err) = save_level(&self.level_path, &meta) {
+            error!("saving level metadata: {err:#}");
+        } else {
+            info!(columns = saved, "world saved");
         }
     }
 
@@ -285,6 +382,11 @@ impl App {
             sky_color: sky.sky_color,
         })?;
         self.perf.frame(frame_start.elapsed(), renderer);
+
+        if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
+            self.last_autosave = Instant::now();
+            self.save_world();
+        }
         Ok(())
     }
 }
@@ -300,7 +402,10 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.save_world();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);

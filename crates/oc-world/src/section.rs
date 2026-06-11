@@ -29,6 +29,19 @@ impl Section {
         self.voxels[Self::index(pos)] = block;
     }
 
+    /// Raw voxel array, for serialization. Indexed `(y * 16 + z) * 16 + x`.
+    pub(crate) fn raw(&self) -> &[BlockId] {
+        &self.voxels[..]
+    }
+
+    /// Rebuilds a section from serialized voxel data (must be 16³ entries).
+    pub(crate) fn from_raw(voxels: &[BlockId]) -> Self {
+        assert_eq!(voxels.len(), VOLUME, "section voxel data must be 16^3");
+        Self {
+            voxels: voxels.to_vec().into_boxed_slice().try_into().unwrap(),
+        }
+    }
+
     fn index(pos: IVec3) -> usize {
         debug_assert!(
             pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all(),

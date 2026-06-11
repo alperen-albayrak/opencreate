@@ -7,6 +7,7 @@
 pub mod physics;
 pub mod raycast;
 pub mod section;
+pub mod store;
 pub mod terrain;
 pub mod world;
 

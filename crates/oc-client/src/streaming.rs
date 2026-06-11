@@ -14,8 +14,10 @@ use glam::{DVec3, IVec3};
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_renderer::{ChunkMesh, Renderer, mesh_section};
+use oc_world::store::WorldStore;
 use oc_world::world::{GeneratedColumn, generate_column_data};
 use oc_world::{BlockId, Section, World};
+use tracing::warn;
 
 /// Columns of meshed terrain kept around the camera (view distance).
 const VIEW_RADIUS: i32 = 8;
@@ -37,6 +39,7 @@ struct MeshJobResult {
 
 pub struct ChunkStreamer {
     world: World,
+    store: Arc<dyn WorldStore>,
     /// Section meshes currently uploaded to the renderer, per column.
     meshed: HashMap<ChunkPos, Vec<SectionPos>>,
     gen_inflight: HashSet<ChunkPos>,
@@ -50,11 +53,12 @@ pub struct ChunkStreamer {
 }
 
 impl ChunkStreamer {
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, store: Arc<dyn WorldStore>) -> Self {
         let (gen_tx, gen_rx) = channel();
         let (mesh_tx, mesh_rx) = channel();
         Self {
             world: World::new(seed),
+            store,
             meshed: HashMap::new(),
             gen_inflight: HashSet::new(),
             mesh_inflight: HashSet::new(),
@@ -64,6 +68,27 @@ impl ChunkStreamer {
             mesh_rx,
             upload_queue: Vec::new(),
         }
+    }
+
+    /// Persists one dirty column and clears its flag.
+    fn save_column(&mut self, chunk: ChunkPos) {
+        let Some(column) = self.world.export_column(chunk) else {
+            return;
+        };
+        match self.store.save_column(chunk, &column) {
+            Ok(()) => self.world.mark_saved(chunk),
+            Err(e) => warn!("saving column ({}, {}): {e:#}", chunk.x, chunk.z),
+        }
+    }
+
+    /// Persists every edited column (call on exit).
+    pub fn save_dirty(&mut self) -> usize {
+        let dirty: Vec<ChunkPos> = self.world.dirty_columns().collect();
+        let count = dirty.len();
+        for chunk in dirty {
+            self.save_column(chunk);
+        }
+        count
     }
 
     pub fn world(&self) -> &World {
@@ -136,6 +161,9 @@ impl ChunkStreamer {
                     renderer.remove_chunk(pos);
                 }
             }
+            if self.world.is_dirty(chunk) {
+                self.save_column(chunk);
+            }
             self.world.unload_column(chunk);
         }
     }
@@ -152,10 +180,20 @@ impl ChunkStreamer {
         for chunk in wanted.into_iter().take(slots) {
             self.gen_inflight.insert(chunk);
             let generator = *self.world.generator();
+            let store = Arc::clone(&self.store);
             let tx = self.gen_tx.clone();
             rayon::spawn(move || {
+                // Saved edits win over fresh generation.
+                let column = match store.load_column(chunk) {
+                    Ok(Some(stored)) => stored.into_generated(chunk),
+                    Ok(None) => generate_column_data(&generator, chunk),
+                    Err(e) => {
+                        warn!("loading column ({}, {}): {e:#}", chunk.x, chunk.z);
+                        generate_column_data(&generator, chunk)
+                    }
+                };
                 // Receiver gone only during shutdown; nothing to do then.
-                let _ = tx.send(generate_column_data(&generator, chunk));
+                let _ = tx.send(column);
             });
         }
     }

@@ -4,7 +4,7 @@
 //! The §3 column-with-sparse-Y layout replaces the backing storage later
 //! without changing this API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use glam::IVec3;
@@ -112,6 +112,9 @@ pub struct World {
     /// through `Arc::make_mut` (copy-on-write if a job holds a reference).
     sections: HashMap<SectionPos, Arc<Section>>,
     columns: HashMap<ChunkPos, ColumnSpan>,
+    /// Columns edited since they were generated/loaded; these (and only
+    /// these) need saving — pristine terrain regenerates from the seed.
+    dirty: HashSet<ChunkPos>,
 }
 
 impl World {
@@ -120,7 +123,33 @@ impl World {
             generator: TerrainGenerator::new(seed),
             sections: HashMap::new(),
             columns: HashMap::new(),
+            dirty: HashSet::new(),
         }
+    }
+
+    pub fn is_dirty(&self, chunk: ChunkPos) -> bool {
+        self.dirty.contains(&chunk)
+    }
+
+    pub fn dirty_columns(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.dirty.iter().copied()
+    }
+
+    /// Clears a column's dirty flag (call after persisting it).
+    pub fn mark_saved(&mut self, chunk: ChunkPos) {
+        self.dirty.remove(&chunk);
+    }
+
+    /// Snapshot of a loaded column for persistence.
+    pub fn export_column(&self, chunk: ChunkPos) -> Option<crate::store::StoredColumn> {
+        let span = *self.columns.get(&chunk)?;
+        let sections = (span.min_section_y..=span.max_section_y)
+            .filter_map(|y| {
+                let section = self.sections.get(&IVec3::new(chunk.x, y, chunk.z))?;
+                Some((y, Section::clone(section)))
+            })
+            .collect();
+        Some(crate::store::StoredColumn { span, sections })
     }
 
     pub fn is_generated(&self, chunk: ChunkPos) -> bool {
@@ -203,9 +232,12 @@ impl World {
             .or_insert_with(|| Arc::new(Section::empty()));
         // Copy-on-write: clones only if a mesh job still holds this section.
         Arc::make_mut(section).set(block_in_section(pos), block);
+        self.dirty.insert(chunk);
         true
     }
 
+    /// Drops a column from memory. The caller is responsible for saving it
+    /// first if it was dirty (`is_dirty`/`export_column`).
     pub fn unload_column(&mut self, chunk: ChunkPos) {
         let Some(span) = self.columns.remove(&chunk) else {
             return;
@@ -213,6 +245,7 @@ impl World {
         for y in span.min_section_y..=span.max_section_y {
             self.sections.remove(&IVec3::new(chunk.x, y, chunk.z));
         }
+        self.dirty.remove(&chunk);
     }
 }
 
