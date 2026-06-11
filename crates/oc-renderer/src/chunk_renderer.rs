@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use glam::{DVec3, Mat4};
+use glam::{DVec3, Mat4, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator,
@@ -261,9 +261,18 @@ impl ChunkRenderer {
                 &[],
             );
 
-            // TODO: frustum culling + pooled buffers with multi-draw-indirect
-            // (§4); per-chunk binds are fine at current chunk counts.
+            let frustum = frustum_planes(view_proj);
+
+            // TODO: pooled buffers with multi-draw-indirect (§4); per-chunk
+            // binds are fine at current chunk counts.
             for chunk in self.chunks.values() {
+                // CPU frustum culling at section granularity (§4), in
+                // camera-relative space.
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                if !aabb_intersects_frustum(&frustum, rel, rel + Vec3::splat(SECTION_SIZE as f32))
+                {
+                    continue;
+                }
                 device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex.buffer], &[0]);
                 device.cmd_bind_index_buffer(cmd, chunk.index.buffer, 0, vk::IndexType::UINT32);
 
@@ -306,6 +315,38 @@ impl ChunkRenderer {
             device.destroy_image(self.texture_image, None);
         }
     }
+}
+
+/// Frustum planes from a view-projection matrix (Gribb–Hartmann), as
+/// `(normal, d)` in `Vec4`s with inward-facing normals. Unnormalized —
+/// fine for sign tests. Depth range 0..1 (Vulkan).
+fn frustum_planes(view_proj: Mat4) -> [Vec4; 6] {
+    let r0 = view_proj.row(0);
+    let r1 = view_proj.row(1);
+    let r2 = view_proj.row(2);
+    let r3 = view_proj.row(3);
+    [
+        r3 + r0, // left
+        r3 - r0, // right
+        r3 + r1, // bottom
+        r3 - r1, // top
+        r2,      // near (z >= 0)
+        r3 - r2, // far
+    ]
+}
+
+/// Conservative AABB-vs-frustum: false only when the box is fully outside
+/// some plane.
+fn aabb_intersects_frustum(planes: &[Vec4; 6], min: Vec3, max: Vec3) -> bool {
+    planes.iter().all(|p| {
+        // The corner furthest along the plane normal.
+        let v = Vec3::new(
+            if p.x >= 0.0 { max.x } else { min.x },
+            if p.y >= 0.0 { max.y } else { min.y },
+            if p.z >= 0.0 { max.z } else { min.z },
+        );
+        p.truncate().dot(v) + p.w >= 0.0
+    })
 }
 
 pub(crate) fn as_bytes<T: Copy>(slice: &[T]) -> &[u8] {

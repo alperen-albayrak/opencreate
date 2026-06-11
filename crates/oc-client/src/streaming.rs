@@ -1,18 +1,21 @@
 //! Chunk streaming: keeps terrain generated and meshed around the camera.
 //!
-//! Milestone-2 simplification: generation and meshing run on the main thread
-//! under small per-frame budgets, nearest column first. The §4 async pipeline
-//! (rayon stages + upload budget) replaces the budgets without changing the
-//! renderer API.
+//! The §4 async pipeline: generation and meshing run as rayon jobs and post
+//! results back over channels; the main thread integrates world data,
+//! uploads meshes under a per-frame budget, and unloads what falls behind.
+//! Block-edit remeshing stays synchronous so edits never lag a frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::Result;
 use glam::{DVec3, IVec3};
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
-use oc_renderer::{Renderer, mesh_section};
-use oc_world::{BlockId, World};
+use oc_renderer::{ChunkMesh, Renderer, mesh_section};
+use oc_world::world::{GeneratedColumn, generate_column_data};
+use oc_world::{BlockId, Section, World};
 
 /// Columns of meshed terrain kept around the camera (view distance).
 const VIEW_RADIUS: i32 = 8;
@@ -22,21 +25,44 @@ const GEN_MARGIN: i32 = 1;
 /// Extra retained ring before unloading, so pacing back and forth across a
 /// column border doesn't thrash generate/unload.
 const UNLOAD_MARGIN: i32 = 2;
-/// Per-frame work budgets, in columns.
-const GEN_BUDGET: usize = 6;
-const MESH_BUDGET: usize = 3;
+/// Maximum generation + meshing jobs in flight at once.
+const MAX_INFLIGHT: usize = 24;
+/// Section meshes uploaded to the GPU per frame (bounds frame-time spikes).
+const UPLOAD_BUDGET: usize = 32;
+
+struct MeshJobResult {
+    chunk: ChunkPos,
+    meshes: Vec<(SectionPos, ChunkMesh)>,
+}
 
 pub struct ChunkStreamer {
     world: World,
     /// Section meshes currently uploaded to the renderer, per column.
     meshed: HashMap<ChunkPos, Vec<SectionPos>>,
+    gen_inflight: HashSet<ChunkPos>,
+    mesh_inflight: HashSet<ChunkPos>,
+    gen_tx: Sender<GeneratedColumn>,
+    gen_rx: Receiver<GeneratedColumn>,
+    mesh_tx: Sender<MeshJobResult>,
+    mesh_rx: Receiver<MeshJobResult>,
+    /// Mesh results that arrived but exceeded the frame's upload budget.
+    upload_queue: Vec<MeshJobResult>,
 }
 
 impl ChunkStreamer {
     pub fn new(seed: u64) -> Self {
+        let (gen_tx, gen_rx) = channel();
+        let (mesh_tx, mesh_rx) = channel();
         Self {
             world: World::new(seed),
             meshed: HashMap::new(),
+            gen_inflight: HashSet::new(),
+            mesh_inflight: HashSet::new(),
+            gen_tx,
+            gen_rx,
+            mesh_tx,
+            mesh_rx,
+            upload_queue: Vec::new(),
         }
     }
 
@@ -48,8 +74,118 @@ impl ChunkStreamer {
         &mut self.world
     }
 
+    /// Runs one frame of streaming work around the camera.
+    pub fn update(&mut self, renderer: &mut Renderer, camera_pos: DVec3) -> Result<()> {
+        let center = block_to_chunk(camera_pos.floor().as_ivec3());
+        self.integrate_generated(center);
+        self.upload_meshes(renderer, center)?;
+        self.unload_far(renderer, center);
+        self.dispatch_gen_jobs(center);
+        self.dispatch_mesh_jobs(center);
+        Ok(())
+    }
+
+    /// Pulls finished generation jobs into the world.
+    fn integrate_generated(&mut self, center: ChunkPos) {
+        while let Ok(column) = self.gen_rx.try_recv() {
+            self.gen_inflight.remove(&column.chunk);
+            // Stale if the player moved on while the job ran.
+            if chebyshev(column.chunk, center) <= VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN {
+                self.world.insert_column(column);
+            }
+        }
+    }
+
+    /// Uploads finished meshes, spreading work across frames.
+    fn upload_meshes(&mut self, renderer: &mut Renderer, center: ChunkPos) -> Result<()> {
+        while let Ok(result) = self.mesh_rx.try_recv() {
+            self.mesh_inflight.remove(&result.chunk);
+            self.upload_queue.push(result);
+        }
+
+        let mut budget = UPLOAD_BUDGET;
+        while budget > 0
+            && let Some(result) = self.upload_queue.pop()
+        {
+            if chebyshev(result.chunk, center) > VIEW_RADIUS + UNLOAD_MARGIN
+                || !self.world.is_generated(result.chunk)
+            {
+                continue; // stale: out of range or column unloaded meanwhile
+            }
+            let mut sections = Vec::with_capacity(result.meshes.len());
+            for (pos, mesh) in &result.meshes {
+                renderer.set_chunk(*pos, mesh)?;
+                sections.push(*pos);
+                budget = budget.saturating_sub(1);
+            }
+            self.meshed.insert(result.chunk, sections);
+        }
+        Ok(())
+    }
+
+    fn unload_far(&mut self, renderer: &mut Renderer, center: ChunkPos) {
+        let limit = VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN;
+        let far: Vec<ChunkPos> = self
+            .world
+            .loaded_columns()
+            .filter(|&c| chebyshev(c, center) > limit)
+            .collect();
+        for chunk in far {
+            if let Some(sections) = self.meshed.remove(&chunk) {
+                for pos in sections {
+                    renderer.remove_chunk(pos);
+                }
+            }
+            self.world.unload_column(chunk);
+        }
+    }
+
+    fn dispatch_gen_jobs(&mut self, center: ChunkPos) {
+        let slots = MAX_INFLIGHT.saturating_sub(self.gen_inflight.len() + self.mesh_inflight.len());
+        if slots == 0 {
+            return;
+        }
+        let mut wanted: Vec<ChunkPos> = ring(center, VIEW_RADIUS + GEN_MARGIN)
+            .filter(|c| !self.world.is_generated(*c) && !self.gen_inflight.contains(c))
+            .collect();
+        wanted.sort_by_key(|&c| dist2(c, center));
+        for chunk in wanted.into_iter().take(slots) {
+            self.gen_inflight.insert(chunk);
+            let generator = *self.world.generator();
+            let tx = self.gen_tx.clone();
+            rayon::spawn(move || {
+                // Receiver gone only during shutdown; nothing to do then.
+                let _ = tx.send(generate_column_data(&generator, chunk));
+            });
+        }
+    }
+
+    fn dispatch_mesh_jobs(&mut self, center: ChunkPos) {
+        let slots = MAX_INFLIGHT.saturating_sub(self.gen_inflight.len() + self.mesh_inflight.len());
+        if slots == 0 {
+            return;
+        }
+        let mut ready: Vec<ChunkPos> = ring(center, VIEW_RADIUS)
+            .filter(|c| !self.meshed.contains_key(c) && !self.mesh_inflight.contains(c))
+            // Mesh only once every neighbor exists, so border faces cull
+            // against real blocks and never need a remesh.
+            .filter(|&c| ring(c, 1).all(|n| self.world.is_generated(n)))
+            .collect();
+        ready.sort_by_key(|&c| dist2(c, center));
+
+        for chunk in ready.into_iter().take(slots) {
+            self.mesh_inflight.insert(chunk);
+            let job = MeshJob::snapshot(&self.world, chunk);
+            let tx = self.mesh_tx.clone();
+            rayon::spawn(move || {
+                let _ = tx.send(job.run());
+            });
+        }
+    }
+
     /// Re-meshes the section containing an edited block, plus any neighbor
     /// sections the edit borders on (their face culling may have changed).
+    /// Synchronous: the edit must be visible this frame.
     pub fn remesh_after_edit(&mut self, renderer: &mut Renderer, block: BlockPos) -> Result<()> {
         let section = block_to_section(block);
         let local = block_in_section(block);
@@ -73,7 +209,18 @@ impl ChunkStreamer {
             if !self.meshed.contains_key(&column) {
                 continue;
             }
-            let mesh = self.mesh_one(pos);
+            let base = pos * SECTION_SIZE;
+            let section = self.world.section(pos).cloned();
+            let world = &self.world;
+            let mesh = mesh_section(|local: IVec3| {
+                let inside = local.cmpge(IVec3::ZERO).all()
+                    && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
+                if inside {
+                    section.as_ref().map_or(BlockId::AIR, |s| s.get(local))
+                } else {
+                    world.block(base + local)
+                }
+            });
             renderer.set_chunk(pos, &mesh)?;
             let sections = self.meshed.get_mut(&column).expect("checked above");
             if !sections.contains(&pos) {
@@ -83,76 +230,57 @@ impl ChunkStreamer {
         }
         Ok(())
     }
+}
 
-    /// Runs one frame of streaming work around the camera.
-    pub fn update(&mut self, renderer: &mut Renderer, camera_pos: DVec3) -> Result<()> {
-        let center = block_to_chunk(camera_pos.floor().as_ivec3());
-        self.unload_far(renderer, center);
-        self.generate_near(center);
-        self.mesh_near(renderer, center)
-    }
+/// Everything a worker needs to mesh one column: `Arc` snapshots of the
+/// column's sections and its neighborhood (for border-face culling).
+struct MeshJob {
+    chunk: ChunkPos,
+    targets: Vec<SectionPos>,
+    snapshot: HashMap<SectionPos, Arc<Section>>,
+}
 
-    fn unload_far(&mut self, renderer: &mut Renderer, center: ChunkPos) {
-        let limit = VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN;
-        let far: Vec<ChunkPos> = self
-            .world
-            .loaded_columns()
-            .filter(|&c| chebyshev(c, center) > limit)
-            .collect();
-        for chunk in far {
-            if let Some(sections) = self.meshed.remove(&chunk) {
-                for pos in sections {
-                    renderer.remove_chunk(pos);
+impl MeshJob {
+    fn snapshot(world: &World, chunk: ChunkPos) -> Self {
+        let targets = world.column_sections(chunk);
+        let mut snapshot = HashMap::new();
+        for column in ring(chunk, 1) {
+            for pos in world.column_sections(column) {
+                if let Some(section) = world.section(pos) {
+                    snapshot.insert(pos, Arc::clone(section));
                 }
             }
-            self.world.unload_column(chunk);
         }
+        Self { chunk, targets, snapshot }
     }
 
-    fn generate_near(&mut self, center: ChunkPos) {
-        let mut wanted: Vec<ChunkPos> = ring(center, VIEW_RADIUS + GEN_MARGIN)
-            .filter(|&c| !self.world.is_generated(c))
-            .collect();
-        wanted.sort_by_key(|&c| dist2(c, center));
-        for chunk in wanted.into_iter().take(GEN_BUDGET) {
-            self.world.generate_column(chunk);
-        }
-    }
-
-    fn mesh_near(&mut self, renderer: &mut Renderer, center: ChunkPos) -> Result<()> {
-        let mut ready: Vec<ChunkPos> = ring(center, VIEW_RADIUS)
-            .filter(|c| !self.meshed.contains_key(c))
-            // Mesh only once every neighbor exists, so border faces cull
-            // against real blocks and never need a remesh.
-            .filter(|&c| {
-                ring(c, 1).all(|n| self.world.is_generated(n))
+    fn run(self) -> MeshJobResult {
+        let block_at = |pos: BlockPos| -> BlockId {
+            match self.snapshot.get(&block_to_section(pos)) {
+                Some(section) => section.get(block_in_section(pos)),
+                None => BlockId::AIR,
+            }
+        };
+        let meshes = self
+            .targets
+            .iter()
+            .map(|&pos| {
+                let base = pos * SECTION_SIZE;
+                let section = &self.snapshot[&pos];
+                let mesh = mesh_section(|local: IVec3| {
+                    let inside = local.cmpge(IVec3::ZERO).all()
+                        && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
+                    if inside {
+                        // Hot path: direct section read, no hash lookup.
+                        section.get(local)
+                    } else {
+                        block_at(base + local)
+                    }
+                });
+                (pos, mesh)
             })
             .collect();
-        ready.sort_by_key(|&c| dist2(c, center));
-
-        for chunk in ready.into_iter().take(MESH_BUDGET) {
-            let sections = self.world.column_sections(chunk);
-            for &pos in &sections {
-                renderer.set_chunk(pos, &self.mesh_one(pos))?;
-            }
-            self.meshed.insert(chunk, sections);
-        }
-        Ok(())
-    }
-
-    fn mesh_one(&self, pos: SectionPos) -> oc_renderer::ChunkMesh {
-        let base = pos * SECTION_SIZE;
-        let section = self.world.section(pos);
-        mesh_section(|local: IVec3| {
-            let inside =
-                local.cmpge(IVec3::ZERO).all() && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
-            if inside {
-                // Hot path: direct section read, no world hash lookup.
-                section.map_or(BlockId::AIR, |s| s.get(local))
-            } else {
-                self.world.block(base + local)
-            }
-        })
+        MeshJobResult { chunk: self.chunk, meshes }
     }
 }
 

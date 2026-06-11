@@ -5,6 +5,7 @@
 //! without changing this API.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use glam::IVec3;
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
@@ -20,12 +21,63 @@ pub struct ColumnSpan {
     pub max_section_y: i32,
 }
 
+/// Freshly generated terrain for one column, before it joins a `World`.
+/// Produced by [`generate_column_data`], which is a pure function of
+/// (generator, position) and safe to run on worker threads.
+pub struct GeneratedColumn {
+    pub chunk: ChunkPos,
+    pub span: ColumnSpan,
+    pub sections: Vec<(SectionPos, Section)>,
+}
+
+/// Generates one column's terrain. Pure: no world access, deterministic.
+pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> GeneratedColumn {
+    let base_x = chunk.x * SECTION_SIZE;
+    let base_z = chunk.z * SECTION_SIZE;
+    let mut heights = [[0i32; 16]; 16];
+    let mut max_height = i32::MIN;
+    for (dz, row) in heights.iter_mut().enumerate() {
+        for (dx, h) in row.iter_mut().enumerate() {
+            *h = generator.surface_height(base_x + dx as i32, base_z + dz as i32);
+            max_height = max_height.max(*h);
+        }
+    }
+
+    let span = ColumnSpan {
+        min_section_y: BOTTOM_SECTION_Y,
+        max_section_y: max_height.div_euclid(SECTION_SIZE),
+    };
+    let mut sections = Vec::new();
+    for section_y in span.min_section_y..=span.max_section_y {
+        let base_y = section_y * SECTION_SIZE;
+        let mut section = Section::empty();
+        let mut any = false;
+        for (dz, row) in heights.iter().enumerate() {
+            for (dx, &surface) in row.iter().enumerate() {
+                for dy in 0..SECTION_SIZE {
+                    let block = generator.block_at(surface, base_y + dy);
+                    if !block.is_air() {
+                        section.set(IVec3::new(dx as i32, dy, dz as i32), block);
+                        any = true;
+                    }
+                }
+            }
+        }
+        if any {
+            sections.push((IVec3::new(chunk.x, section_y, chunk.z), section));
+        }
+    }
+    GeneratedColumn { chunk, span, sections }
+}
+
 /// All loaded voxel data plus the generator that fills it.
 pub struct World {
     generator: TerrainGenerator,
     /// Only sections containing at least one non-air block are stored;
-    /// absence within a generated column means all-air.
-    sections: HashMap<SectionPos, Section>,
+    /// absence within a generated column means all-air. `Arc` so meshing
+    /// jobs on worker threads can hold cheap snapshots; block edits go
+    /// through `Arc::make_mut` (copy-on-write if a job holds a reference).
+    sections: HashMap<SectionPos, Arc<Section>>,
     columns: HashMap<ChunkPos, ColumnSpan>,
 }
 
@@ -51,7 +103,7 @@ impl World {
         self.generator.surface_height(x, z)
     }
 
-    pub fn section(&self, pos: SectionPos) -> Option<&Section> {
+    pub fn section(&self, pos: SectionPos) -> Option<&Arc<Section>> {
         self.sections.get(&pos)
     }
 
@@ -74,47 +126,28 @@ impl World {
             .collect()
     }
 
-    /// Generates a column's terrain if it isn't loaded yet.
+    pub fn generator(&self) -> &TerrainGenerator {
+        &self.generator
+    }
+
+    /// Adds generated terrain to the world. No-op if the column is loaded.
+    pub fn insert_column(&mut self, column: GeneratedColumn) {
+        if self.columns.contains_key(&column.chunk) {
+            return;
+        }
+        for (pos, section) in column.sections {
+            self.sections.insert(pos, Arc::new(section));
+        }
+        self.columns.insert(column.chunk, column.span);
+    }
+
+    /// Generates a column's terrain synchronously if it isn't loaded yet.
     pub fn generate_column(&mut self, chunk: ChunkPos) {
         if self.columns.contains_key(&chunk) {
             return;
         }
-
-        let base_x = chunk.x * SECTION_SIZE;
-        let base_z = chunk.z * SECTION_SIZE;
-        let mut heights = [[0i32; 16]; 16];
-        let mut max_height = i32::MIN;
-        for (dz, row) in heights.iter_mut().enumerate() {
-            for (dx, h) in row.iter_mut().enumerate() {
-                *h = self.generator.surface_height(base_x + dx as i32, base_z + dz as i32);
-                max_height = max_height.max(*h);
-            }
-        }
-
-        let span = ColumnSpan {
-            min_section_y: BOTTOM_SECTION_Y,
-            max_section_y: max_height.div_euclid(SECTION_SIZE),
-        };
-        for section_y in span.min_section_y..=span.max_section_y {
-            let base_y = section_y * SECTION_SIZE;
-            let mut section = Section::empty();
-            let mut any = false;
-            for (dz, row) in heights.iter().enumerate() {
-                for (dx, &surface) in row.iter().enumerate() {
-                    for dy in 0..SECTION_SIZE {
-                        let block = self.generator.block_at(surface, base_y + dy);
-                        if !block.is_air() {
-                            section.set(IVec3::new(dx as i32, dy, dz as i32), block);
-                            any = true;
-                        }
-                    }
-                }
-            }
-            if any {
-                self.sections.insert(IVec3::new(chunk.x, section_y, chunk.z), section);
-            }
-        }
-        self.columns.insert(chunk, span);
+        let column = generate_column_data(&self.generator, chunk);
+        self.insert_column(column);
     }
 
     /// Writes one block. Returns false (no-op) if the column isn't
@@ -131,10 +164,12 @@ impl World {
         }
         span.min_section_y = span.min_section_y.min(section_pos.y);
         span.max_section_y = span.max_section_y.max(section_pos.y);
-        self.sections
+        let section = self
+            .sections
             .entry(section_pos)
-            .or_insert_with(Section::empty)
-            .set(block_in_section(pos), block);
+            .or_insert_with(|| Arc::new(Section::empty()));
+        // Copy-on-write: clones only if a mesh job still holds this section.
+        Arc::make_mut(section).set(block_in_section(pos), block);
         true
     }
 

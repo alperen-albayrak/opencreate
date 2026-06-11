@@ -12,6 +12,7 @@ use crate::{BlockId, blocks};
 pub const BOTTOM_SECTION_Y: i32 = -4;
 
 /// Heightmap terrain, pure function of (seed, x, z).
+#[derive(Clone, Copy)]
 pub struct TerrainGenerator {
     seed: u64,
 }

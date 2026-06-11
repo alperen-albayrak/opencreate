@@ -8,6 +8,7 @@ use crate::BlockId;
 const VOLUME: usize = (SECTION_SIZE * SECTION_SIZE * SECTION_SIZE) as usize;
 
 /// A 16³ block volume. Voxels are indexed `(y * 16 + z) * 16 + x`.
+#[derive(Clone)]
 pub struct Section {
     voxels: Box<[BlockId; VOLUME]>,
 }
