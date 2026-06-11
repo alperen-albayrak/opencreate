@@ -5,7 +5,7 @@
 
 use glam::DVec3;
 use oc_world::World;
-use oc_world::physics::{Aabb, move_aabb};
+use oc_world::physics::{Aabb, aabb_in_water, move_aabb};
 
 const HALF_WIDTH: f64 = 0.3;
 const HEIGHT: f64 = 1.8;
@@ -18,6 +18,12 @@ const FLY_FAST_MULTIPLIER: f64 = 4.0;
 const GRAVITY: f64 = 28.0; // blocks per second²
 const JUMP_SPEED: f64 = 8.4; // ≈ 1.25 blocks of jump height
 const TERMINAL_FALL_SPEED: f64 = 60.0;
+
+// Water: drag and buoyancy slow everything down; Space swims up.
+const SWIM_SPEED_FACTOR: f64 = 0.55;
+const WATER_GRAVITY: f64 = 10.0;
+const SINK_SPEED: f64 = 3.5;
+const SWIM_UP_SPEED: f64 = 4.5;
 
 /// Held movement keys, fed by the window event loop.
 #[derive(Default)]
@@ -88,13 +94,26 @@ impl Player {
             let speed = if input.fast { FLY_SPEED * FLY_FAST_MULTIPLIER } else { FLY_SPEED };
             self.velocity = wish.normalize_or_zero() * speed;
         } else {
-            let speed = if input.fast { WALK_SPEED * SPRINT_MULTIPLIER } else { WALK_SPEED };
+            let in_water = aabb_in_water(world, &self.aabb());
+            let mut speed = if input.fast { WALK_SPEED * SPRINT_MULTIPLIER } else { WALK_SPEED };
+            if in_water {
+                speed *= SWIM_SPEED_FACTOR;
+            }
             let horizontal = wish.normalize_or_zero() * speed;
             self.velocity.x = horizontal.x;
             self.velocity.z = horizontal.z;
-            self.velocity.y = (self.velocity.y - GRAVITY * dt).max(-TERMINAL_FALL_SPEED);
-            if input.up && self.on_ground {
-                self.velocity.y = JUMP_SPEED;
+            if in_water {
+                // Buoyant drag: sink slowly, swim up with Space. Jumping out
+                // at the surface works because ground contact still wins.
+                self.velocity.y = (self.velocity.y - WATER_GRAVITY * dt).max(-SINK_SPEED);
+                if input.up {
+                    self.velocity.y = if self.on_ground { JUMP_SPEED * 0.7 } else { SWIM_UP_SPEED };
+                }
+            } else {
+                self.velocity.y = (self.velocity.y - GRAVITY * dt).max(-TERMINAL_FALL_SPEED);
+                if input.up && self.on_ground {
+                    self.velocity.y = JUMP_SPEED;
+                }
             }
         }
 

@@ -51,6 +51,22 @@ pub struct MoveResult {
     pub hit: [bool; 3],
 }
 
+/// True if any voxel the box overlaps is water (for swimming physics).
+pub fn aabb_in_water(world: &World, aabb: &Aabb) -> bool {
+    let lo = (aabb.min + SKIN).floor().as_ivec3();
+    let hi = (aabb.max - SKIN).floor().as_ivec3();
+    for y in lo.y..=hi.y {
+        for z in lo.z..=hi.z {
+            for x in lo.x..=hi.x {
+                if world.block(BlockPos::new(x, y, z)) == crate::blocks::WATER {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Moves `aabb` by `delta` through `world`, clamping against solid voxels.
 pub fn move_aabb(world: &World, aabb: Aabb, delta: DVec3) -> MoveResult {
     let mut cur = aabb;
@@ -188,6 +204,27 @@ mod tests {
         assert!(result.hit[0]);
         // Box face (x = 8.3) stops at the wall face (x = 10) minus skin.
         assert!((result.delta.x - (10.0 - 8.3 - SKIN)).abs() < 1e-9, "{:?}", result.delta);
+    }
+
+    #[test]
+    fn water_detection_matches_overlap() {
+        let mut world = platform_world();
+        // A 2-deep pool on the platform.
+        for x in 4..8 {
+            for z in 4..8 {
+                for y in 201..203 {
+                    world.set_block(BlockPos::new(x, y, z), blocks::WATER);
+                }
+            }
+        }
+        let wet = player_box(DVec3::new(5.5, 201.0, 5.5));
+        assert!(aabb_in_water(&world, &wet));
+        // Standing beside the pool: dry.
+        let dry = player_box(DVec3::new(10.5, 201.0 + SKIN, 10.5));
+        assert!(!aabb_in_water(&world, &dry));
+        // Hovering just above the pool surface: dry.
+        let above = player_box(DVec3::new(5.5, 203.5, 5.5));
+        assert!(!aabb_in_water(&world, &above));
     }
 
     #[test]
