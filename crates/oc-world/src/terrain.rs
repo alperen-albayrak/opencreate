@@ -26,6 +26,14 @@ pub struct TerrainGenerator {
     seed: u64,
 }
 
+/// Climate band a column belongs to, from the temperature noise channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Biome {
+    Desert,
+    Grassland,
+    Snowy,
+}
+
 impl TerrainGenerator {
     pub fn new(seed: u64) -> Self {
         Self { seed }
@@ -36,24 +44,54 @@ impl TerrainGenerator {
         // Two scales: rolling hills plus a broader continental swell.
         let hills = fbm(self.seed, x as f64 / 64.0, z as f64 / 64.0, 4);
         let swell = fbm(self.seed ^ 0x5EED_C0FF_EE00_0001, x as f64 / 512.0, z as f64 / 512.0, 2);
-        (hills * 18.0 + swell * 40.0 + 4.0).floor() as i32
+        let base = (hills * 18.0 + swell * 40.0 + 4.0).floor() as i32;
+
+        // Rivers (§5.3, MC 1.18 style): where a noise channel crosses zero,
+        // the terrain depresses to a sea-level valley; the standard water
+        // fill then makes it a river.
+        let r = fbm(self.seed ^ 0x41E5_0000_0000_0007, x as f64 / 384.0, z as f64 / 384.0, 2);
+        const RIVER_HALF_WIDTH: f64 = 0.045;
+        if base > SEA_LEVEL - 3 && r.abs() < RIVER_HALF_WIDTH {
+            // 1 at the centerline, 0 at the banks; smooth the bank slope.
+            let t = fade(1.0 - r.abs() / RIVER_HALF_WIDTH);
+            let bed = (SEA_LEVEL - 3) as f64;
+            return (base as f64 + (bed - base as f64) * t).floor() as i32;
+        }
+        base
     }
 
-    /// Block for world-space `y` in a column whose surface is at `surface`.
-    pub fn block_at(&self, surface: i32, y: i32) -> BlockId {
+    /// Climate at a column (pure function of the seed).
+    pub fn biome(&self, x: i32, z: i32) -> Biome {
+        let t = fbm(self.seed ^ 0x7E3A_0000_0000_0009, x as f64 / 640.0, z as f64 / 640.0, 2);
+        if t > 0.32 {
+            Biome::Desert
+        } else if t < -0.32 {
+            Biome::Snowy
+        } else {
+            Biome::Grassland
+        }
+    }
+
+    /// Block for world-space `y` in a column with the given surface/biome.
+    pub fn block_at_biome(&self, surface: i32, biome: Biome, y: i32) -> BlockId {
         if y > surface {
             if y <= SEA_LEVEL { blocks::WATER } else { blocks::AIR }
         } else if y >= surface - 3 {
-            if surface <= BEACH_TOP {
-                blocks::SAND
-            } else if y == surface {
-                blocks::GRASS
-            } else {
-                blocks::DIRT
+            match biome {
+                Biome::Desert => blocks::SAND,
+                _ if surface <= BEACH_TOP => blocks::SAND,
+                Biome::Snowy if y == surface => blocks::SNOW,
+                Biome::Grassland if y == surface => blocks::GRASS,
+                _ => blocks::DIRT,
             }
         } else {
             blocks::STONE
         }
+    }
+
+    /// Grassland-profile blocks; kept for biome-agnostic call sites/tests.
+    pub fn block_at(&self, surface: i32, y: i32) -> BlockId {
+        self.block_at_biome(surface, Biome::Grassland, y)
     }
 
     /// Deterministic tree trunk-base positions whose canopies may intersect
@@ -69,8 +107,14 @@ impl TerrainGenerator {
             let dz = ((bits >> 4) & 15) as i32;
             let (x, z) = (chunk.x * SECTION_SIZE + dx, chunk.z * SECTION_SIZE + dz);
             let surface = self.surface_height(x, z);
-            if surface > BEACH_TOP {
-                origins.push(IVec3::new(x, surface + 1, z));
+            if surface <= BEACH_TOP {
+                continue;
+            }
+            match self.biome(x, z) {
+                Biome::Desert => continue,
+                // Sparse trees in the snow.
+                Biome::Snowy if (h >> (40 + i)) & 3 != 0 => continue,
+                _ => origins.push(IVec3::new(x, surface + 1, z)),
             }
         }
         origins
@@ -286,6 +330,55 @@ mod tests {
         // Beach band: dry sand just above the water line.
         assert_eq!(g.block_at(1, 1), blocks::SAND);
         assert_eq!(g.block_at(2, 2), blocks::GRASS);
+    }
+
+    #[test]
+    fn all_biomes_occur_and_are_deterministic() {
+        let g = TerrainGenerator::new(42);
+        let mut seen = [false; 3];
+        for x in (-4096..4096).step_by(97) {
+            for z in (-4096..4096).step_by(101) {
+                assert_eq!(g.biome(x, z), g.biome(x, z));
+                seen[match g.biome(x, z) {
+                    Biome::Desert => 0,
+                    Biome::Grassland => 1,
+                    Biome::Snowy => 2,
+                }] = true;
+            }
+        }
+        assert_eq!(seen, [true; 3], "all biomes should appear within 8km");
+    }
+
+    #[test]
+    fn biome_surface_blocks() {
+        let g = TerrainGenerator::new(7);
+        assert_eq!(g.block_at_biome(20, Biome::Desert, 20), blocks::SAND);
+        assert_eq!(g.block_at_biome(20, Biome::Desert, 18), blocks::SAND);
+        assert_eq!(g.block_at_biome(20, Biome::Snowy, 20), blocks::SNOW);
+        assert_eq!(g.block_at_biome(20, Biome::Snowy, 19), blocks::DIRT);
+        assert_eq!(g.block_at_biome(20, Biome::Grassland, 20), blocks::GRASS);
+        // Beaches override every biome's cap near the water line.
+        assert_eq!(g.block_at_biome(1, Biome::Snowy, 1), blocks::SAND);
+    }
+
+    #[test]
+    fn rivers_carve_to_sea_level_through_hills() {
+        let g = TerrainGenerator::new(42);
+        // Find genuine river centers: columns lying lower than their broad
+        // surroundings, at/below the river bed level.
+        let mut rivers = 0;
+        for x in (-3000..3000).step_by(11) {
+            for z in (-3000..3000).step_by(13) {
+                let h = g.surface_height(x, z);
+                if h == SEA_LEVEL - 3 {
+                    let near = g.surface_height(x + 96, z + 96);
+                    if near > SEA_LEVEL + 4 {
+                        rivers += 1;
+                    }
+                }
+            }
+        }
+        assert!(rivers > 20, "expected river valleys through high terrain, found {rivers}");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use glam::IVec3;
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SHIFT, SECTION_SIZE, SectionPos};
 
-use crate::terrain::{BOTTOM_SECTION_Y, SEA_LEVEL, TerrainGenerator};
+use crate::terrain::{BOTTOM_SECTION_Y, Biome, SEA_LEVEL, TerrainGenerator};
 use crate::{BlockId, Section};
 
 /// Vertical section range of a generated column, inclusive.
@@ -35,11 +35,14 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
     let base_x = chunk.x * SECTION_SIZE;
     let base_z = chunk.z * SECTION_SIZE;
     let mut heights = [[0i32; 16]; 16];
+    let mut biomes = [[Biome::Grassland; 16]; 16];
     let mut max_height = SEA_LEVEL; // water reaches sea level even offshore
-    for (dz, row) in heights.iter_mut().enumerate() {
-        for (dx, h) in row.iter_mut().enumerate() {
-            *h = generator.surface_height(base_x + dx as i32, base_z + dz as i32);
-            max_height = max_height.max(*h);
+    for dz in 0..16usize {
+        for dx in 0..16usize {
+            let (x, z) = (base_x + dx as i32, base_z + dz as i32);
+            heights[dz][dx] = generator.surface_height(x, z);
+            biomes[dz][dx] = generator.biome(x, z);
+            max_height = max_height.max(heights[dz][dx]);
         }
     }
 
@@ -81,9 +84,10 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
         for (dz, row) in heights.iter().enumerate() {
             for (dx, &surface) in row.iter().enumerate() {
                 let (x, z) = (base_x + dx as i32, base_z + dz as i32);
+                let biome = biomes[dz][dx];
                 for dy in 0..SECTION_SIZE {
                     let y = base_y + dy;
-                    let mut block = generator.block_at(surface, y);
+                    let mut block = generator.block_at_biome(surface, biome, y);
                     if block.is_solid() && generator.is_cave(IVec3::new(x, y, z), surface) {
                         block = BlockId::AIR;
                     }
@@ -268,14 +272,14 @@ mod tests {
         for (dx, dz) in [(0, 0), (7, 11), (15, 15)] {
             let (x, z) = (chunk.x * 16 + dx, chunk.z * 16 + dz);
             let h = world.surface_height(x, z);
-            assert_eq!(world.block(IVec3::new(x, h, z)), generator.block_at(h, h));
-            assert_eq!(world.block(IVec3::new(x, h - 1, z)), generator.block_at(h, h - 1));
+            let biome = generator.biome(x, z);
+            let expect = |y: i32| generator.block_at_biome(h, biome, y);
+            assert_eq!(world.block(IVec3::new(x, h, z)), expect(h));
+            assert_eq!(world.block(IVec3::new(x, h - 1, z)), expect(h - 1));
             // Above the surface: terrain rules, or part of a tree.
             let above = world.block(IVec3::new(x, h + 1, z));
             assert!(
-                above == generator.block_at(h, h + 1)
-                    || above == blocks::LOG
-                    || above == blocks::LEAVES,
+                above == expect(h + 1) || above == blocks::LOG || above == blocks::LEAVES,
                 "unexpected block above surface: {above:?}"
             );
         }
@@ -357,7 +361,12 @@ mod surface_invariant {
                     breaches += 1;
                     continue;
                 }
-                let expected = if h <= SEA_LEVEL + 1 { blocks::SAND } else { blocks::GRASS };
+                let expected = match world.generator().biome(x, z) {
+                    Biome::Desert => blocks::SAND,
+                    _ if h <= SEA_LEVEL + 1 => blocks::SAND,
+                    Biome::Snowy => blocks::SNOW,
+                    Biome::Grassland => blocks::GRASS,
+                };
                 assert_eq!(surface, expected, "wrong surface at ({x},{h},{z})");
 
                 let above = world.block(IVec3::new(x, h + 1, z));
