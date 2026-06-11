@@ -15,13 +15,15 @@ use anyhow::{Context as _, Result};
 use ash::vk;
 use glam::{DVec3, Mat4};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
-use oc_world::Section;
+use oc_core::SectionPos;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use chunk_renderer::ChunkRenderer;
 use context::VulkanContext;
 use depth::DepthBuffer;
 use swapchain::Swapchain;
+
+pub use mesh::{ChunkMesh, mesh_section};
 
 /// Number of frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -50,7 +52,9 @@ pub struct Renderer {
     /// because presentation waits on it after the frame's fence is reused.
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
-    frame: usize,
+    /// Monotonic frame counter; `frame % FRAMES_IN_FLIGHT` is the slot index,
+    /// and the counter timestamps retired GPU buffers for safe destruction.
+    frame: u64,
     /// Pending window size to recreate the swapchain at, set on resize.
     pending_extent: Option<vk::Extent2D>,
     pub clear_color: [f32; 4],
@@ -137,26 +141,38 @@ impl Renderer {
         self.pending_extent = Some(vk::Extent2D { width, height });
     }
 
-    /// Meshes and uploads a section at `origin` (its minimum corner, world space).
-    pub fn set_test_chunk(&mut self, section: &Section, origin: DVec3) -> Result<()> {
+    /// Uploads a section mesh at `pos`, replacing any previous one there.
+    /// An empty mesh removes the chunk.
+    pub fn set_chunk(&mut self, pos: SectionPos, mesh: &ChunkMesh) -> Result<()> {
         unsafe {
             let allocator = self.allocator.as_mut().expect("allocator alive");
-            self.chunks.set_chunk(&self.ctx, allocator, section, origin)
+            self.chunks.set_chunk(&self.ctx, allocator, pos, mesh, self.frame)
         }
+    }
+
+    /// Removes the chunk mesh at `pos`, if present.
+    pub fn remove_chunk(&mut self, pos: SectionPos) {
+        self.chunks.remove_chunk(pos, self.frame);
     }
 
     /// Renders one frame and presents it.
     pub fn draw(&mut self, camera: &FrameCamera) -> Result<()> {
         unsafe {
-            let fence = self.in_flight[self.frame];
+            let slot = (self.frame % FRAMES_IN_FLIGHT as u64) as usize;
+            let fence = self.in_flight[slot];
             self.ctx.device.wait_for_fences(&[fence], true, u64::MAX)?;
+
+            // The fence wait proves frame `frame - FRAMES_IN_FLIGHT` is done,
+            // so buffers it referenced can be freed now.
+            let allocator = self.allocator.as_mut().expect("allocator alive");
+            self.chunks.collect_garbage(&self.ctx.device, allocator, self.frame);
 
             if self.pending_extent.is_some() {
                 self.recreate_swapchain()?;
             }
             let device = &self.ctx.device;
 
-            let acquire_sem = self.image_available[self.frame];
+            let acquire_sem = self.image_available[slot];
             let image_index = match self.swapchain.acquire(acquire_sem) {
                 Ok(index) => index,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -168,7 +184,7 @@ impl Renderer {
 
             device.reset_fences(&[fence])?;
 
-            let cmd = self.command_buffers[self.frame];
+            let cmd = self.command_buffers[slot];
             device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
             device.begin_command_buffer(
                 cmd,
@@ -230,7 +246,7 @@ impl Renderer {
                 Err(e) => return Err(e).context("presenting swapchain image"),
             }
 
-            self.frame = (self.frame + 1) % FRAMES_IN_FLIGHT;
+            self.frame += 1;
             Ok(())
         }
     }

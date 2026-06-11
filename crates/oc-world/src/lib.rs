@@ -5,8 +5,11 @@
 //! this crate's API.
 
 pub mod section;
+pub mod terrain;
+pub mod world;
 
 pub use section::Section;
+pub use world::World;
 
 /// A block state id. 0 is always air.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

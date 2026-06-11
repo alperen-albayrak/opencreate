@@ -1,5 +1,7 @@
 //! Graphics pipeline and GPU resources for drawing chunk meshes.
 
+use std::collections::HashMap;
+
 use anyhow::{Context as _, Result};
 use ash::vk;
 use glam::{DVec3, Mat4};
@@ -7,11 +9,12 @@ use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator,
 };
-use oc_world::Section;
+use oc_core::{SECTION_SIZE, SectionPos};
 
 use crate::context::VulkanContext;
-use crate::mesh::{self, PackedVertex};
+use crate::mesh::{ChunkMesh, PackedVertex};
 use crate::texture;
+use crate::FRAMES_IN_FLIGHT;
 
 const CHUNK_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chunk.spv"));
 
@@ -49,7 +52,11 @@ pub struct ChunkRenderer {
     texture_allocation: Option<Allocation>,
     texture_view: vk::ImageView,
     sampler: vk::Sampler,
-    chunk: Option<ChunkMeshGpu>,
+    chunks: HashMap<SectionPos, ChunkMeshGpu>,
+    /// Buffers replaced or removed while the GPU may still read them, tagged
+    /// with the frame counter at retirement. Freed once that frame's
+    /// command buffers are provably finished.
+    retired: Vec<(u64, GpuBuffer)>,
 }
 
 impl ChunkRenderer {
@@ -155,31 +162,26 @@ impl ChunkRenderer {
                 texture_allocation: Some(texture_allocation),
                 texture_view,
                 sampler,
-                chunk: None,
+                chunks: HashMap::new(),
+                retired: Vec::new(),
             })
         }
     }
 
-    /// Meshes and uploads one section, replacing any previous chunk.
+    /// Uploads a section mesh, replacing any previous mesh at `pos`. An empty
+    /// mesh just removes the old one.
     pub unsafe fn set_chunk(
         &mut self,
         ctx: &VulkanContext,
         allocator: &mut Allocator,
-        section: &Section,
-        origin: DVec3,
+        pos: SectionPos,
+        mesh: &ChunkMesh,
+        frame: u64,
     ) -> Result<()> {
         unsafe {
-            let mesh = mesh::mesh_section(section);
-            tracing::info!(
-                quads = mesh.indices.len() / 6,
-                vertices = mesh.vertices.len(),
-                "chunk meshed"
-            );
-
-            if let Some(mut old) = self.chunk.take() {
-                ctx.device.device_wait_idle()?;
-                old.vertex.destroy(&ctx.device, allocator);
-                old.index.destroy(&ctx.device, allocator);
+            self.remove_chunk(pos, frame);
+            if mesh.indices.is_empty() {
+                return Ok(());
             }
 
             let vertex = create_filled_buffer(
@@ -196,13 +198,42 @@ impl ChunkRenderer {
                 as_bytes(&mesh.indices),
                 "chunk indices",
             )?;
-            self.chunk = Some(ChunkMeshGpu {
+            self.chunks.insert(pos, ChunkMeshGpu {
                 vertex,
                 index,
                 index_count: mesh.indices.len() as u32,
-                origin,
+                origin: (pos * SECTION_SIZE).as_dvec3(),
             });
             Ok(())
+        }
+    }
+
+    /// Drops the mesh at `pos`; its buffers are freed once the GPU is done.
+    pub fn remove_chunk(&mut self, pos: SectionPos, frame: u64) {
+        if let Some(old) = self.chunks.remove(&pos) {
+            self.retired.push((frame, old.vertex));
+            self.retired.push((frame, old.index));
+        }
+    }
+
+    /// Frees retired buffers whose last possible use is at least
+    /// `FRAMES_IN_FLIGHT` frames behind `frame` (i.e. provably complete).
+    /// Call after waiting on the current frame's fence.
+    pub unsafe fn collect_garbage(
+        &mut self,
+        device: &ash::Device,
+        allocator: &mut Allocator,
+        frame: u64,
+    ) {
+        unsafe {
+            self.retired.retain_mut(|(retired_at, buffer)| {
+                if *retired_at + FRAMES_IN_FLIGHT as u64 <= frame {
+                    buffer.destroy(device, allocator);
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
 
@@ -216,7 +247,9 @@ impl ChunkRenderer {
         camera_pos: DVec3,
     ) {
         unsafe {
-            let Some(chunk) = &self.chunk else { return };
+            if self.chunks.is_empty() {
+                return;
+            }
 
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_bind_descriptor_sets(
@@ -227,29 +260,39 @@ impl ChunkRenderer {
                 &[self.descriptor_set],
                 &[],
             );
-            device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex.buffer], &[0]);
-            device.cmd_bind_index_buffer(cmd, chunk.index.buffer, 0, vk::IndexType::UINT32);
 
-            // Camera-relative rendering (§3): translation happens in f64 on
-            // the CPU; the GPU only ever sees camera-relative f32.
-            let rel = (chunk.origin - camera_pos).as_vec3();
-            let mvp = view_proj * Mat4::from_translation(rel);
-            device.cmd_push_constants(
-                cmd,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                as_bytes(std::slice::from_ref(&mvp)),
-            );
-            device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+            // TODO: frustum culling + pooled buffers with multi-draw-indirect
+            // (§4); per-chunk binds are fine at current chunk counts.
+            for chunk in self.chunks.values() {
+                device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, chunk.index.buffer, 0, vk::IndexType::UINT32);
+
+                // Camera-relative rendering (§3): translation happens in f64
+                // on the CPU; the GPU only ever sees camera-relative f32.
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                let mvp = view_proj * Mat4::from_translation(rel);
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    as_bytes(std::slice::from_ref(&mvp)),
+                );
+                device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+            }
         }
     }
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         unsafe {
-            if let Some(mut chunk) = self.chunk.take() {
+            // Caller has already waited for device idle; everything is safe
+            // to free immediately.
+            for (_, mut chunk) in self.chunks.drain() {
                 chunk.vertex.destroy(device, allocator);
                 chunk.index.destroy(device, allocator);
+            }
+            for (_, mut buffer) in self.retired.drain(..) {
+                buffer.destroy(device, allocator);
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
@@ -474,8 +517,10 @@ unsafe fn create_pipeline(
             .scissor_count(1);
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            // TODO: switch to BACK culling once winding is verified per face.
-            .cull_mode(vk::CullModeFlags::NONE)
+            // Outward mesh faces are counter-clockwise per Vulkan's
+            // framebuffer-space orientation rule (verified empirically:
+            // CLOCKWISE+BACK culls the world away).
+            .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()

@@ -5,7 +5,7 @@
 
 use glam::IVec3;
 use oc_core::SECTION_SIZE;
-use oc_world::{BlockId, Section, blocks};
+use oc_world::{BlockId, blocks};
 
 /// One packed vertex, 8 bytes (decoded in `chunk.wgsl`):
 ///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2   (corner positions, 0..=16)
@@ -96,10 +96,11 @@ fn face_texture(block: BlockId, face: usize) -> u32 {
     }
 }
 
-/// Meshes one section. Neighbors outside the section are treated as air,
-/// which is correct for an isolated test chunk; cross-section culling comes
-/// with the chunk pipeline.
-pub fn mesh_section(section: &Section) -> ChunkMesh {
+/// Meshes one section. `sample` takes section-local coordinates and is also
+/// called one block outside the section (components -1 or 16), so callers
+/// provide neighbor-section blocks for cross-section face culling. Ungenerated
+/// neighbors should sample as air.
+pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -107,14 +108,12 @@ pub fn mesh_section(section: &Section) -> ChunkMesh {
         for z in 0..SECTION_SIZE {
             for x in 0..SECTION_SIZE {
                 let pos = IVec3::new(x, y, z);
-                let block = section.get(pos);
+                let block = sample(pos);
                 if block.is_air() {
                     continue;
                 }
                 for (face, normal) in FACE_NORMALS.iter().enumerate() {
-                    let neighbor = pos + *normal;
-                    let covered = in_section(neighbor) && !section.get(neighbor).is_air();
-                    if covered {
+                    if !sample(pos + *normal).is_air() {
                         continue;
                     }
 
@@ -139,19 +138,27 @@ pub fn mesh_section(section: &Section) -> ChunkMesh {
     ChunkMesh { vertices, indices }
 }
 
-fn in_section(pos: IVec3) -> bool {
-    pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oc_world::Section;
+
+    /// Sampler over one section with all-air surroundings.
+    fn isolated(section: &Section) -> impl Fn(IVec3) -> BlockId {
+        move |pos| {
+            if pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all() {
+                section.get(pos)
+            } else {
+                BlockId::AIR
+            }
+        }
+    }
 
     #[test]
     fn single_block_has_six_faces() {
         let mut section = Section::empty();
         section.set(IVec3::new(8, 8, 8), blocks::STONE);
-        let mesh = mesh_section(&section);
+        let mesh = mesh_section(isolated(&section));
         assert_eq!(mesh.vertices.len(), 6 * 4);
         assert_eq!(mesh.indices.len(), 6 * 6);
     }
@@ -167,7 +174,24 @@ mod tests {
                 }
             }
         }
-        let mesh = mesh_section(&section);
+        let mesh = mesh_section(isolated(&section));
         assert_eq!(mesh.indices.len() / 6, 54);
+    }
+
+    #[test]
+    fn faces_against_solid_neighbor_sections_are_culled() {
+        // Section fully solid, surrounded by solid neighbors on all sides:
+        // nothing is visible at all.
+        let mesh = mesh_section(|_| blocks::STONE);
+        assert_eq!(mesh.indices.len(), 0);
+
+        // Solid section with solid blocks below only (-Y neighbor): the
+        // bottom face of the floor layer must be culled, 5 sides + nothing
+        // below -> 16*16*5 visible faces.
+        let mesh = mesh_section(|pos: IVec3| {
+            let inside = pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
+            if inside || pos.y < 0 { blocks::STONE } else { BlockId::AIR }
+        });
+        assert_eq!(mesh.indices.len() / 6, 16 * 16 * 5);
     }
 }

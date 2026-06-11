@@ -37,9 +37,14 @@ fn compile(path: &Path) -> Result<Vec<u32>, String> {
     .validate(&module)
     .map_err(|e| format!("{e:?}"))?;
 
-    let options = naga::back::spv::Options {
+    let mut options = naga::back::spv::Options {
         lang_version: (1, 3),
         ..Default::default()
     };
+    // naga's defaults include ADJUST_COORDINATE_SPACE, a wgpu-style implicit
+    // Y flip injected into vertex shaders. This engine targets Vulkan clip
+    // space directly — the camera's projection matrix does the one explicit
+    // Y flip — so the hidden second flip must be off or the image inverts.
+    options.flags.remove(naga::back::spv::WriterFlags::ADJUST_COORDINATE_SPACE);
     naga::back::spv::write_vec(&module, &info, &options, None).map_err(|e| e.to_string())
 }

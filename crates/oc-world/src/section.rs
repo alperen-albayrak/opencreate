@@ -3,7 +3,7 @@
 use glam::IVec3;
 use oc_core::SECTION_SIZE;
 
-use crate::{BlockId, blocks};
+use crate::BlockId;
 
 const VOLUME: usize = (SECTION_SIZE * SECTION_SIZE * SECTION_SIZE) as usize;
 
@@ -36,35 +36,12 @@ impl Section {
         ((pos.y * SECTION_SIZE + pos.z) * SECTION_SIZE + pos.x) as usize
     }
 
-    /// A test pattern: rolling stone/dirt/grass terrain inside one section.
-    pub fn test_terrain() -> Self {
-        let mut section = Self::empty();
-        for x in 0..SECTION_SIZE {
-            for z in 0..SECTION_SIZE {
-                // Cheap deterministic "hills" without pulling in a noise crate.
-                let h = 6.0
-                    + 3.0 * ((x as f32 * 0.7).sin() + (z as f32 * 0.5).cos())
-                    + ((x + z) as f32 * 0.45).sin();
-                let height = (h as i32).clamp(1, SECTION_SIZE - 1);
-                for y in 0..height {
-                    let block = if y == height - 1 {
-                        blocks::GRASS
-                    } else if y >= height - 3 {
-                        blocks::DIRT
-                    } else {
-                        blocks::STONE
-                    };
-                    section.set(IVec3::new(x, y, z), block);
-                }
-            }
-        }
-        section
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocks;
 
     #[test]
     fn get_set_roundtrip() {
@@ -75,19 +52,4 @@ mod tests {
         assert_eq!(s.get(IVec3::new(5, 4, 3)), BlockId::AIR);
     }
 
-    #[test]
-    fn test_terrain_has_grass_surface() {
-        let s = Section::test_terrain();
-        let mut grass = 0;
-        for x in 0..16 {
-            for z in 0..16 {
-                for y in 0..16 {
-                    if s.get(IVec3::new(x, y, z)) == blocks::GRASS {
-                        grass += 1;
-                    }
-                }
-            }
-        }
-        assert_eq!(grass, 16 * 16, "every column should have exactly one grass cap");
-    }
 }

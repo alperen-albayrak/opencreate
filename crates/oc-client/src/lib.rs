@@ -1,6 +1,7 @@
 //! The game client: window, input, and the frame loop (ARCHITECTURE.md §2).
 
 mod camera;
+mod streaming;
 
 use std::time::Instant;
 
@@ -17,7 +18,10 @@ use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
 use camera::{Camera, CameraInput};
 use oc_renderer::{FrameCamera, Renderer};
-use oc_world::Section;
+use streaming::ChunkStreamer;
+
+/// Fixed world seed until there is a world-selection UI.
+const WORLD_SEED: u64 = 20260611;
 
 /// Runs the client until the window is closed.
 pub fn run() -> Result<()> {
@@ -37,6 +41,7 @@ struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     error: Option<anyhow::Error>,
+    streamer: ChunkStreamer,
     camera: Camera,
     input: CameraInput,
     mouse_captured: bool,
@@ -45,12 +50,15 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        let streamer = ChunkStreamer::new(WORLD_SEED);
+        // Spawn hovering a bit above the terrain surface near the origin.
+        let spawn_y = streamer.world().surface_height(8, 8) as f64 + 24.0;
         Self {
             renderer: None,
             window: None,
             error: None,
-            // The test chunk spans (0,0,0)..(16,16,16); start back and above it.
-            camera: Camera::new(DVec3::new(8.0, 24.0, 36.0)),
+            streamer,
+            camera: Camera::new(DVec3::new(8.5, spawn_y, 8.5)),
             input: CameraInput {
                 forward: false,
                 backward: false,
@@ -74,7 +82,7 @@ impl App {
         let size = window.inner_size();
         // SAFETY: the window is stored in `self` and declared after the
         // renderer, so it outlives the renderer's surface.
-        let mut renderer = unsafe {
+        let renderer = unsafe {
             Renderer::new(
                 window.display_handle()?.as_raw(),
                 window.window_handle()?.as_raw(),
@@ -82,7 +90,6 @@ impl App {
                 size.height,
             )?
         };
-        renderer.set_test_chunk(&Section::test_terrain(), DVec3::ZERO)?;
         info!("renderer initialized — click to capture the mouse, Esc to release");
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -137,6 +144,7 @@ impl App {
         let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) else {
             return Ok(());
         };
+        self.streamer.update(renderer, self.camera.position)?;
         let size = window.inner_size();
         let aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
         renderer.draw(&FrameCamera {

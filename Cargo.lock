@@ -1027,6 +1027,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glam",
+ "oc-core",
  "oc-renderer",
  "oc-world",
  "raw-window-handle",
