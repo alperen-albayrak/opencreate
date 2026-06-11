@@ -87,6 +87,7 @@ mod layers {
     pub const LOG_SIDE: u32 = 6;
     pub const LOG_TOP: u32 = 7;
     pub const LEAVES: u32 = 8;
+    pub const LAMP: u32 = 9;
 }
 
 fn face_texture(block: BlockId, face: usize) -> u32 {
@@ -104,6 +105,7 @@ fn face_texture(block: BlockId, face: usize) -> u32 {
             _ => layers::LOG_SIDE,
         },
         blocks::LEAVES => layers::LEAVES,
+        blocks::LAMP => layers::LAMP,
         _ => layers::STONE,
     }
 }
@@ -112,7 +114,13 @@ fn face_texture(block: BlockId, face: usize) -> u32 {
 /// called one block outside the section (components -1 or 16), so callers
 /// provide neighbor-section blocks for cross-section face culling. Ungenerated
 /// neighbors should sample as air.
-pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
+///
+/// `light` returns the packed light (`sky << 4 | block`, 0..=15 each) of the
+/// transparent voxel a face is emitted into; same coordinate convention.
+pub fn mesh_section(
+    sample: impl Fn(IVec3) -> BlockId,
+    light: impl Fn(IVec3) -> u8,
+) -> ChunkMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -133,6 +141,8 @@ pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
                     }
 
                     let layer = face_texture(block, face);
+                    // Faces are lit by the transparent voxel they face into.
+                    let face_light = light(pos + *normal) as u32;
                     let base = vertices.len() as u32;
                     for (corner, offset) in FACE_CORNERS[face].iter().enumerate() {
                         let p = pos + *offset;
@@ -141,7 +151,7 @@ pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
                             | (p.z as u32) << 10
                             | (face as u32) << 15
                             | (corner as u32) << 18;
-                        let w1 = layer | 0xFF << 16; // full-bright until lighting lands
+                        let w1 = layer | face_light << 16;
                         vertices.push(PackedVertex(w0, w1));
                     }
                     indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
@@ -180,7 +190,7 @@ mod tests {
     fn single_block_has_six_faces() {
         let mut section = Section::empty();
         section.set(IVec3::new(8, 8, 8), blocks::STONE);
-        let mesh = mesh_section(isolated(&section));
+        let mesh = mesh_section(isolated(&section), |_| 0xF0);
         assert_eq!(mesh.vertices.len(), 6 * 4);
         assert_eq!(mesh.indices.len(), 6 * 6);
     }
@@ -196,7 +206,7 @@ mod tests {
                 }
             }
         }
-        let mesh = mesh_section(isolated(&section));
+        let mesh = mesh_section(isolated(&section), |_| 0xF0);
         assert_eq!(mesh.indices.len() / 6, 54);
     }
 
@@ -204,16 +214,20 @@ mod tests {
     fn faces_against_solid_neighbor_sections_are_culled() {
         // Section fully solid, surrounded by solid neighbors on all sides:
         // nothing is visible at all.
-        let mesh = mesh_section(|_| blocks::STONE);
+        let mesh = mesh_section(|_| blocks::STONE, |_| 0xF0);
         assert_eq!(mesh.indices.len(), 0);
 
         // Solid section with solid blocks below only (-Y neighbor): the
         // bottom face of the floor layer must be culled, 5 sides + nothing
         // below -> 16*16*5 visible faces.
-        let mesh = mesh_section(|pos: IVec3| {
-            let inside = pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
-            if inside || pos.y < 0 { blocks::STONE } else { BlockId::AIR }
-        });
+        let mesh = mesh_section(
+            |pos: IVec3| {
+                let inside =
+                    pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
+                if inside || pos.y < 0 { blocks::STONE } else { BlockId::AIR }
+            },
+            |_| 0xF0,
+        );
         assert_eq!(mesh.indices.len() / 6, 16 * 16 * 5);
     }
 }
@@ -224,9 +238,10 @@ mod layer_tests {
     use glam::IVec3;
 
     fn top_face_layer(block: BlockId) -> u32 {
-        let mesh = mesh_section(|pos: IVec3| {
-            if pos == IVec3::new(8, 8, 8) { block } else { BlockId::AIR }
-        });
+        let mesh = mesh_section(
+            |pos: IVec3| if pos == IVec3::new(8, 8, 8) { block } else { BlockId::AIR },
+            |_| 0xF0,
+        );
         // Find the +Y face (face bits 15..18 == 0) and return its layer.
         mesh.vertices
             .iter()
@@ -244,5 +259,53 @@ mod layer_tests {
         assert_eq!(top_face_layer(blocks::WATER), layers::WATER);
         assert_eq!(top_face_layer(blocks::LOG), layers::LOG_TOP);
         assert_eq!(top_face_layer(blocks::LEAVES), layers::LEAVES);
+        assert_eq!(top_face_layer(blocks::LAMP), layers::LAMP);
+    }
+}
+
+#[cfg(test)]
+mod light_bake_tests {
+    use super::*;
+    use glam::IVec3;
+    use oc_core::ChunkPos;
+    use oc_world::light::compute_light;
+
+    /// Floor at y=0 with a roof slab at y=8 over x 4..=11, z 4..=11 of the
+    /// center column. The floor's +Y faces under the roof must bake dimmer
+    /// sky light than the open floor.
+    #[test]
+    fn roof_shadow_reaches_the_baked_vertices() {
+        let blocks_at = |pos: IVec3| -> BlockId {
+            if pos.y <= 0 {
+                blocks::STONE
+            } else if pos.y == 8 && (4..=11).contains(&pos.x) && (4..=11).contains(&pos.z) {
+                blocks::STONE
+            } else {
+                BlockId::AIR
+            }
+        };
+        let field = compute_light(blocks_at, ChunkPos::new(0, 0), -16, 32);
+
+        // Mesh the section containing the floor (world section y=0 == local).
+        let mesh = mesh_section(blocks_at, |local| field.get(local));
+
+        // Collect +Y faces of floor blocks (face bits == 0, vertex y == 1).
+        let sky_of = |x: i32, z: i32| -> u8 {
+            mesh.vertices
+                .iter()
+                .find(|v| {
+                    let w0 = v.0;
+                    (w0 >> 15) & 7 == 0
+                        && (w0 & 31) == x as u32          // corner 0 has the block's min x
+                        && ((w0 >> 5) & 31) == 1
+                        && ((w0 >> 10) & 31) == (z + 1) as u32 // corner 0 of +Y is at z+1
+                })
+                .map(|v| ((v.1 >> 16) >> 4) as u8 & 15)
+                .expect("floor face present")
+        };
+
+        assert_eq!(sky_of(1, 1), 15, "open floor is fully sky-lit");
+        let shaded = sky_of(7, 7);
+        assert!(shaded < 13, "floor under the roof should be shaded, got {shaded}");
     }
 }

@@ -4,6 +4,7 @@
 //! Palette compression replaces the backing storage later without changing
 //! this crate's API.
 
+pub mod light;
 pub mod physics;
 pub mod raycast;
 pub mod section;
@@ -34,6 +35,21 @@ impl BlockId {
     pub fn is_opaque(self) -> bool {
         !self.is_air() && self != blocks::WATER
     }
+
+    /// Cost of light passing through this block, or `None` if it blocks
+    /// light entirely.
+    pub fn light_opacity(self) -> Option<u8> {
+        match self {
+            blocks::AIR => Some(1),
+            blocks::WATER => Some(3),
+            _ => None,
+        }
+    }
+
+    /// Light level (0..=15) this block emits.
+    pub fn light_emission(self) -> u8 {
+        if self == blocks::LAMP { 15 } else { 0 }
+    }
 }
 
 /// Hardcoded blocks until the data-driven registry (§3) exists. Properties
@@ -49,4 +65,5 @@ pub mod blocks {
     pub const WATER: BlockId = BlockId(5);
     pub const LOG: BlockId = BlockId(6);
     pub const LEAVES: BlockId = BlockId(7);
+    pub const LAMP: BlockId = BlockId(8);
 }

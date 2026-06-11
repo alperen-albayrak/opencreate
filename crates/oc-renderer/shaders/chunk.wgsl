@@ -47,14 +47,24 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
         vec3<f32>(-1.0, 0.0, 0.0),
     );
 
+    // Per-face brightness = whichever wins of:
+    //  - sky light scaled by the day cycle (ambient floor + sun diffuse;
+    //    pc.sun.xyz is pre-scaled by daylight, so night kills the diffuse)
+    //  - block light (lamps), constant through the day.
+    let light = (packed.y >> 16u) & 0xFFu;
+    let sky_level = f32(light >> 4u) / 15.0;
+    let block_level = f32(light & 15u) / 15.0;
+
     let ambient = pc.sun.w;
     let diffuse = max(dot(face_normal[face], pc.sun.xyz), 0.0);
+    let sky_term = sky_level * (ambient + (1.0 - ambient) * diffuse);
+    let block_term = block_level * 0.95;
 
     var out: VsOut;
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
     out.uv = corner_uv[corner];
     out.layer = packed.y & 0xFFFFu;
-    out.shade = ambient + (1.0 - ambient) * diffuse;
+    out.shade = max(sky_term, block_term);
     return out;
 }
 

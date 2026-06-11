@@ -307,6 +307,7 @@ impl App {
             KeyCode::Digit1 if pressed => self.selected_block = blocks::STONE,
             KeyCode::Digit2 if pressed => self.selected_block = blocks::DIRT,
             KeyCode::Digit3 if pressed => self.selected_block = blocks::GRASS,
+            KeyCode::Digit4 if pressed => self.selected_block = blocks::LAMP,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
         }

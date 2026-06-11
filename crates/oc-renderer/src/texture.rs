@@ -2,11 +2,11 @@
 //! provides real ones.
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 9;
+pub const LAYER_COUNT: u32 = 10;
 
 /// RGBA pixels for the block texture array. Layer order must match
 /// `mesh::layers`: grass top, dirt, stone, grass side, sand, water,
-/// log side, log top, leaves.
+/// log side, log top, leaves, lamp.
 pub fn build_block_textures() -> Vec<u8> {
     let size = TEXTURE_SIZE as usize;
     let mut pixels = Vec::with_capacity(size * size * 4 * LAYER_COUNT as usize);
@@ -26,7 +26,12 @@ pub fn build_block_textures() -> Vec<u8> {
                     // Log side: vertical bark streaks.
                     6 => shade([104, 82, 50], hash_noise(x as u32, 0, layer), 22),
                     7 => shade([151, 122, 73], n, 16),
-                    _ => shade([58, 134, 52], n, 30),
+                    8 => shade([58, 134, 52], n, 30),
+                    // Lamp: bright warm glow with a darker rim.
+                    _ if x == 0 || y == 0 || x == size - 1 || y == size - 1 => {
+                        shade([142, 105, 55], n, 12)
+                    }
+                    _ => shade([255, 222, 150], n, 12),
                 };
                 pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
             }
