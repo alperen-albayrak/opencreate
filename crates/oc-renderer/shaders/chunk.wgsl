@@ -1,5 +1,6 @@
 // Chunk rendering: packed 8-byte vertices (ARCHITECTURE.md §4).
-//   word 0: x:5 | y:5 | z:5 | face:3 | corner:2   (corner positions, 0..=16)
+//   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4
+//     (corner positions 0..=16; su/sv = greedy quad extent, tiles the UVs)
 //   word 1: texture layer:16 | light:8
 
 struct PushConstants {
@@ -29,6 +30,10 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     );
     let face = (w0 >> 15u) & 7u;
     let corner = (w0 >> 18u) & 3u;
+    let extent = vec2<f32>(
+        f32(((w0 >> 20u) & 15u) + 1u),
+        f32(((w0 >> 24u) & 15u) + 1u),
+    );
 
     var corner_uv = array<vec2<f32>, 4>(
         vec2<f32>(0.0, 1.0),
@@ -62,7 +67,7 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 
     var out: VsOut;
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
-    out.uv = corner_uv[corner];
+    out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
     out.shade = max(sky_term, block_term);
     return out;
