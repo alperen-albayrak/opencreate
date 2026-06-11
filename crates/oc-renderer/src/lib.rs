@@ -14,7 +14,7 @@ mod texture;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
-use glam::{DVec3, Mat4};
+use glam::{DVec3, Mat4, Vec4};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use oc_core::{BlockPos, SectionPos};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -37,6 +37,19 @@ pub struct FrameCamera {
     pub position: DVec3,
     /// Block to draw the targeting outline around, if any.
     pub highlight: Option<BlockPos>,
+    /// xyz: direction toward the sun (normalized); w: ambient light level.
+    pub sun: Vec4,
+    /// Sky clear color for this frame (day/night cycle).
+    pub sky_color: [f32; 4],
+}
+
+/// Renderer counters for the perf log (§11).
+#[derive(Debug, Clone, Copy)]
+pub struct RenderStats {
+    /// Chunk meshes resident on the GPU.
+    pub chunks_resident: usize,
+    /// Chunks drawn last frame after frustum culling.
+    pub chunks_drawn: u32,
 }
 
 /// Owns the Vulkan device, swapchain and per-frame state, and draws frames.
@@ -62,7 +75,7 @@ pub struct Renderer {
     frame: u64,
     /// Pending window size to recreate the swapchain at, set on resize.
     pending_extent: Option<vk::Extent2D>,
-    pub clear_color: [f32; 4],
+    chunks_drawn: u32,
 }
 
 impl Renderer {
@@ -138,8 +151,7 @@ impl Renderer {
                 in_flight,
                 frame: 0,
                 pending_extent: None,
-                // Sky blue; replaced by the real sky once there is a world.
-                clear_color: [0.47, 0.71, 0.99, 1.0],
+                chunks_drawn: 0,
             })
         }
     }
@@ -160,6 +172,13 @@ impl Renderer {
     /// Removes the chunk mesh at `pos`, if present.
     pub fn remove_chunk(&mut self, pos: SectionPos) {
         self.chunks.remove_chunk(pos, self.frame);
+    }
+
+    pub fn stats(&self) -> RenderStats {
+        RenderStats {
+            chunks_resident: self.chunks.chunk_count(),
+            chunks_drawn: self.chunks_drawn,
+        }
     }
 
     /// Renders one frame and presents it.
@@ -212,7 +231,7 @@ impl Renderer {
 
             let clears = [
                 vk::ClearValue {
-                    color: vk::ClearColorValue { float32: self.clear_color },
+                    color: vk::ClearColorValue { float32: camera.sky_color },
                 },
                 vk::ClearValue {
                     depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
@@ -228,7 +247,9 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
 
-            self.chunks.record(device, cmd, camera.view_proj, camera.position);
+            self.chunks_drawn =
+                self.chunks
+                    .record(device, cmd, camera.view_proj, camera.position, camera.sun);
             if let Some(block) = camera.highlight {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);

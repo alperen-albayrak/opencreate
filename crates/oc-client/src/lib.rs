@@ -2,9 +2,10 @@
 
 mod camera;
 mod player;
+mod sky;
 mod streaming;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use glam::DVec3;
@@ -81,6 +82,46 @@ struct App {
     place_clicked: bool,
     mouse_captured: bool,
     last_frame: Instant,
+    /// Time of day in [0, 1); see `sky::sky_at` for the phase convention.
+    day_fraction: f64,
+    perf: PerfLog,
+}
+
+/// Aggregates frame times and logs a summary periodically (§11 budgets,
+/// until the in-game HUD exists).
+struct PerfLog {
+    window_start: Instant,
+    frames: u32,
+    worst_frame: Duration,
+}
+
+impl PerfLog {
+    const INTERVAL: Duration = Duration::from_secs(5);
+
+    fn new() -> Self {
+        Self {
+            window_start: Instant::now(),
+            frames: 0,
+            worst_frame: Duration::ZERO,
+        }
+    }
+
+    fn frame(&mut self, frame_time: Duration, renderer: &Renderer) {
+        self.frames += 1;
+        self.worst_frame = self.worst_frame.max(frame_time);
+        let elapsed = self.window_start.elapsed();
+        if elapsed >= Self::INTERVAL {
+            let stats = renderer.stats();
+            info!(
+                fps = (self.frames as f64 / elapsed.as_secs_f64()).round(),
+                worst_ms = format!("{:.1}", self.worst_frame.as_secs_f64() * 1e3),
+                chunks_drawn = stats.chunks_drawn,
+                chunks_resident = stats.chunks_resident,
+                "perf"
+            );
+            *self = Self::new();
+        }
+    }
 }
 
 impl App {
@@ -100,6 +141,9 @@ impl App {
             place_clicked: false,
             mouse_captured: false,
             last_frame: Instant::now(),
+            // Start mid-morning so the first impression is a lit world.
+            day_fraction: 0.15,
+            perf: PerfLog::new(),
         }
     }
 
@@ -215,9 +259,10 @@ impl App {
     }
 
     fn frame_with(&mut self, renderer: &mut Renderer) -> Result<()> {
-        let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f64().min(0.1);
-        self.last_frame = now;
+        let frame_start = Instant::now();
+        let dt = (frame_start - self.last_frame).as_secs_f64().min(0.1);
+        self.last_frame = frame_start;
+        self.day_fraction = (self.day_fraction + dt / sky::DAY_LENGTH_SECS).fract();
 
         self.player
             .update(self.streamer.world(), &self.input, self.camera.yaw, dt);
@@ -231,11 +276,16 @@ impl App {
         };
         let size = window.inner_size();
         let aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
+        let sky = sky::sky_at(self.day_fraction);
         renderer.draw(&FrameCamera {
             view_proj: self.camera.view_proj(aspect),
             position: self.camera.position,
             highlight: self.target().map(|hit| hit.block),
-        })
+            sun: sky.sun,
+            sky_color: sky.sky_color,
+        })?;
+        self.perf.frame(frame_start.elapsed(), renderer);
+        Ok(())
     }
 }
 

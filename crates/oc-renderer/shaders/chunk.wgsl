@@ -5,6 +5,8 @@
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
     mvp: mat4x4<f32>,
+    // xyz: direction toward the sun (normalized); w: ambient light level.
+    sun: vec4<f32>,
 }
 
 // `immediate` is WGSL/naga's name for Vulkan push constants.
@@ -34,15 +36,25 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
         vec2<f32>(0.0, 0.0),
         vec2<f32>(1.0, 0.0),
     );
-    // Cheap directional shading per face until real lighting lands:
+    // Sun-direction diffuse per face until real lighting lands (§4.7):
     // +Y, -Y, +Z, -Z, +X, -X
-    var face_shade = array<f32, 6>(1.0, 0.45, 0.8, 0.8, 0.6, 0.6);
+    var face_normal = array<vec3<f32>, 6>(
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(0.0, -1.0, 0.0),
+        vec3<f32>(0.0, 0.0, 1.0),
+        vec3<f32>(0.0, 0.0, -1.0),
+        vec3<f32>(1.0, 0.0, 0.0),
+        vec3<f32>(-1.0, 0.0, 0.0),
+    );
+
+    let ambient = pc.sun.w;
+    let diffuse = max(dot(face_normal[face], pc.sun.xyz), 0.0);
 
     var out: VsOut;
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
     out.uv = corner_uv[corner];
     out.layer = packed.y & 0xFFFFu;
-    out.shade = face_shade[face];
+    out.shade = ambient + (1.0 - ambient) * diffuse;
     return out;
 }
 

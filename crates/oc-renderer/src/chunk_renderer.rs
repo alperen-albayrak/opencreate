@@ -34,6 +34,15 @@ impl GpuBuffer {
     }
 }
 
+/// Push constants for the chunk pipeline; must match `chunk.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ChunkPush {
+    mvp: Mat4,
+    /// xyz: direction toward the sun; w: ambient light level.
+    sun: Vec4,
+}
+
 struct ChunkMeshGpu {
     vertex: GpuBuffer,
     index: GpuBuffer,
@@ -143,7 +152,7 @@ impl ChunkRenderer {
             // Pipeline.
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX)
-                .size(size_of::<Mat4>() as u32);
+                .size(size_of::<ChunkPush>() as u32);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(std::slice::from_ref(&descriptor_set_layout))
@@ -237,19 +246,22 @@ impl ChunkRenderer {
         }
     }
 
-    /// Records draw commands. Must be called inside a render pass with
-    /// dynamic viewport/scissor already set.
+    /// Records draw commands and returns how many chunks were drawn after
+    /// culling. Must be called inside a render pass with dynamic
+    /// viewport/scissor already set.
     pub unsafe fn record(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
         camera_pos: DVec3,
-    ) {
+        sun: Vec4,
+    ) -> u32 {
         unsafe {
             if self.chunks.is_empty() {
-                return;
+                return 0;
             }
+            let mut drawn = 0;
 
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_bind_descriptor_sets(
@@ -279,17 +291,26 @@ impl ChunkRenderer {
                 // Camera-relative rendering (§3): translation happens in f64
                 // on the CPU; the GPU only ever sees camera-relative f32.
                 let rel = (chunk.origin - camera_pos).as_vec3();
-                let mvp = view_proj * Mat4::from_translation(rel);
+                let push = ChunkPush {
+                    mvp: view_proj * Mat4::from_translation(rel),
+                    sun,
+                };
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
                     vk::ShaderStageFlags::VERTEX,
                     0,
-                    as_bytes(std::slice::from_ref(&mvp)),
+                    as_bytes(std::slice::from_ref(&push)),
                 );
                 device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+                drawn += 1;
             }
+            drawn
         }
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
     }
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
