@@ -4,6 +4,8 @@
 //! Palette compression replaces the backing storage later without changing
 //! this crate's API.
 
+pub mod physics;
+pub mod raycast;
 pub mod section;
 pub mod terrain;
 pub mod world;

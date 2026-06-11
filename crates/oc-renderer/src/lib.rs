@@ -8,6 +8,7 @@ mod chunk_renderer;
 mod context;
 mod depth;
 mod mesh;
+mod outline;
 mod swapchain;
 mod texture;
 
@@ -15,12 +16,13 @@ use anyhow::{Context as _, Result};
 use ash::vk;
 use glam::{DVec3, Mat4};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
-use oc_core::SectionPos;
+use oc_core::{BlockPos, SectionPos};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use chunk_renderer::ChunkRenderer;
 use context::VulkanContext;
 use depth::DepthBuffer;
+use outline::OutlineRenderer;
 use swapchain::Swapchain;
 
 pub use mesh::{ChunkMesh, mesh_section};
@@ -33,6 +35,8 @@ const FRAMES_IN_FLIGHT: usize = 2;
 pub struct FrameCamera {
     pub view_proj: Mat4,
     pub position: DVec3,
+    /// Block to draw the targeting outline around, if any.
+    pub highlight: Option<BlockPos>,
 }
 
 /// Owns the Vulkan device, swapchain and per-frame state, and draws frames.
@@ -44,6 +48,7 @@ pub struct Renderer {
     depth: DepthBuffer,
     framebuffers: Vec<vk::Framebuffer>,
     chunks: ChunkRenderer,
+    outline: OutlineRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     /// Signalled when the acquired image is ready to be rendered to. Per frame in flight.
@@ -100,6 +105,7 @@ impl Renderer {
             )?;
 
             let chunks = ChunkRenderer::new(&ctx, &mut allocator, render_pass, command_pool)?;
+            let outline = OutlineRenderer::new(&ctx, &mut allocator, render_pass)?;
 
             let image_available = (0..FRAMES_IN_FLIGHT)
                 .map(|_| ctx.device.create_semaphore(&Default::default(), None))
@@ -124,6 +130,7 @@ impl Renderer {
                 depth,
                 framebuffers,
                 chunks,
+                outline,
                 command_pool,
                 command_buffers,
                 image_available,
@@ -222,6 +229,10 @@ impl Renderer {
             );
 
             self.chunks.record(device, cmd, camera.view_proj, camera.position);
+            if let Some(block) = camera.highlight {
+                self.outline
+                    .record(device, cmd, camera.view_proj, camera.position, block);
+            }
 
             device.cmd_end_render_pass(cmd);
             device.end_command_buffer(cmd)?;
@@ -295,6 +306,7 @@ impl Drop for Renderer {
             let mut allocator = self.allocator.take().expect("allocator alive");
 
             self.chunks.destroy(device, &mut allocator);
+            self.outline.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
                 device.destroy_semaphore(sem, None);
             }

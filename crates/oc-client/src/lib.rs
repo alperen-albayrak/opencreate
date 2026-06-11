@@ -1,6 +1,7 @@
 //! The game client: window, input, and the frame loop (ARCHITECTURE.md §2).
 
 mod camera;
+mod player;
 mod streaming;
 
 use std::time::Instant;
@@ -16,12 +17,17 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
-use camera::{Camera, CameraInput};
+use camera::Camera;
 use oc_renderer::{FrameCamera, Renderer};
+use oc_world::raycast::{RayHit, raycast};
+use oc_world::{BlockId, blocks};
+use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
 
 /// Fixed world seed until there is a world-selection UI.
 const WORLD_SEED: u64 = 20260611;
+/// How far the player can reach to break/place blocks.
+const REACH: f64 = 6.0;
 
 /// Runs the client until the window is closed.
 pub fn run() -> Result<()> {
@@ -43,7 +49,13 @@ struct App {
     error: Option<anyhow::Error>,
     streamer: ChunkStreamer,
     camera: Camera,
-    input: CameraInput,
+    player: Player,
+    input: MoveInput,
+    /// Block placed on right click; selected with the 1/2/3 keys.
+    selected_block: BlockId,
+    /// Click edges captured by the event loop, consumed by the next frame.
+    break_clicked: bool,
+    place_clicked: bool,
     mouse_captured: bool,
     last_frame: Instant,
 }
@@ -51,23 +63,20 @@ struct App {
 impl App {
     fn new() -> Self {
         let streamer = ChunkStreamer::new(WORLD_SEED);
-        // Spawn hovering a bit above the terrain surface near the origin.
-        let spawn_y = streamer.world().surface_height(8, 8) as f64 + 24.0;
+        // Spawn standing just above the terrain surface near the origin.
+        let spawn_y = streamer.world().surface_height(8, 8) as f64 + 2.0;
+        let player = Player::new(DVec3::new(8.5, spawn_y, 8.5));
         Self {
             renderer: None,
             window: None,
             error: None,
             streamer,
-            camera: Camera::new(DVec3::new(8.5, spawn_y, 8.5)),
-            input: CameraInput {
-                forward: false,
-                backward: false,
-                left: false,
-                right: false,
-                up: false,
-                down: false,
-                fast: false,
-            },
+            camera: Camera::new(player.eye()),
+            player,
+            input: MoveInput::default(),
+            selected_block: blocks::STONE,
+            break_clicked: false,
+            place_clicked: false,
             mouse_captured: false,
             last_frame: Instant::now(),
         }
@@ -129,27 +138,81 @@ impl App {
             KeyCode::Space => self.input.up = pressed,
             KeyCode::ShiftLeft => self.input.down = pressed,
             KeyCode::ControlLeft => self.input.fast = pressed,
+            KeyCode::KeyF if pressed => {
+                self.player.flying = !self.player.flying;
+                info!(flying = self.player.flying, "movement mode toggled");
+            }
+            KeyCode::Digit1 if pressed => self.selected_block = blocks::STONE,
+            KeyCode::Digit2 if pressed => self.selected_block = blocks::DIRT,
+            KeyCode::Digit3 if pressed => self.selected_block = blocks::GRASS,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
         }
     }
 
+    /// The solid block the camera looks at, within reach.
+    fn target(&self) -> Option<RayHit> {
+        raycast(
+            self.streamer.world(),
+            self.camera.position,
+            self.camera.forward().as_dvec3(),
+            REACH,
+        )
+    }
+
+    fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
+        if std::mem::take(&mut self.break_clicked)
+            && let Some(hit) = self.target()
+            && self.streamer.world_mut().set_block(hit.block, BlockId::AIR)
+        {
+            self.streamer.remesh_after_edit(renderer, hit.block)?;
+        }
+        if std::mem::take(&mut self.place_clicked)
+            && let Some(hit) = self.target()
+            // normal == 0 means the camera is inside the block: nowhere to place.
+            && hit.normal != glam::IVec3::ZERO
+        {
+            let pos = hit.block + hit.normal;
+            let free = self.streamer.world().block(pos).is_air()
+                && !self.player.aabb().intersects_block(pos);
+            if free && self.streamer.world_mut().set_block(pos, self.selected_block) {
+                self.streamer.remesh_after_edit(renderer, pos)?;
+            }
+        }
+        Ok(())
+    }
+
     fn frame(&mut self) -> Result<()> {
+        // Take the renderer out so `self` stays borrowable for game logic.
+        let Some(mut renderer) = self.renderer.take() else {
+            return Ok(());
+        };
+        let result = self.frame_with(&mut renderer);
+        self.renderer = Some(renderer);
+        result
+    }
+
+    fn frame_with(&mut self, renderer: &mut Renderer) -> Result<()> {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
 
-        self.camera.advance(&self.input, dt);
+        self.player
+            .update(self.streamer.world(), &self.input, self.camera.yaw, dt);
+        self.camera.position = self.player.eye();
 
-        let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) else {
+        self.apply_block_edits(renderer)?;
+        self.streamer.update(renderer, self.camera.position)?;
+
+        let Some(window) = &self.window else {
             return Ok(());
         };
-        self.streamer.update(renderer, self.camera.position)?;
         let size = window.inner_size();
         let aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
         renderer.draw(&FrameCamera {
             view_proj: self.camera.view_proj(aspect),
             position: self.camera.position,
+            highlight: self.target().map(|hit| hit.block),
         })
     }
 }
@@ -178,9 +241,19 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button,
                 ..
-            } if !self.mouse_captured => self.set_mouse_captured(true),
+            } => {
+                if !self.mouse_captured {
+                    self.set_mouse_captured(true);
+                } else {
+                    match button {
+                        MouseButton::Left => self.break_clicked = true,
+                        MouseButton::Right => self.place_clicked = true,
+                        _ => {}
+                    }
+                }
+            }
             WindowEvent::Focused(false) => self.set_mouse_captured(false),
             WindowEvent::RedrawRequested => {
                 if let Err(err) = self.frame() {

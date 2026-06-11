@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use glam::IVec3;
-use oc_core::coords::{block_in_section, block_to_section};
+use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 
 use crate::terrain::{BOTTOM_SECTION_Y, TerrainGenerator};
@@ -117,6 +117,27 @@ impl World {
         self.columns.insert(chunk, span);
     }
 
+    /// Writes one block. Returns false (no-op) if the column isn't
+    /// generated. Creates the backing section and extends the column span
+    /// when building above/below existing content.
+    pub fn set_block(&mut self, pos: BlockPos, block: BlockId) -> bool {
+        let chunk = block_to_chunk(pos);
+        let Some(span) = self.columns.get_mut(&chunk) else {
+            return false;
+        };
+        let section_pos = block_to_section(pos);
+        if block.is_air() && !self.sections.contains_key(&section_pos) {
+            return true; // clearing air in an all-air section
+        }
+        span.min_section_y = span.min_section_y.min(section_pos.y);
+        span.max_section_y = span.max_section_y.max(section_pos.y);
+        self.sections
+            .entry(section_pos)
+            .or_insert_with(Section::empty)
+            .set(block_in_section(pos), block);
+        true
+    }
+
     pub fn unload_column(&mut self, chunk: ChunkPos) {
         let Some(span) = self.columns.remove(&chunk) else {
             return;
@@ -166,6 +187,26 @@ mod tests {
     }
 
     #[test]
+    fn set_block_extends_the_column_span() {
+        let mut world = World::new(99);
+        let chunk = ChunkPos::new(0, 0);
+        world.generate_column(chunk);
+
+        // Far above any generated terrain: needs a new section + wider span.
+        let high = IVec3::new(8, 500, 8);
+        assert!(world.set_block(high, blocks::STONE));
+        assert_eq!(world.block(high), blocks::STONE);
+        let high_section = IVec3::new(0, 500 >> 4, 0);
+        assert!(world.column_sections(chunk).contains(&high_section));
+
+        assert!(world.set_block(high, BlockId::AIR));
+        assert_eq!(world.block(high), BlockId::AIR);
+
+        // Ungenerated column: rejected.
+        assert!(!world.set_block(IVec3::new(1000, 0, 1000), blocks::STONE));
+    }
+
+    #[test]
     fn column_sections_cover_the_surface_band() {
         let mut world = World::new(7);
         let chunk = ChunkPos::new(-4, 9);
@@ -174,5 +215,37 @@ mod tests {
         let h = world.surface_height(chunk.x * 16 + 8, chunk.z * 16 + 8);
         let surface_section = IVec3::new(chunk.x, h.div_euclid(16), chunk.z);
         assert!(sections.contains(&surface_section), "surface section missing: {sections:?}");
+    }
+}
+
+#[cfg(test)]
+mod surface_invariant {
+    use super::*;
+    use crate::blocks;
+
+    /// The topmost non-air block of every generated column must be grass.
+    #[test]
+    fn topmost_block_is_always_grass() {
+        let mut world = World::new(20260611);
+        for cx in -3..3 {
+            for cz in -3..3 {
+                world.generate_column(ChunkPos::new(cx, cz));
+            }
+        }
+        for x in -40..40 {
+            for z in -40..40 {
+                let h = world.surface_height(x, z);
+                assert_eq!(
+                    world.block(IVec3::new(x, h, z)),
+                    blocks::GRASS,
+                    "no grass cap at ({x},{h},{z})"
+                );
+                assert_eq!(
+                    world.block(IVec3::new(x, h + 1, z)),
+                    BlockId::AIR,
+                    "block above surface at ({x},{z}) not air"
+                );
+            }
+        }
     }
 }

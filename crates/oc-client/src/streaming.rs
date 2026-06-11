@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use glam::{DVec3, IVec3};
-use oc_core::coords::block_to_chunk;
-use oc_core::{ChunkPos, SECTION_SIZE, SectionPos};
+use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
+use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_renderer::{Renderer, mesh_section};
 use oc_world::{BlockId, World};
 
@@ -42,6 +42,46 @@ impl ChunkStreamer {
 
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
+    /// Re-meshes the section containing an edited block, plus any neighbor
+    /// sections the edit borders on (their face culling may have changed).
+    pub fn remesh_after_edit(&mut self, renderer: &mut Renderer, block: BlockPos) -> Result<()> {
+        let section = block_to_section(block);
+        let local = block_in_section(block);
+        let mut affected = vec![section];
+        for axis in 0..3 {
+            let mut neighbor = section;
+            if local[axis] == 0 {
+                neighbor[axis] -= 1;
+            } else if local[axis] == SECTION_SIZE - 1 {
+                neighbor[axis] += 1;
+            } else {
+                continue;
+            }
+            affected.push(neighbor);
+        }
+
+        for pos in affected {
+            let column = ChunkPos::new(pos.x, pos.z);
+            // Only columns that are already meshed need an update; everything
+            // else gets meshed (or skipped) by the streaming pass.
+            if !self.meshed.contains_key(&column) {
+                continue;
+            }
+            let mesh = self.mesh_one(pos);
+            renderer.set_chunk(pos, &mesh)?;
+            let sections = self.meshed.get_mut(&column).expect("checked above");
+            if !sections.contains(&pos) {
+                // Placing into a previously all-air section.
+                sections.push(pos);
+            }
+        }
+        Ok(())
     }
 
     /// Runs one frame of streaming work around the camera.

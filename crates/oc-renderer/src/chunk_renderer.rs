@@ -24,7 +24,7 @@ pub struct GpuBuffer {
 }
 
 impl GpuBuffer {
-    unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
+    pub(crate) unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         unsafe {
             if let Some(allocation) = self.allocation.take() {
                 let _ = allocator.free(allocation);
@@ -308,11 +308,11 @@ impl ChunkRenderer {
     }
 }
 
-fn as_bytes<T: Copy>(slice: &[T]) -> &[u8] {
+pub(crate) fn as_bytes<T: Copy>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(slice.as_ptr().cast(), std::mem::size_of_val(slice)) }
 }
 
-unsafe fn create_filled_buffer(
+pub(crate) unsafe fn create_filled_buffer(
     ctx: &VulkanContext,
     allocator: &mut Allocator,
     usage: vk::BufferUsageFlags,
