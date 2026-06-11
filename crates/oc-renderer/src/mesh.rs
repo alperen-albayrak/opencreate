@@ -82,6 +82,11 @@ mod layers {
     pub const DIRT: u32 = 1;
     pub const STONE: u32 = 2;
     pub const GRASS_SIDE: u32 = 3;
+    pub const SAND: u32 = 4;
+    pub const WATER: u32 = 5;
+    pub const LOG_SIDE: u32 = 6;
+    pub const LOG_TOP: u32 = 7;
+    pub const LEAVES: u32 = 8;
 }
 
 fn face_texture(block: BlockId, face: usize) -> u32 {
@@ -92,6 +97,13 @@ fn face_texture(block: BlockId, face: usize) -> u32 {
             _ => layers::GRASS_SIDE,
         },
         blocks::DIRT => layers::DIRT,
+        blocks::SAND => layers::SAND,
+        blocks::WATER => layers::WATER,
+        blocks::LOG => match face {
+            0 | 1 => layers::LOG_TOP,
+            _ => layers::LOG_SIDE,
+        },
+        blocks::LEAVES => layers::LEAVES,
         _ => layers::STONE,
     }
 }
@@ -113,7 +125,10 @@ pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
                     continue;
                 }
                 for (face, normal) in FACE_NORMALS.iter().enumerate() {
-                    if !sample(pos + *normal).is_air() {
+                    let neighbor = sample(pos + *normal);
+                    // Opaque neighbors hide the face; water also hides its
+                    // own kind (no internal faces inside a water volume).
+                    if neighbor.is_opaque() || (!block.is_opaque() && neighbor == block) {
                         continue;
                     }
 
@@ -130,6 +145,13 @@ pub fn mesh_section(sample: impl Fn(IVec3) -> BlockId) -> ChunkMesh {
                         vertices.push(PackedVertex(w0, w1));
                     }
                     indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+                    if !block.is_opaque() {
+                        // Water surfaces are visible from both sides (e.g.
+                        // looking up at the surface from underwater).
+                        indices.extend_from_slice(&[
+                            base, base + 2, base + 1, base + 2, base + 3, base + 1,
+                        ]);
+                    }
                 }
             }
         }
@@ -193,5 +215,34 @@ mod tests {
             if inside || pos.y < 0 { blocks::STONE } else { BlockId::AIR }
         });
         assert_eq!(mesh.indices.len() / 6, 16 * 16 * 5);
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use glam::IVec3;
+
+    fn top_face_layer(block: BlockId) -> u32 {
+        let mesh = mesh_section(|pos: IVec3| {
+            if pos == IVec3::new(8, 8, 8) { block } else { BlockId::AIR }
+        });
+        // Find the +Y face (face bits 15..18 == 0) and return its layer.
+        mesh.vertices
+            .iter()
+            .find(|v| (v.0 >> 15) & 7 == 0)
+            .map(|v| v.1 & 0xFFFF)
+            .expect("top face present")
+    }
+
+    #[test]
+    fn face_layers_match_blocks() {
+        assert_eq!(top_face_layer(blocks::GRASS), layers::GRASS_TOP);
+        assert_eq!(top_face_layer(blocks::DIRT), layers::DIRT);
+        assert_eq!(top_face_layer(blocks::STONE), layers::STONE);
+        assert_eq!(top_face_layer(blocks::SAND), layers::SAND);
+        assert_eq!(top_face_layer(blocks::WATER), layers::WATER);
+        assert_eq!(top_face_layer(blocks::LOG), layers::LOG_TOP);
+        assert_eq!(top_face_layer(blocks::LEAVES), layers::LEAVES);
     }
 }

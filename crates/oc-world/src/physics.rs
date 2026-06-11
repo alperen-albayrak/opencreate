@@ -100,7 +100,7 @@ fn sweep_axis(world: &World, aabb: &Aabb, axis: usize, d: f64) -> f64 {
                 pos[axis] = v;
                 pos[a1] = c1;
                 pos[a2] = c2;
-                if !world.block(pos).is_air() {
+                if world.block(pos).is_solid() {
                     return true;
                 }
             }

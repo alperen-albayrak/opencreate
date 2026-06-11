@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use glam::IVec3;
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
-use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
+use oc_core::{BlockPos, ChunkPos, SECTION_SHIFT, SECTION_SIZE, SectionPos};
 
-use crate::terrain::{BOTTOM_SECTION_Y, TerrainGenerator};
+use crate::terrain::{BOTTOM_SECTION_Y, SEA_LEVEL, TerrainGenerator};
 use crate::{BlockId, Section};
 
 /// Vertical section range of a generated column, inclusive.
@@ -35,11 +35,37 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
     let base_x = chunk.x * SECTION_SIZE;
     let base_z = chunk.z * SECTION_SIZE;
     let mut heights = [[0i32; 16]; 16];
-    let mut max_height = i32::MIN;
+    let mut max_height = SEA_LEVEL; // water reaches sea level even offshore
     for (dz, row) in heights.iter_mut().enumerate() {
         for (dx, h) in row.iter_mut().enumerate() {
             *h = generator.surface_height(base_x + dx as i32, base_z + dz as i32);
             max_height = max_height.max(*h);
+        }
+    }
+
+    // Trees rooted in this column or a neighbor may reach into this column
+    // (the classic cross-chunk feature problem, solved by scanning the
+    // 3×3 neighborhood's deterministic origins). Trees never replace
+    // terrain, only fill air.
+    let mut overlay: HashMap<BlockPos, BlockId> = HashMap::new();
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let neighbor = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+            for origin in generator.tree_origins(neighbor) {
+                for (pos, block) in generator.tree_blocks(origin) {
+                    let in_column = pos.x >> SECTION_SHIFT == chunk.x
+                        && pos.z >> SECTION_SHIFT == chunk.z;
+                    if in_column {
+                        max_height = max_height.max(pos.y);
+                        // Logs win over leaves where adjacent trees touch.
+                        if block == crate::blocks::LOG {
+                            overlay.insert(pos, block);
+                        } else {
+                            overlay.entry(pos).or_insert(block);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -55,7 +81,14 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
         for (dz, row) in heights.iter().enumerate() {
             for (dx, &surface) in row.iter().enumerate() {
                 for dy in 0..SECTION_SIZE {
-                    let block = generator.block_at(surface, base_y + dy);
+                    let y = base_y + dy;
+                    let mut block = generator.block_at(surface, y);
+                    if block.is_air()
+                        && let Some(&tree) =
+                            overlay.get(&IVec3::new(base_x + dx as i32, y, base_z + dz as i32))
+                    {
+                        block = tree;
+                    }
                     if !block.is_air() {
                         section.set(IVec3::new(dx as i32, dy, dz as i32), block);
                         any = true;
@@ -195,12 +228,20 @@ mod tests {
         world.generate_column(chunk);
         assert!(world.is_generated(chunk));
 
+        let generator = *world.generator();
         for (dx, dz) in [(0, 0), (7, 11), (15, 15)] {
             let (x, z) = (chunk.x * 16 + dx, chunk.z * 16 + dz);
             let h = world.surface_height(x, z);
-            assert_eq!(world.block(IVec3::new(x, h, z)), blocks::GRASS);
-            assert_eq!(world.block(IVec3::new(x, h + 1, z)), BlockId::AIR);
-            assert_eq!(world.block(IVec3::new(x, h - 1, z)), blocks::DIRT);
+            assert_eq!(world.block(IVec3::new(x, h, z)), generator.block_at(h, h));
+            assert_eq!(world.block(IVec3::new(x, h - 1, z)), generator.block_at(h, h - 1));
+            // Above the surface: terrain rules, or part of a tree.
+            let above = world.block(IVec3::new(x, h + 1, z));
+            assert!(
+                above == generator.block_at(h, h + 1)
+                    || above == blocks::LOG
+                    || above == blocks::LEAVES,
+                "unexpected block above surface: {above:?}"
+            );
         }
     }
 
@@ -258,9 +299,11 @@ mod surface_invariant {
     use super::*;
     use crate::blocks;
 
-    /// The topmost non-air block of every generated column must be grass.
+    /// Every generated column's surface follows the biome rules: grass above
+    /// the beach band, sand at/below it; above the surface only air, water,
+    /// or tree blocks.
     #[test]
-    fn topmost_block_is_always_grass() {
+    fn surface_blocks_match_biome_rules() {
         let mut world = World::new(20260611);
         for cx in -3..3 {
             for cz in -3..3 {
@@ -270,16 +313,17 @@ mod surface_invariant {
         for x in -40..40 {
             for z in -40..40 {
                 let h = world.surface_height(x, z);
-                assert_eq!(
-                    world.block(IVec3::new(x, h, z)),
-                    blocks::GRASS,
-                    "no grass cap at ({x},{h},{z})"
-                );
-                assert_eq!(
-                    world.block(IVec3::new(x, h + 1, z)),
-                    BlockId::AIR,
-                    "block above surface at ({x},{z}) not air"
-                );
+                let surface = world.block(IVec3::new(x, h, z));
+                let expected = if h <= SEA_LEVEL + 1 { blocks::SAND } else { blocks::GRASS };
+                assert_eq!(surface, expected, "wrong surface at ({x},{h},{z})");
+
+                let above = world.block(IVec3::new(x, h + 1, z));
+                let above_ok = if h < SEA_LEVEL {
+                    above == blocks::WATER
+                } else {
+                    above == BlockId::AIR || above == blocks::LOG || above == blocks::LEAVES
+                };
+                assert!(above_ok, "unexpected {above:?} above surface at ({x},{z})");
             }
         }
     }

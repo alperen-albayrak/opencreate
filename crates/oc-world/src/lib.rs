@@ -23,9 +23,20 @@ impl BlockId {
     pub fn is_air(self) -> bool {
         self == Self::AIR
     }
+
+    /// Solid blocks collide and stop raycasts; water does neither.
+    pub fn is_solid(self) -> bool {
+        !self.is_air() && self != blocks::WATER
+    }
+
+    /// Opaque blocks fully cover adjacent faces in meshing.
+    pub fn is_opaque(self) -> bool {
+        !self.is_air() && self != blocks::WATER
+    }
 }
 
-/// Hardcoded test blocks until the data-driven registry (§3) exists.
+/// Hardcoded blocks until the data-driven registry (§3) exists. Properties
+/// live on [`BlockId`] methods for now.
 pub mod blocks {
     use super::BlockId;
 
@@ -33,4 +44,8 @@ pub mod blocks {
     pub const STONE: BlockId = BlockId(1);
     pub const DIRT: BlockId = BlockId(2);
     pub const GRASS: BlockId = BlockId(3);
+    pub const SAND: BlockId = BlockId(4);
+    pub const WATER: BlockId = BlockId(5);
+    pub const LOG: BlockId = BlockId(6);
+    pub const LEAVES: BlockId = BlockId(7);
 }

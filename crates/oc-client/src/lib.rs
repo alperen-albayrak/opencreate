@@ -29,6 +29,29 @@ const WORLD_SEED: u64 = 20260611;
 /// How far the player can reach to break/place blocks.
 const REACH: f64 = 6.0;
 
+/// Nearest dry land to the origin (outward ring search over the pure
+/// heightmap), standing just above the surface.
+fn find_spawn(world: &oc_world::World) -> DVec3 {
+    const STEP: i32 = 8;
+    for radius in 0..256 {
+        let r = radius * STEP;
+        for z in (-r..=r).step_by(STEP as usize) {
+            for x in (-r..=r).step_by(STEP as usize) {
+                // Ring only: skip the interior already searched.
+                if x.abs() != r && z.abs() != r {
+                    continue;
+                }
+                let h = world.surface_height(x, z);
+                if h > 1 {
+                    return DVec3::new(x as f64 + 0.5, h as f64 + 2.0, z as f64 + 0.5);
+                }
+            }
+        }
+    }
+    // No land within 2048 blocks: float above the ocean at the origin.
+    DVec3::new(0.5, 24.0, 0.5)
+}
+
 /// Runs the client until the window is closed.
 pub fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;
@@ -63,9 +86,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let streamer = ChunkStreamer::new(WORLD_SEED);
-        // Spawn standing just above the terrain surface near the origin.
-        let spawn_y = streamer.world().surface_height(8, 8) as f64 + 2.0;
-        let player = Player::new(DVec3::new(8.5, spawn_y, 8.5));
+        let player = Player::new(find_spawn(streamer.world()));
         Self {
             renderer: None,
             window: None,
@@ -173,7 +194,8 @@ impl App {
             && hit.normal != glam::IVec3::ZERO
         {
             let pos = hit.block + hit.normal;
-            let free = self.streamer.world().block(pos).is_air()
+            // Water is replaceable, like Minecraft.
+            let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos);
             if free && self.streamer.world_mut().set_block(pos, self.selected_block) {
                 self.streamer.remesh_after_edit(renderer, pos)?;

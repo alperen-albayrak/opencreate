@@ -23,7 +23,7 @@ pub fn raycast(world: &World, origin: DVec3, dir: DVec3, max_dist: f64) -> Optio
     }
 
     let mut voxel = origin.floor().as_ivec3();
-    if !world.block(voxel).is_air() {
+    if world.block(voxel).is_solid() {
         return Some(RayHit { block: voxel, normal: IVec3::ZERO });
     }
 
@@ -63,7 +63,7 @@ pub fn raycast(world: &World, origin: DVec3, dir: DVec3, max_dist: f64) -> Optio
         voxel[axis] += step[axis];
         t_max[axis] += t_delta[axis];
 
-        if !world.block(voxel).is_air() {
+        if world.block(voxel).is_solid() {
             let mut normal = IVec3::ZERO;
             normal[axis] = -step[axis];
             return Some(RayHit { block: voxel, normal });
