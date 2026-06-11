@@ -22,7 +22,7 @@ use oc_world::{BlockId, Section, World};
 use tracing::warn;
 
 /// Columns of meshed terrain kept around the camera (view distance).
-const VIEW_RADIUS: i32 = 8;
+const VIEW_RADIUS: i32 = 12;
 /// Extra generated ring so view-edge chunks cull faces against real
 /// neighbors instead of assumed air.
 const GEN_MARGIN: i32 = 1;
