@@ -80,12 +80,15 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
         let mut any = false;
         for (dz, row) in heights.iter().enumerate() {
             for (dx, &surface) in row.iter().enumerate() {
+                let (x, z) = (base_x + dx as i32, base_z + dz as i32);
                 for dy in 0..SECTION_SIZE {
                     let y = base_y + dy;
                     let mut block = generator.block_at(surface, y);
+                    if block.is_solid() && generator.is_cave(IVec3::new(x, y, z), surface) {
+                        block = BlockId::AIR;
+                    }
                     if block.is_air()
-                        && let Some(&tree) =
-                            overlay.get(&IVec3::new(base_x + dx as i32, y, base_z + dz as i32))
+                        && let Some(&tree) = overlay.get(&IVec3::new(x, y, z))
                     {
                         block = tree;
                     }
@@ -343,10 +346,17 @@ mod surface_invariant {
                 world.generate_column(ChunkPos::new(cx, cz));
             }
         }
+        let mut breaches = 0;
         for x in -40..40 {
             for z in -40..40 {
                 let h = world.surface_height(x, z);
                 let surface = world.block(IVec3::new(x, h, z));
+                if surface == BlockId::AIR {
+                    // A cave mouth carved through the heightmap surface —
+                    // legitimate, but should be rare.
+                    breaches += 1;
+                    continue;
+                }
                 let expected = if h <= SEA_LEVEL + 1 { blocks::SAND } else { blocks::GRASS };
                 assert_eq!(surface, expected, "wrong surface at ({x},{h},{z})");
 
@@ -359,5 +369,10 @@ mod surface_invariant {
                 assert!(above_ok, "unexpected {above:?} above surface at ({x},{z})");
             }
         }
+        let total = 80 * 80;
+        assert!(
+            breaches < total / 20,
+            "cave mouths should be rare: {breaches}/{total}"
+        );
     }
 }

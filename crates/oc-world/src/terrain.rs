@@ -76,6 +76,34 @@ impl TerrainGenerator {
         origins
     }
 
+    /// True where 3D noise carves a cave out of solid terrain ("cheese"
+    /// caves, §5.2). Pure function of (seed, position, surface).
+    pub fn is_cave(&self, pos: BlockPos, surface: i32) -> bool {
+        // Keep the world floor and shorelines intact: no holes in the
+        // bottom sections, none puncturing beach/ocean floors into the sea.
+        if pos.y <= (BOTTOM_SECTION_Y + 1) * SECTION_SIZE {
+            return false;
+        }
+        if surface <= BEACH_TOP && pos.y > surface - 6 {
+            return false;
+        }
+
+        let depth = surface - pos.y;
+        // Entrances exist but are rare: the carve threshold relaxes with
+        // depth (8+ blocks down caves open up properly).
+        let threshold = if depth < 8 { 0.52 } else { 0.34 };
+
+        // Vertically squashed noise -> caverns wider than they are tall.
+        let d = fbm3(
+            self.seed ^ 0xCAFE_0000_0000_0003,
+            pos.x as f64 / 36.0,
+            pos.y as f64 / 22.0,
+            pos.z as f64 / 36.0,
+            3,
+        );
+        d > threshold
+    }
+
     /// The blocks of one tree (trunk + canopy) rooted at `origin`.
     pub fn tree_blocks(&self, origin: BlockPos) -> Vec<(BlockPos, BlockId)> {
         let h = lattice_bits(self.seed ^ 0x7EE5_0000_0000_0002, origin.x, origin.z);
@@ -129,6 +157,46 @@ fn fbm(seed: u64, x: f64, z: f64, octaves: u32) -> f64 {
         frequency *= 2.0;
     }
     sum
+}
+
+/// 3D fractional Brownian motion over value noise, roughly in [-1, 1].
+fn fbm3(seed: u64, x: f64, y: f64, z: f64, octaves: u32) -> f64 {
+    let mut sum = 0.0;
+    let mut amplitude = 0.5;
+    let mut frequency = 1.0;
+    for octave in 0..octaves {
+        let octave_seed = seed.wrapping_add((octave as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        sum += value_noise_3d(octave_seed, x * frequency, y * frequency, z * frequency) * amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    sum
+}
+
+/// Trilinear value noise in [-1, 1] with smoothstep fade.
+fn value_noise_3d(seed: u64, x: f64, y: f64, z: f64) -> f64 {
+    let (x0, y0, z0) = (x.floor(), y.floor(), z.floor());
+    let (fx, fy, fz) = (fade(x - x0), fade(y - y0), fade(z - z0));
+    let (xi, yi, zi) = (x0 as i32, y0 as i32, z0 as i32);
+
+    let at = |dx: i32, dy: i32, dz: i32| lattice3(seed, xi + dx, yi + dy, zi + dz);
+    let bottom = lerp(
+        lerp(at(0, 0, 0), at(1, 0, 0), fx),
+        lerp(at(0, 0, 1), at(1, 0, 1), fx),
+        fz,
+    );
+    let top = lerp(
+        lerp(at(0, 1, 0), at(1, 1, 0), fx),
+        lerp(at(0, 1, 1), at(1, 1, 1), fx),
+        fz,
+    );
+    lerp(bottom, top, fy)
+}
+
+/// Deterministic 3D lattice value in [-1, 1].
+fn lattice3(seed: u64, x: i32, y: i32, z: i32) -> f64 {
+    let mixed = seed ^ (y as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    (lattice_bits(mixed, x, z) >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
 }
 
 /// Bilinear value noise in [-1, 1] with smoothstep fade.
@@ -218,6 +286,48 @@ mod tests {
         // Beach band: dry sand just above the water line.
         assert_eq!(g.block_at(1, 1), blocks::SAND);
         assert_eq!(g.block_at(2, 2), blocks::GRASS);
+    }
+
+    #[test]
+    fn caves_carve_a_sane_fraction_of_deep_stone() {
+        let g = TerrainGenerator::new(42);
+        let mut carved = 0;
+        let mut total = 0;
+        for x in (-200..200).step_by(7) {
+            for z in (-200..200).step_by(7) {
+                let surface = g.surface_height(x, z);
+                for y in (-40..surface - 10).step_by(5) {
+                    total += 1;
+                    if g.is_cave(IVec3::new(x, y, z), surface) {
+                        carved += 1;
+                    }
+                }
+            }
+        }
+        let percent = carved * 100 / total;
+        assert!(
+            (2..=30).contains(&percent),
+            "deep cave volume should be a modest fraction: {percent}% ({carved}/{total})"
+        );
+    }
+
+    #[test]
+    fn caves_never_breach_ocean_floors_or_world_bottom() {
+        let g = TerrainGenerator::new(42);
+        for x in -100..100 {
+            for z in (-100..100).step_by(3) {
+                let surface = g.surface_height(x, z);
+                if surface <= 1 {
+                    for y in (surface - 5)..=surface {
+                        assert!(
+                            !g.is_cave(IVec3::new(x, y, z), surface),
+                            "cave punctured the sea floor at ({x},{y},{z})"
+                        );
+                    }
+                }
+                assert!(!g.is_cave(IVec3::new(x, -48, z), surface), "hole in world floor");
+            }
+        }
     }
 
     #[test]
