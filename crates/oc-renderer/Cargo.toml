@@ -6,9 +6,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+oc-core.workspace = true
+oc-world.workspace = true
 ash.workspace = true
 ash-window.workspace = true
 raw-window-handle.workspace = true
+glam.workspace = true
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+naga = { version = "29", features = ["wgsl-in", "spv-out"] }

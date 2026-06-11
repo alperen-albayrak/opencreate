@@ -7,7 +7,9 @@ repository.workspace = true
 
 [dependencies]
 oc-renderer.workspace = true
+oc-world.workspace = true
 winit.workspace = true
 raw-window-handle.workspace = true
+glam.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
