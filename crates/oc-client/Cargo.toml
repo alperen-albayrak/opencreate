@@ -1,0 +1,13 @@
+[package]
+name = "oc-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+oc-renderer.workspace = true
+winit.workspace = true
+raw-window-handle.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

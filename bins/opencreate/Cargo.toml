@@ -1,0 +1,11 @@
+[package]
+name = "opencreate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+oc-client.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true

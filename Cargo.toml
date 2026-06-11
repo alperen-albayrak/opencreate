@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oc-core",
+    "crates/oc-renderer",
+    "crates/oc-client",
+    "bins/opencreate",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/alperen-albayrak/opencreate"
+
+[workspace.dependencies]
+oc-core = { path = "crates/oc-core" }
+oc-renderer = { path = "crates/oc-renderer" }
+oc-client = { path = "crates/oc-client" }
+
+ash = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+winit = "0.30"
+glam = "0.30"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+# Voxel meshing/worldgen are unusable at opt-level 0; keep deps optimized.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
