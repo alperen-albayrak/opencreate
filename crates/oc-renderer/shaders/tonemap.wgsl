@@ -3,6 +3,7 @@
 
 @group(0) @binding(0) var hdr_texture: texture_2d<f32>;
 @group(0) @binding(1) var hdr_sampler: sampler;
+@group(0) @binding(2) var bloom_texture: texture_2d<f32>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -33,7 +34,10 @@ fn aces(color: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let hdr = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
-    var color = aces(hdr);
+    // Bloom: thresholded highlight pyramid, gently added before the
+    // tonemap so the sun, glints and lamps glow.
+    let bloom = textureSample(bloom_texture, hdr_sampler, in.uv).rgb;
+    var color = aces(hdr + bloom * 0.35);
     // 1-LSB dither breaks up sky-gradient banding.
     let noise = fract(sin(dot(in.position.xy, vec2(12.9898, 78.233))) * 43758.5453);
     color += (noise - 0.5) / 255.0;

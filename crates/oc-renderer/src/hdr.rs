@@ -360,6 +360,11 @@ impl TonemapPass {
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             ];
             let descriptor_layout = device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -368,7 +373,7 @@ impl TonemapPass {
             let pool_sizes = [
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(1),
+                    .descriptor_count(2),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1),
@@ -412,14 +417,18 @@ impl TonemapPass {
         }
     }
 
-    /// Points the resolve at the (re)created HDR image. Call while the
-    /// device is idle (target recreation already requires that).
-    pub unsafe fn bind_input(&self, device: &ash::Device, view: vk::ImageView) {
+    /// Points the resolve at the (re)created HDR image and bloom pyramid.
+    /// Call while the device is idle (target recreation already requires
+    /// that).
+    pub unsafe fn bind_input(&self, device: &ash::Device, view: vk::ImageView, bloom: vk::ImageView) {
         unsafe {
             let image_info = [vk::DescriptorImageInfo::default()
                 .image_view(view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let sampler_info = [vk::DescriptorImageInfo::default().sampler(self.sampler)];
+            let bloom_info = [vk::DescriptorImageInfo::default()
+                .image_view(bloom)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(self.descriptor_set)
@@ -431,6 +440,11 @@ impl TonemapPass {
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(&sampler_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_set)
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&bloom_info),
             ];
             device.update_descriptor_sets(&writes, &[]);
         }

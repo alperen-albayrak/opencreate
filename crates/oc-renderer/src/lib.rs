@@ -4,6 +4,7 @@
 //! through the Vulkan-on-Metal translation layer. The renderer never sees game
 //! logic; it consumes meshes and transforms.
 
+mod bloom;
 mod chunk_renderer;
 mod clouds;
 mod context;
@@ -25,6 +26,7 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use oc_core::{BlockPos, SectionPos};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
+use bloom::BloomPass;
 use chunk_renderer::ChunkRenderer;
 use clouds::CloudLayer;
 use context::VulkanContext;
@@ -113,6 +115,7 @@ pub struct Renderer {
     outline: OutlineRenderer,
     sky: SkyPass,
     clouds_layer: CloudLayer,
+    bloom: BloomPass,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -172,8 +175,9 @@ impl Renderer {
             // World pipelines target the HDR pass; the tonemap resolve and
             // UI target the swapchain pass.
             let hdr = HdrTarget::new(&ctx, &mut allocator, swapchain.extent)?;
+            let bloom = BloomPass::new(&ctx, &mut allocator, hdr.view, hdr.extent)?;
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
-            tonemap.bind_input(&ctx.device, hdr.view);
+            tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
             let chunks = ChunkRenderer::new(
                 &ctx,
                 &mut allocator,
@@ -220,6 +224,7 @@ impl Renderer {
                 outline,
                 sky,
                 clouds_layer,
+                bloom,
                 ui,
                 command_pool,
                 command_buffers,
@@ -301,7 +306,9 @@ impl Renderer {
                 let extent = self.scaled_extent();
                 let allocator = self.allocator.as_mut().expect("allocator alive");
                 self.hdr.recreate(&self.ctx, allocator, extent)?;
-                self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+                self.bloom.recreate(&self.ctx, allocator, self.hdr.view, extent)?;
+                self.tonemap
+                    .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
                 self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
             }
             let device = &self.ctx.device;
@@ -418,6 +425,9 @@ impl Renderer {
             );
             device.cmd_end_render_pass(cmd);
 
+            // Pass 1c: the bloom pyramid (downsample + additive upsample).
+            self.bloom.record(device, cmd);
+
             // Pass 2: tonemap resolve + UI, at native resolution.
             let extent = self.swapchain.extent;
             device.cmd_set_viewport(
@@ -519,7 +529,9 @@ impl Renderer {
             let scaled = self.scaled_extent();
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.hdr.recreate(&self.ctx, allocator, scaled)?;
-            self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+            self.bloom.recreate(&self.ctx, allocator, self.hdr.view, scaled)?;
+            self.tonemap
+                .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
             self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
             self.scale_dirty = false;
             Ok(())
@@ -540,6 +552,7 @@ impl Drop for Renderer {
             self.sky.destroy(device);
             self.clouds_layer.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
+            self.bloom.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
