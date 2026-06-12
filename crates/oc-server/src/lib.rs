@@ -89,6 +89,9 @@ pub struct ServerConfig {
     /// Game mode (string id, e.g. `oc:creative`) for a freshly created
     /// world; saved worlds keep their own. None = the registry default.
     pub default_mode: Option<String>,
+    /// Cheats flag for a freshly created world; saved worlds keep their
+    /// own. None = off (like Minecraft's default).
+    pub cheats: Option<bool>,
 }
 
 /// Handle to the running server thread. Dropping it does NOT stop the
@@ -129,6 +132,8 @@ struct LevelMeta {
     pitch: f32,
     /// Stable string id, e.g. `oc:survival`.
     mode: String,
+    /// Whether commands/game-mode changes are allowed (§ cheats).
+    cheats: bool,
 }
 
 struct Server {
@@ -160,6 +165,8 @@ struct Server {
     last_autosave: Instant,
     /// Simulation frozen by the (singleplayer) pause menu.
     paused: bool,
+    /// The world's cheats flag (singleplayer: the owner's permission).
+    cheats: bool,
 }
 
 impl Server {
@@ -179,6 +186,14 @@ impl Server {
             .and_then(|l| registry.find_mode(&l.mode))
             .or_else(|| config.default_mode.as_deref().and_then(|m| registry.find_mode(m)))
             .unwrap_or_else(|| registry.default_mode());
+        // The world's cheats flag. In singleplayer the local player is
+        // the world owner, so this doubles as their permission; phase-4
+        // multiplayer keeps per-player admin flags (ops) instead.
+        let cheats = level
+            .as_ref()
+            .map(|l| l.cheats)
+            .or(config.cheats)
+            .unwrap_or(false);
         let (position, yaw, pitch, day_fraction) = match &level {
             Some(l) => {
                 info!("resumed world from {}", level_path.display());
@@ -189,7 +204,13 @@ impl Server {
         };
 
         transport
-            .send(ServerMessage::Welcome { seed, spawn: position, day_fraction, mode: mode.0 })
+            .send(ServerMessage::Welcome {
+                seed,
+                spawn: position,
+                day_fraction,
+                mode: mode.0,
+                cheats,
+            })
             .map_err(|_| anyhow::anyhow!("client disconnected before welcome"))?;
 
         let world_spawn = match &level {
@@ -226,6 +247,7 @@ impl Server {
             tick: 0,
             last_autosave: Instant::now(),
             paused: false,
+            cheats,
         })
     }
 
@@ -277,12 +299,27 @@ impl Server {
                 }
                 ClientMessage::SetBlock { pos, block } => self.handle_set_block(pos, block)?,
                 ClientMessage::SetGameMode(mode) => {
-                    // Singleplayer: always granted (permissions come with
-                    // multiplayer); unknown ids are ignored.
-                    if (mode as usize) < self.registry.mode_count() {
+                    // Changing mode is a cheat (§ permissions): the world
+                    // must allow cheats (singleplayer) / the player must
+                    // be an admin (multiplayer, phase 4). A rejection
+                    // re-asserts the current mode so the client snaps back.
+                    if !self.cheats {
+                        self.transport.send(ServerMessage::GameMode(self.mode.0))?;
+                    } else if (mode as usize) < self.registry.mode_count() {
                         self.mode = ModeId(mode);
                         info!(mode = self.registry.mode(self.mode).id, "game mode changed");
                         self.transport.send(ServerMessage::GameMode(mode))?;
+                    }
+                }
+                ClientMessage::SetCheats(cheats) => {
+                    // Only the world owner may toggle this. The embedded
+                    // server's single client IS the owner; a multiplayer
+                    // server checks admin rights here instead (and admins
+                    // grant/revoke other players, like Minecraft ops).
+                    if cheats != self.cheats {
+                        self.cheats = cheats;
+                        info!(cheats, "cheats toggled by the world owner");
+                        self.transport.send(ServerMessage::Cheats(cheats))?;
                     }
                 }
                 ClientMessage::Craft { recipe } => {
@@ -615,6 +652,7 @@ impl Server {
             yaw: self.player_yaw,
             pitch: self.player_pitch,
             mode: self.registry.mode(self.mode).id.clone(),
+            cheats: self.cheats,
         };
         if let Err(e) = save_level(&self.level_path, &meta) {
             warn!("saving level metadata: {e:#}");
@@ -707,12 +745,15 @@ fn load_level(path: &Path) -> Option<LevelMeta> {
         mode: get("mode")
             .map(|m| if m.contains(':') { m.clone() } else { format!("oc:{m}") })
             .unwrap_or_default(),
+        // Saves from before the flag existed had free mode switching:
+        // default them to cheats-on so nothing is taken away.
+        cheats: get("cheats").map_or(true, |c| c == "true"),
     })
 }
 
 fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
     let text = format!(
-        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\n",
+        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\ncheats={}\n",
         meta.seed,
         meta.day_fraction,
         meta.position.x,
@@ -721,6 +762,7 @@ fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
         meta.yaw,
         meta.pitch,
         meta.mode,
+        meta.cheats,
     );
     let tmp = path.with_extension("txt.tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
@@ -837,7 +879,7 @@ mod tests {
         let dir = temp_dir("session");
         let (mut client, server_end) = in_proc_channel();
         let handle = start(
-            ServerConfig { seed: 77, save_dir: dir.clone(), default_mode: None },
+            ServerConfig { seed: 77, save_dir: dir.clone(), default_mode: None, cheats: Some(true) },
             server_end,
         )
         .unwrap();
@@ -1005,7 +1047,7 @@ mod tests {
         // The edit and the player state survive a restart.
         let (mut client2, server_end2) = in_proc_channel();
         let handle2 = start(
-            ServerConfig { seed: 0, save_dir: dir.clone(), default_mode: None }, // seed comes from the save
+            ServerConfig { seed: 0, save_dir: dir.clone(), default_mode: None, cheats: None }, // seed comes from the save
             server_end2,
         )
         .unwrap();
@@ -1043,6 +1085,7 @@ mod tests {
                 seed: 5,
                 save_dir: dir.clone(),
                 default_mode: Some("oc:creative".into()),
+                cheats: None,
             },
             server_end,
         )
@@ -1059,7 +1102,7 @@ mod tests {
         // The saved world keeps creative even without the config hint.
         let (mut client2, server_end2) = in_proc_channel();
         let handle2 = start(
-            ServerConfig { seed: 5, save_dir: dir.clone(), default_mode: None },
+            ServerConfig { seed: 5, save_dir: dir.clone(), default_mode: None, cheats: None },
             server_end2,
         )
         .unwrap();
@@ -1068,6 +1111,67 @@ mod tests {
             _ => None,
         });
         assert_eq!(mode2, mode, "mode persists in level.txt");
+        drop(client2);
+        handle2.join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cheats_gate_game_mode_changes_and_persist() {
+        let dir = temp_dir("cheats");
+        let registry = Registry::load_default().unwrap();
+        let creative = registry.find_mode("oc:creative").unwrap().0;
+        let survival = registry.find_mode("oc:survival").unwrap().0;
+
+        let (mut client, server_end) = in_proc_channel();
+        let handle = start(
+            ServerConfig { seed: 9, save_dir: dir.clone(), default_mode: None, cheats: None },
+            server_end,
+        )
+        .unwrap();
+        let cheats = wait_for(&mut client, |m| match m {
+            ServerMessage::Welcome { cheats, .. } => Some(cheats),
+            _ => None,
+        });
+        assert!(!cheats, "new worlds default to cheats off");
+
+        // Without cheats a mode change is rejected: the server re-asserts
+        // the current mode so the client snaps back.
+        client.send(ClientMessage::SetGameMode(creative)).unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::GameMode(mode) => Some(mode),
+            _ => None,
+        });
+        assert_eq!(echoed, survival, "mode change rejected without cheats");
+
+        // The owner can flip cheats from the menu; then mode changes work.
+        client.send(ClientMessage::SetCheats(true)).unwrap();
+        let granted = wait_for(&mut client, |m| match m {
+            ServerMessage::Cheats(cheats) => Some(cheats),
+            _ => None,
+        });
+        assert!(granted);
+        client.send(ClientMessage::SetGameMode(creative)).unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::GameMode(mode) => Some(mode),
+            _ => None,
+        });
+        assert_eq!(echoed, creative, "mode change allowed with cheats");
+
+        // The toggled flag survives a restart (level.txt).
+        drop(client);
+        handle.join();
+        let (mut client2, server_end2) = in_proc_channel();
+        let handle2 = start(
+            ServerConfig { seed: 9, save_dir: dir.clone(), default_mode: None, cheats: None },
+            server_end2,
+        )
+        .unwrap();
+        let cheats2 = wait_for(&mut client2, |m| match m {
+            ServerMessage::Welcome { cheats, .. } => Some(cheats),
+            _ => None,
+        });
+        assert!(cheats2, "cheats flag persisted");
         drop(client2);
         handle2.join();
         let _ = std::fs::remove_dir_all(dir);

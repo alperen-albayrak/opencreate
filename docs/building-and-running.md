@@ -25,8 +25,10 @@ counts) every 5 s, plus server lifecycle messages.
 The game opens on a **title screen**: Singleplayer leads to the world
 list (each world is a folder under `./saves/`), where you can open,
 delete (click the delete tag twice), or **create** a world — the create
-screen takes a name, a seed (numeric or any string, blank = random) and
-the starting game mode. Menus, labels and languages are data:
+screen takes a name, a seed (numeric or any string, blank = random), the
+starting game mode, and a **cheats** toggle (off by default; with cheats
+off the game mode can't be changed in play, but the world owner can flip
+cheats from the pause menu). Menus, labels and languages are data:
 `data/menus.ron` + `data/lang/*.ron`.
 
 | Input | Action |

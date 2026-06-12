@@ -46,10 +46,14 @@ rendering (floating origin); textured chunk; fly camera.
 - Four game modes (survival/creative/adventure/spectator) as data
 - Passive creatures: server wander AI + interpolated client rendering
 - **Menus**: title screen, world select/create/delete (name + seed +
-  starting mode), pause menu with a game-mode picker; menus and all UI
-  text are data (`menus.ron`, `lang/en.ron`) so mods can extend both.
-  Pausing freezes the singleplayer simulation (`SetPaused`; multiplayer
-  servers will ignore it) and autosaves
+  starting mode + cheats), pause menu with a game-mode picker and a
+  cheats toggle; menus and all UI text are data (`menus.ron`,
+  `lang/en.ron`) so mods can extend both. Pausing freezes the
+  singleplayer simulation (`SetPaused`; multiplayer servers will ignore
+  it) and autosaves
+- **Cheats/permissions, MC-style**: mode changes require the world's
+  cheats flag (singleplayer) — one mechanism with multiplayer ops/admins
+  (phase 4); see [game-modes.md](gameplay/game-modes.md)
 
 ## Known issues
 

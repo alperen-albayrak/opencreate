@@ -263,20 +263,22 @@ pub enum WorldAction {
     Delete,
 }
 
-/// The create-world screen: name, seed, and world options (game mode —
-/// more options join this form as they exist).
+/// The create-world screen: name, seed, and world options (game mode,
+/// cheats — more options join this form as they exist).
 pub struct CreateScreen {
     pub name: TextField,
     pub seed: TextField,
     /// Registry index of the starting game mode.
     pub mode: usize,
+    /// Allow cheats (changing game mode etc.) in this world.
+    pub cheats: bool,
 }
 
 impl CreateScreen {
     pub fn new() -> Self {
         let mut name = TextField::new(24);
         name.focused = true; // start typing immediately
-        Self { name, seed: TextField::new(24), mode: 0 }
+        Self { name, seed: TextField::new(24), mode: 0, cheats: false }
     }
 
     /// Routes typed characters to whichever field is focused.
@@ -314,6 +316,12 @@ impl CreateScreen {
             "cycle_create_mode".into(),
             false,
         );
+        let cheats = registry.text(if self.cheats { "menu.on" } else { "menu.off" });
+        column.row(
+            format!("{}: {} >", registry.text("menu.cheats"), cheats),
+            "toggle_create_cheats".into(),
+            false,
+        );
         column.space();
         column.row(registry.text("worlds.create").to_owned(), "create".into(), false);
         column.row(registry.text("menu.back").to_owned(), "back_worlds".into(), false);
@@ -328,13 +336,18 @@ impl CreateScreen {
 }
 
 /// The in-game mode picker (reached from the pause menu): one row per
-/// registered game mode, so modded modes appear automatically.
-pub fn modes_view(registry: &Registry, current: u16, w: f32, h: f32) -> MenuView {
+/// registered game mode, so modded modes appear automatically. Without
+/// cheat permission the list is replaced by an explanation.
+pub fn modes_view(registry: &Registry, current: u16, cheats: bool, w: f32, h: f32) -> MenuView {
     let mut column = Column::new(w, h, 0.34);
-    for index in 0..registry.mode_count() {
-        let mode = registry.mode(oc_assets::ModeId(index as u16));
-        let marker = if index as u16 == current { " [x]" } else { "" };
-        column.row(format!("{}{marker}", mode.name), format!("mode:{index}"), false);
+    if cheats {
+        for index in 0..registry.mode_count() {
+            let mode = registry.mode(oc_assets::ModeId(index as u16));
+            let marker = if index as u16 == current { " [x]" } else { "" };
+            column.row(format!("{}{marker}", mode.name), format!("mode:{index}"), false);
+        }
+    } else {
+        column.row(registry.text("menu.cheats_required").to_owned(), String::new(), false);
     }
     column.space();
     column.row(registry.text("menu.back").to_owned(), "back_pause".into(), false);
@@ -461,18 +474,31 @@ mod tests {
         let view = screen.view(&registry, 1280.0, 720.0);
         assert!(view.buttons.iter().any(|b| b.action == "create"));
         assert!(view.buttons.iter().any(|b| b.action == "cycle_create_mode"));
+
+        // Cheats default off and toggle.
+        assert!(!screen.cheats);
+        assert!(view.buttons.iter().any(|b| b.action == "toggle_create_cheats"));
+        screen.cheats = !screen.cheats;
+        let view = screen.view(&registry, 1280.0, 720.0);
+        let row = view.buttons.iter().find(|b| b.action == "toggle_create_cheats").unwrap();
+        assert!(row.label.contains("On"), "toggled label: {}", row.label);
     }
 
     #[test]
     fn modes_view_lists_every_registered_mode() {
         let registry = registry();
-        let view = modes_view(&registry, 1, 1280.0, 720.0);
+        let view = modes_view(&registry, 1, true, 1280.0, 720.0);
         // One row per mode plus Back.
         assert_eq!(view.buttons.len(), registry.mode_count() + 1);
         assert!(view.buttons.iter().any(|b| b.action == "mode:0"));
         // The current mode is marked.
         let current = view.buttons.iter().find(|b| b.action == "mode:1").unwrap();
         assert!(current.label.contains("[x]"), "current mode marked: {}", current.label);
+
+        // Without cheats no mode is selectable, only Back.
+        let locked = modes_view(&registry, 1, false, 1280.0, 720.0);
+        assert!(locked.buttons.iter().all(|b| !b.action.starts_with("mode:")));
+        assert!(locked.buttons.iter().any(|b| b.action == "back_pause"));
     }
 
     #[test]

@@ -27,6 +27,27 @@ phase-5 WASM behavior API, not data.
 ## Authority & persistence
 
 The server owns the active mode, validates `SetGameMode` requests against
-the registry (free in singleplayer; permission-checked in multiplayer
-later), enforces every flag server-side, and persists the **string id** in
-`level.txt`. The client adapts controls and UI from the same shared flags.
+the registry, enforces every flag server-side, and persists the **string
+id** in `level.txt`. The client adapts controls and UI from the same
+shared flags.
+
+## Cheats & permissions (Minecraft's model)
+
+Changing game mode is a **cheat**. Worlds carry a cheats flag, chosen at
+creation (default off) and persisted in `level.txt`:
+
+- **Cheats off** — `SetGameMode` is rejected (the server re-asserts the
+  current mode, so the G key and the mode picker snap back). The pause
+  menu's mode picker explains instead of listing modes.
+- **Cheats on** — mode changes are free (G key cycles, the pause menu
+  picks directly).
+- The **world owner can always re-toggle cheats** from the pause menu —
+  in singleplayer the local player is the owner.
+
+This is the same concept as Minecraft's permissions: singleplayer's
+"allow cheats" flag and multiplayer's **ops** are one mechanism — "may
+this player run commands". Phase 4 multiplayer keeps a per-player admin
+list instead of the world-wide flag: the server owner/console ops the
+first admins, admins can op/deop other players (`Cheats(bool)` already
+carries the per-player grant on the wire), and non-admins play with
+whatever mode the world gives them.

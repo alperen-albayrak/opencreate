@@ -45,6 +45,11 @@ pub enum ClientMessage {
     /// singleplayer — the embedded server stops time, stats and creatures
     /// — but a multiplayer server ignores it (the world goes on).
     SetPaused(bool),
+    /// Toggle the world's cheats flag. Only the world owner may do this:
+    /// in singleplayer that's the local player; on a multiplayer server
+    /// (phase 4) only admins, and per-player permissions replace the
+    /// world-wide flag.
+    SetCheats(bool),
 }
 
 /// Everything the server may tell a client.
@@ -56,6 +61,10 @@ pub enum ServerMessage {
         day_fraction: f64,
         /// Per-load game-mode id (client and server share the registry).
         mode: u16,
+        /// Whether this player may use cheats (change game mode, and
+        /// later run commands). §6: in singleplayer this mirrors the
+        /// world's cheats flag; in multiplayer it's per-player (admin).
+        cheats: bool,
     },
     /// Terrain for a subscribed column.
     Column(GeneratedColumn),
@@ -63,6 +72,9 @@ pub enum ServerMessage {
     BlockChanged { pos: BlockPos, block: BlockId },
     /// Authoritative time of day, sent periodically.
     Time { day_fraction: f64 },
+    /// This player's cheat permission changed (cheats toggled, or an
+    /// admin granted/revoked rights in multiplayer).
+    Cheats(bool),
     /// Survival stats (0..=10 each), sent when they change.
     Stats {
         health: f32,

@@ -208,9 +208,9 @@ impl App {
     }
 
     /// Opens a world: starts its embedded server and enters the game.
-    fn start_session(&mut self, name: &str, seed: u64, mode: Option<String>) {
+    fn start_session(&mut self, name: &str, seed: u64, mode: Option<String>, cheats: Option<bool>) {
         info!(world = name, "loading world");
-        match Session::start(PathBuf::from(SAVES_ROOT).join(name), seed, mode) {
+        match Session::start(PathBuf::from(SAVES_ROOT).join(name), seed, mode, cheats) {
             Ok(session) => {
                 self.session = Some(session);
                 self.screen = Screen::InGame;
@@ -242,15 +242,24 @@ impl App {
                 .registry
                 .menu("oc:title")
                 .map(|def| MenuView::from_def(def, &self.registry, w, h, false)),
-            Screen::Paused => self
-                .registry
-                .menu("oc:pause")
-                .map(|def| MenuView::from_def(def, &self.registry, w, h, true)),
+            Screen::Paused => self.registry.menu("oc:pause").map(|def| {
+                let mut view = MenuView::from_def(def, &self.registry, w, h, true);
+                // State-dependent labels resolve at render time.
+                if let Some(button) =
+                    view.buttons.iter_mut().find(|b| b.action == "oc:toggle_cheats")
+                {
+                    let on = self.session.as_ref().is_some_and(|s| s.cheats);
+                    let state = self.registry.text(if on { "menu.on" } else { "menu.off" });
+                    button.label = format!("{}: {state}", button.label);
+                }
+                view
+            }),
             Screen::Worlds(worlds) => Some(worlds.view(&self.registry, w, h)),
             Screen::CreateWorld(create) => Some(create.view(&self.registry, w, h)),
             Screen::Modes => {
-                let current = self.session.as_ref().map_or(0, |s| s.mode.0);
-                Some(menu::modes_view(&self.registry, current, w, h))
+                let (current, cheats) =
+                    self.session.as_ref().map_or((0, false), |s| (s.mode.0, s.cheats));
+                Some(menu::modes_view(&self.registry, current, cheats, w, h))
             }
             Screen::InGame => None,
         }
@@ -279,6 +288,14 @@ impl App {
                 self.set_mouse_captured(true);
             }
             "oc:open_modes" => self.screen = Screen::Modes,
+            "oc:toggle_cheats" => {
+                // The server decides (we're the owner in singleplayer);
+                // its Cheats reply updates the label.
+                if let Some(session) = &mut self.session {
+                    let next = !session.cheats;
+                    session.queue(ClientMessage::SetCheats(next));
+                }
+            }
             "oc:quit_world" => self.quit_to_title(),
             "back" => self.screen = Screen::Title,
             "back_worlds" => self.screen = Screen::Worlds(WorldsScreen::new(list_worlds())),
@@ -289,6 +306,11 @@ impl App {
                     create.cycle_mode(&self.registry);
                 }
             }
+            "toggle_create_cheats" => {
+                if let Screen::CreateWorld(create) = &mut self.screen {
+                    create.cheats = !create.cheats;
+                }
+            }
             "create" => {
                 if let Screen::CreateWorld(create) = &self.screen {
                     let mut name = menu::sanitize_name(&create.name.value);
@@ -297,7 +319,8 @@ impl App {
                     }
                     let seed = menu::parse_seed(&create.seed.value, random_seed());
                     let mode = create.mode_id(&self.registry);
-                    self.start_session(&name, seed, Some(mode));
+                    let cheats = create.cheats;
+                    self.start_session(&name, seed, Some(mode), Some(cheats));
                 }
             }
             _ if action.starts_with("focus:") => {
@@ -318,7 +341,7 @@ impl App {
                 let (w, _) = self.window_size();
                 if let Screen::Worlds(worlds) = &mut self.screen {
                     match worlds.world_click(&world, self.mouse_pos.0, w) {
-                        WorldAction::Play => self.start_session(&world, random_seed(), None),
+                        WorldAction::Play => self.start_session(&world, random_seed(), None, None),
                         WorldAction::ArmDelete => {}
                         WorldAction::Delete => {
                             let path = PathBuf::from(SAVES_ROOT).join(&world);
@@ -406,8 +429,11 @@ impl App {
                 }
             }
             KeyCode::KeyG if pressed => {
-                let next = self.registry.next_mode(session.mode);
-                session.queue(ClientMessage::SetGameMode(next.0));
+                // Changing mode is a cheat; the server enforces this too.
+                if session.cheats {
+                    let next = self.registry.next_mode(session.mode);
+                    session.queue(ClientMessage::SetGameMode(next.0));
+                }
             }
             KeyCode::KeyC if pressed => session.craft_open = !session.craft_open,
             KeyCode::KeyE if pressed => session.eat(&self.registry),

@@ -10,6 +10,7 @@
     (id: "oc:pause", title: "menu.paused", entries: [
         (id: "oc:resume", label: "menu.resume", action: "oc:resume"),
         (id: "oc:mode", label: "menu.game_mode", action: "oc:open_modes"),
+        (id: "oc:cheats", label: "menu.cheats", action: "oc:toggle_cheats"),
         (id: "oc:quit_world", label: "menu.quit_to_title", action: "oc:quit_world"),
         (id: "oc:quit", label: "menu.quit_game", action: "oc:quit_app"),
     ]),

@@ -25,13 +25,16 @@ server treats disconnection as "save and shut down".
 | `SetBlock { pos, block }` | Break (`AIR`) or place; the server enforces mode + inventory rules |
 | `SubscribeColumn(ChunkPos)` / `UnsubscribeColumn` | Interest management: drives generation and column streaming |
 | `Craft { recipe }` | Craft by registry index (client and server share the registry) |
-| `SetGameMode(u16)` | Mode switch request (granted freely in singleplayer) |
+| `Eat { item }` | Consume a food item; server validates and resyncs Stats + Inventory |
+| `SetGameMode(u16)` | Mode switch request — a *cheat*: requires the world's cheats flag (singleplayer) / admin rights (multiplayer); rejected with a corrective `GameMode` echo |
+| `SetPaused(bool)` | Freeze/resume simulation; honored by the embedded singleplayer server, ignored by multiplayer servers |
+| `SetCheats(bool)` | Toggle the world's cheats flag; owner-only (singleplayer local player; multiplayer admins) |
 
 ## Server → Client
 
 | Message | Meaning |
 |---|---|
-| `Welcome { seed, spawn, day_fraction, mode }` | First message after connect |
+| `Welcome { seed, spawn, day_fraction, mode, cheats }` | First message after connect; `cheats` = this player's command permission |
 | `Column(GeneratedColumn)` | Terrain for a subscribed column |
 | `BlockChanged { pos, block }` | Authoritative block state — echo of accepted edits *and* the rollback for rejected ones |
 | `Time { day_fraction }` | 1 Hz authoritative clock |
@@ -39,7 +42,8 @@ server treats disconnection as "save and shut down".
 | `Respawn { position }` | Death: teleport home with full stats |
 | `Inventory { counts }` | Full (item id, count) list after any change |
 | `Entities(Vec<EntitySnapshot>)` | Full creature snapshot at 15 Hz; absence = despawned |
-| `GameMode(u16)` | Mode change confirmation |
+| `GameMode(u16)` | Mode change confirmation — also the *rejection* (re-asserts the current mode) |
+| `Cheats(bool)` | Cheat permission changed (owner toggled it; later: admin granted/revoked) |
 
 ## Identity on the wire
 

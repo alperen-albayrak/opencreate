@@ -45,6 +45,9 @@ pub struct Session {
     outbox: Vec<ClientMessage>,
     pub craft_open: bool,
     pub mode: ModeId,
+    /// May this player use cheats (change mode / later run commands)?
+    /// Server-authoritative; toggled from the pause menu by the owner.
+    pub cheats: bool,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
     pub stats: [f32; 4],
     /// Server-authoritative item counts, keyed by per-load item id.
@@ -55,21 +58,27 @@ pub struct Session {
 impl Session {
     /// Starts the embedded server for one world and waits for its Welcome.
     /// Offline play is still client-server (§1): the server runs on its
-    /// own thread, connected by the in-proc transport. `default_mode`
-    /// applies to freshly created worlds only.
-    pub fn start(save_dir: PathBuf, seed: u64, default_mode: Option<String>) -> Result<Self> {
+    /// own thread, connected by the in-proc transport. `default_mode` and
+    /// `cheats` apply to freshly created worlds only.
+    pub fn start(
+        save_dir: PathBuf,
+        seed: u64,
+        default_mode: Option<String>,
+        cheats: Option<bool>,
+    ) -> Result<Self> {
         let (mut transport, server_end) = in_proc_channel();
-        let server = oc_server::start(ServerConfig { seed, save_dir, default_mode }, server_end)?;
+        let config = ServerConfig { seed, save_dir, default_mode, cheats };
+        let server = oc_server::start(config, server_end)?;
 
         // The Welcome carries the seed, spawn and time of day.
         let deadline = Instant::now() + Duration::from_secs(5);
-        let (seed, spawn, day_fraction, mode) = loop {
+        let (seed, spawn, day_fraction, mode, cheats) = loop {
             match transport
                 .try_recv()
                 .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
             {
-                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode }) => {
-                    break (seed, spawn, day_fraction, ModeId(mode));
+                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode, cheats }) => {
+                    break (seed, spawn, day_fraction, ModeId(mode), cheats);
                 }
                 Some(_) => {}
                 None if Instant::now() > deadline => {
@@ -78,7 +87,7 @@ impl Session {
                 None => std::thread::sleep(Duration::from_millis(1)),
             }
         };
-        info!(seed, "connected to embedded server");
+        info!(seed, cheats, "connected to embedded server");
 
         let player = Player::new(spawn);
         Ok(Self {
@@ -95,6 +104,7 @@ impl Session {
             outbox: Vec::new(),
             craft_open: false,
             mode,
+            cheats,
             stats: [10.0; 4],
             inventory: std::collections::HashMap::new(),
             entities: EntityMirror::default(),
@@ -233,6 +243,10 @@ impl Session {
                     self.streamer.apply_block_change(renderer, pos, block)?;
                 }
                 Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
+                Some(ServerMessage::Cheats(cheats)) => {
+                    info!(cheats, "cheat permission changed");
+                    self.cheats = cheats;
+                }
                 Some(ServerMessage::Stats { health, hunger, stamina, oxygen }) => {
                     self.stats = [health, hunger, stamina, oxygen];
                 }
