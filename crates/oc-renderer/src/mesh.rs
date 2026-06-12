@@ -9,8 +9,9 @@ use oc_core::SECTION_SIZE;
 use oc_world::{BlockId, blocks};
 
 /// One packed vertex, 8 bytes (decoded in `chunk.wgsl`):
-///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4
-///     (corner positions 0..=16; su/sv = quad extent along the UV axes)
+///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
+///     (corner positions 0..=16; su/sv = quad extent along the UV axes;
+///      ao = 0 darkest .. 3 open, per vertex)
 ///   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -161,6 +162,30 @@ struct FaceKey {
     /// Water face whose top edge is the open surface (no water above):
     /// the water shader drops those vertices to 14/16 block height.
     surface_top: bool,
+    /// Per-corner ambient occlusion (0 darkest .. 3 open), indexed by
+    /// `(offv << 1) | offu` in the face's UV plane. Cells merge only on
+    /// identical AO, and only along an axis the AO is constant over, so
+    /// merged interpolation matches the per-cell result exactly.
+    ao: [u8; 4],
+}
+
+/// Ambient occlusion for one corner of a face: counts opaque blocks
+/// around the corner in the layer the face looks into (the classic
+/// side1/side2/corner rule — a fully walled corner is darkest even if
+/// the diagonal is open).
+fn corner_ao(
+    sample: &impl Fn(IVec3) -> BlockId,
+    front: IVec3,
+    du: IVec3,
+    dv: IVec3,
+) -> u8 {
+    let side1 = sample(front + du).is_opaque();
+    let side2 = sample(front + dv).is_opaque();
+    if side1 && side2 {
+        return 0;
+    }
+    let corner = sample(front + du + dv).is_opaque();
+    3 - (side1 as u8 + side2 as u8 + corner as u8)
 }
 
 /// True when a face of `block` against `neighbor` is visible.
@@ -205,6 +230,25 @@ pub fn mesh_section(
                     let block_ref = &block;
                     let neighbor = sample(pos + *normal);
                     let is_water = !block.is_opaque();
+                    // AO only shades solid faces; water stays uniform.
+                    let ao = if is_water {
+                        [3; 4]
+                    } else {
+                        let front = pos + *normal;
+                        let dir = |ax: usize, off: i32| {
+                            let mut d = IVec3::ZERO;
+                            d[ax] = if off == 0 { -1 } else { 1 };
+                            d
+                        };
+                        let (un, up) = (dir(uax, 0), dir(uax, 1));
+                        let (vn, vp) = (dir(vax, 0), dir(vax, 1));
+                        [
+                            corner_ao(&sample, front, un, vn),
+                            corner_ao(&sample, front, up, vn),
+                            corner_ao(&sample, front, un, vp),
+                            corner_ao(&sample, front, up, vp),
+                        ]
+                    };
                     mask[v as usize][u as usize] = Some(FaceKey {
                         layer: face_texture(block, face),
                         // Faces are lit by the voxel they face into.
@@ -217,20 +261,26 @@ pub fn mesh_section(
                         surface_top: is_water
                             && (face == 0
                                 || (face >= 2 && sample(pos + IVec3::Y) != *block_ref)),
+                        ao,
                     });
                 }
             }
 
             // Greedy sweep: grow each unvisited cell right (u), then up (v).
+            // A quad may only grow along an axis its AO is constant over;
+            // otherwise the stretched corner interpolation would diverge
+            // from the per-cell gradient.
             for v0 in 0..n {
                 for u0 in 0..n {
                     let Some(key) = mask[v0][u0] else { continue };
+                    let ao_const_u = key.ao[0] == key.ao[1] && key.ao[2] == key.ao[3];
+                    let ao_const_v = key.ao[0] == key.ao[2] && key.ao[1] == key.ao[3];
                     let mut su = 1;
-                    while u0 + su < n && mask[v0][u0 + su] == Some(key) {
+                    while ao_const_u && u0 + su < n && mask[v0][u0 + su] == Some(key) {
                         su += 1;
                     }
                     let mut sv = 1;
-                    'grow: while v0 + sv < n {
+                    'grow: while ao_const_v && v0 + sv < n {
                         for u in u0..u0 + su {
                             if mask[v0 + sv][u] != Some(key) {
                                 break 'grow;
@@ -289,7 +339,11 @@ fn emit_quad(
     key: FaceKey,
 ) {
     let base = vertices.len() as u32;
+    // Per-corner AO, in corner-index order (the key stores it by UV).
+    let mut ao = [3u8; 4];
     for (corner, offset) in FACE_CORNERS[face].iter().enumerate() {
+        let (offu, offv) = (offset[q.uax] as usize, offset[q.vax] as usize);
+        ao[corner] = key.ao[(offv << 1) | offu];
         // Scale the unit-cube corner offsets to the merged extent; the
         // face-axis component (0 or 1) is unchanged.
         let mut p = IVec3::ZERO;
@@ -302,14 +356,23 @@ fn emit_quad(
             | (face as u32) << 15
             | (corner as u32) << 18
             | (q.su as u32 - 1) << 20
-            | (q.sv as u32 - 1) << 24;
+            | (q.sv as u32 - 1) << 24
+            | (ao[corner] as u32) << 28;
         let w1 = key.layer
             | (key.light as u32) << 16
             | (key.underwater as u32) << 24
             | (key.surface_top as u32) << 25;
         vertices.push(PackedVertex(w0, w1));
     }
-    indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    // Corners 0/3 and 1/2 are the quad's diagonals (corner1 flips U,
+    // corner2 flips V relative to corner0). Split along the brighter
+    // diagonal so AO rounds smoothly instead of streaking (the classic
+    // anisotropy fix).
+    if ao[0] + ao[3] > ao[1] + ao[2] {
+        indices.extend_from_slice(&[base, base + 1, base + 3, base, base + 3, base + 2]);
+    } else {
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
     if !key.opaque {
         // Water surfaces are visible from both sides (e.g. looking up at
         // the surface from underwater).
@@ -488,6 +551,65 @@ mod tests {
         assert_eq!(layer_of(blocks::LAMP), layers::LAMP);
         assert_eq!(layer_of(blocks::SNOW), layers::SNOW);
         assert_eq!(layer_of(blocks::PLANKS), layers::PLANKS);
+    }
+
+    /// Decodes every top-face (face 0) vertex as (position, ao).
+    fn top_face_ao(mesh: &SectionMeshes) -> Vec<(IVec3, u32)> {
+        mesh.solid
+            .vertices
+            .iter()
+            .filter(|v| (v.0 >> 15) & 7 == 0)
+            .map(|v| {
+                let p = IVec3::new(
+                    (v.0 & 31) as i32,
+                    ((v.0 >> 5) & 31) as i32,
+                    ((v.0 >> 10) & 31) as i32,
+                );
+                (p, (v.0 >> 28) & 3)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn open_floor_has_fully_open_ao() {
+        let floor = |pos: IVec3| {
+            let inside =
+                pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
+            if inside && pos.y == 0 { blocks::STONE } else { BlockId::AIR }
+        };
+        let mesh = mesh_section(floor, |_| 0xF0);
+        assert!(
+            top_face_ao(&mesh).iter().all(|&(_, ao)| ao == 3),
+            "nothing occludes an open floor"
+        );
+    }
+
+    #[test]
+    fn block_on_floor_darkens_adjacent_corners() {
+        let world = |pos: IVec3| {
+            let inside =
+                pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
+            if inside && (pos.y == 0 || pos == IVec3::new(8, 1, 8)) {
+                blocks::STONE
+            } else {
+                BlockId::AIR
+            }
+        };
+        let mesh = mesh_section(world, |_| 0xF0);
+        let tops = top_face_ao(&mesh);
+        // Floor vertices at the block's feet (y=1 plane, touching x/z 8..9)
+        // are occluded; floor far away stays open.
+        let near = |p: IVec3| p.y == 1 && (8..=9).contains(&p.x) && (8..=9).contains(&p.z);
+        assert!(
+            tops.iter().any(|&(p, ao)| near(p) && ao < 3),
+            "floor corners against the block must darken: {tops:?}"
+        );
+        assert!(
+            tops.iter().all(|&(p, ao)| near(p) || p.y != 1 || ao == 3),
+            "open floor must stay undarkened"
+        );
+        // Coverage is unchanged by AO-driven merge splits.
+        assert_eq!(coverage(&mesh), reference(world, |_| 0xF0));
     }
 
     /// Floor at y=0 with a roof slab at y=8: the floor's +Y faces under the

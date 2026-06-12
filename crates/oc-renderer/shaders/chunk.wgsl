@@ -1,6 +1,7 @@
 // Chunk rendering: packed 8-byte vertices (ARCHITECTURE.md §4).
-//   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4
-//     (corner positions 0..=16; su/sv = greedy quad extent, tiles the UVs)
+//   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
+//     (corner positions 0..=16; su/sv = greedy quad extent, tiles the UVs;
+//      ao = per-vertex ambient occlusion, 0 darkest .. 3 open)
 //   word 1: texture layer:16 | light:8
 
 struct PushConstants {
@@ -74,11 +75,16 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let sky_term = sky_level * (ambient + (1.0 - ambient) * diffuse);
     let block_term = block_level * 0.95;
 
+    // Ambient occlusion: corners boxed in by neighbors darken, which is
+    // what makes block edges read as solid geometry.
+    let ao = f32((w0 >> 28u) & 3u);
+    let ao_mul = 0.55 + 0.15 * ao;
+
     var out: VsOut;
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
-    out.shade = max(sky_term, block_term);
+    out.shade = max(sky_term, block_term) * ao_mul;
     let world = pc.params.xyz + pos;
     if (face < 2u) {
         out.cpos = world.xz;

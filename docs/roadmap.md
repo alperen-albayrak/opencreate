@@ -74,7 +74,9 @@ hazy today only because white-on-white makes the pop-in fog obvious.
 **D. Lighting**
 Per-vertex ambient occlusion (corner darkening; AO joins the greedy
 merge key, diagonal flip against anisotropy) — the look that makes
-blocks read as solid. Then cascaded sun shadows: 3×2048 cascades, PCF,
+blocks read as solid. *Shipped:* classic side1/side2/corner AO baked
+per vertex (2 bits in word 0), merges only along AO-constant axes,
+brighter-diagonal split. Then cascaded sun shadows: 3×2048 cascades, PCF,
 texel snapping against shimmer, normal-offset bias tuned for blocky
 geometry, twilight fade, multiplied by voxel skylight so caves never
 leak. Shadow setting: off / normal / high.
