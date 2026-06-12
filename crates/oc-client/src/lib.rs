@@ -176,6 +176,9 @@ impl App {
 
     /// Pushes the current settings into the live session and the camera.
     fn apply_settings(&mut self) {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_resolution_scale(self.settings.resolution_scale);
+        }
         if let Some(session) = &mut self.session {
             session.camera.fov_y = self.settings.fov.to_radians();
             session.camera.sensitivity = self.settings.mouse_sensitivity;
@@ -237,6 +240,7 @@ impl App {
         info!("renderer initialized");
         self.window = Some(window);
         self.renderer = Some(renderer);
+        self.apply_settings(); // resolution scale etc. from settings.ron
         self.last_frame = Instant::now();
         Ok(())
     }

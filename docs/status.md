@@ -58,6 +58,10 @@ rendering (floating origin); textured chunk; fly camera.
   and UI size as sliders (value shown right, live apply); all UI is
   DPI-aware (display scale × UI-size setting) for 4K monitors/TVs.
   Worlds start behind an async loading screen
+- **Graphics stage A (HDR foundation)**: the world renders into an
+  offscreen HDR target (B10G11R11) resolved by an ACES tonemap pass;
+  resolution scale (0.5-2.0, UI stays native) and a max-FPS cap live in
+  the new Graphics settings tab — see the graphics roadmap
 
 ## Known issues
 

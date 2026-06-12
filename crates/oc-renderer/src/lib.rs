@@ -8,6 +8,7 @@ mod chunk_renderer;
 mod context;
 mod depth;
 mod entity;
+mod hdr;
 mod mesh;
 mod font;
 mod outline;
@@ -26,6 +27,7 @@ use chunk_renderer::ChunkRenderer;
 use context::VulkanContext;
 use depth::DepthBuffer;
 use entity::EntityRenderer;
+use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
 use swapchain::Swapchain;
 use ui::UiRenderer;
@@ -78,6 +80,12 @@ pub struct Renderer {
     render_pass: vk::RenderPass,
     depth: DepthBuffer,
     framebuffers: Vec<vk::Framebuffer>,
+    /// Offscreen HDR world target (stage A2); the world pass renders here.
+    hdr: HdrTarget,
+    tonemap: TonemapPass,
+    /// World render resolution as a fraction of the window.
+    resolution_scale: f32,
+    scale_dirty: bool,
     chunks: ChunkRenderer,
     entity: EntityRenderer,
     outline: OutlineRenderer,
@@ -137,9 +145,15 @@ impl Renderer {
                     .command_buffer_count(FRAMES_IN_FLIGHT as u32),
             )?;
 
-            let chunks = ChunkRenderer::new(&ctx, &mut allocator, render_pass, command_pool)?;
-            let entity = EntityRenderer::new(&ctx, &mut allocator, render_pass)?;
-            let outline = OutlineRenderer::new(&ctx, &mut allocator, render_pass)?;
+            // World pipelines target the HDR pass; the tonemap resolve and
+            // UI target the swapchain pass.
+            let hdr = HdrTarget::new(&ctx, &mut allocator, swapchain.extent)?;
+            let tonemap = TonemapPass::new(&ctx, render_pass)?;
+            tonemap.bind_input(&ctx.device, hdr.view);
+            let chunks =
+                ChunkRenderer::new(&ctx, &mut allocator, hdr.render_pass, command_pool)?;
+            let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
+            let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
@@ -165,6 +179,10 @@ impl Renderer {
                 render_pass,
                 depth,
                 framebuffers,
+                hdr,
+                tonemap,
+                resolution_scale: 1.0,
+                scale_dirty: false,
                 chunks,
                 entity,
                 outline,
@@ -183,6 +201,23 @@ impl Renderer {
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.pending_extent = Some(vk::Extent2D { width, height });
+    }
+
+    /// Sets the world render scale (UI stays native); applies next frame.
+    pub fn set_resolution_scale(&mut self, scale: f32) {
+        let scale = scale.clamp(0.25, 2.0);
+        if (scale - self.resolution_scale).abs() > 1e-3 {
+            self.resolution_scale = scale;
+            self.scale_dirty = true;
+        }
+    }
+
+    /// The HDR target extent for the current window size and scale.
+    fn scaled_extent(&self) -> vk::Extent2D {
+        vk::Extent2D {
+            width: ((self.swapchain.extent.width as f32 * self.resolution_scale) as u32).max(1),
+            height: ((self.swapchain.extent.height as f32 * self.resolution_scale) as u32).max(1),
+        }
     }
 
     /// Uploads a section mesh at `pos`, replacing any previous one there.
@@ -226,6 +261,14 @@ impl Renderer {
             if self.pending_extent.is_some() {
                 self.recreate_swapchain()?;
             }
+            if self.scale_dirty {
+                self.scale_dirty = false;
+                self.ctx.device.device_wait_idle()?;
+                let extent = self.scaled_extent();
+                let allocator = self.allocator.as_mut().expect("allocator alive");
+                self.hdr.recreate(&self.ctx, allocator, extent)?;
+                self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+            }
             let device = &self.ctx.device;
 
             let acquire_sem = self.image_available[slot];
@@ -248,17 +291,17 @@ impl Renderer {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            let extent = self.swapchain.extent;
+            // Pass 1: the world, into the HDR target at the render scale.
+            let world_extent = self.hdr.extent;
             device.cmd_set_viewport(
                 cmd,
                 0,
                 &[vk::Viewport::default()
-                    .width(extent.width as f32)
-                    .height(extent.height as f32)
+                    .width(world_extent.width as f32)
+                    .height(world_extent.height as f32)
                     .max_depth(1.0)],
             );
-            device.cmd_set_scissor(cmd, 0, &[extent.into()]);
-
+            device.cmd_set_scissor(cmd, 0, &[world_extent.into()]);
             let clears = [
                 vk::ClearValue {
                     color: vk::ClearColorValue { float32: camera.sky_color },
@@ -270,13 +313,12 @@ impl Renderer {
             device.cmd_begin_render_pass(
                 cmd,
                 &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.render_pass)
-                    .framebuffer(self.framebuffers[image_index as usize])
-                    .render_area(extent.into())
+                    .render_pass(self.hdr.render_pass)
+                    .framebuffer(self.hdr.framebuffer)
+                    .render_area(world_extent.into())
                     .clear_values(&clears),
                 vk::SubpassContents::INLINE,
             );
-
             self.chunks_drawn =
                 self.chunks
                     .record(device, cmd, camera.view_proj, camera.position, camera.sun);
@@ -286,6 +328,29 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
+            device.cmd_end_render_pass(cmd);
+
+            // Pass 2: tonemap resolve + UI, at native resolution.
+            let extent = self.swapchain.extent;
+            device.cmd_set_viewport(
+                cmd,
+                0,
+                &[vk::Viewport::default()
+                    .width(extent.width as f32)
+                    .height(extent.height as f32)
+                    .max_depth(1.0)],
+            );
+            device.cmd_set_scissor(cmd, 0, &[extent.into()]);
+            device.cmd_begin_render_pass(
+                cmd,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.render_pass)
+                    .framebuffer(self.framebuffers[image_index as usize])
+                    .render_area(extent.into())
+                    .clear_values(&clears),
+                vk::SubpassContents::INLINE,
+            );
+            self.tonemap.record(device, cmd);
             if !camera.hud.is_empty() || !camera.ui_quads.is_empty() || !camera.ui_texts.is_empty()
             {
                 let mut texts = Vec::with_capacity(camera.ui_texts.len() + 1);
@@ -362,6 +427,12 @@ impl Renderer {
             self.depth = DepthBuffer::new(&self.ctx, allocator, self.swapchain.extent)?;
             self.framebuffers =
                 create_framebuffers(device, self.render_pass, &self.swapchain, &self.depth)?;
+            // The world target tracks the window times the render scale.
+            let scaled = self.scaled_extent();
+            let allocator = self.allocator.as_mut().expect("allocator alive");
+            self.hdr.recreate(&self.ctx, allocator, scaled)?;
+            self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+            self.scale_dirty = false;
             Ok(())
         }
     }
@@ -378,6 +449,8 @@ impl Drop for Renderer {
             self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
+            self.tonemap.destroy(device);
+            self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
                 device.destroy_semaphore(sem, None);
             }
