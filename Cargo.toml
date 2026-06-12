@@ -4,6 +4,7 @@ members = [
     "crates/oc-core",
     "crates/oc-world",
     "crates/oc-protocol",
+    "crates/oc-server",
     "crates/oc-renderer",
     "crates/oc-client",
     "bins/opencreate",
@@ -19,6 +20,7 @@ repository = "https://github.com/alperen-albayrak/opencreate"
 oc-core = { path = "crates/oc-core" }
 oc-world = { path = "crates/oc-world" }
 oc-protocol = { path = "crates/oc-protocol" }
+oc-server = { path = "crates/oc-server" }
 oc-renderer = { path = "crates/oc-renderer" }
 oc-client = { path = "crates/oc-client" }
 

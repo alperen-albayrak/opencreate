@@ -24,6 +24,7 @@ pub struct ColumnSpan {
 /// Freshly generated terrain for one column, before it joins a `World`.
 /// Produced by [`generate_column_data`], which is a pure function of
 /// (generator, position) and safe to run on worker threads.
+#[derive(Clone)]
 pub struct GeneratedColumn {
     pub chunk: ChunkPos,
     pub span: ColumnSpan,

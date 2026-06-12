@@ -1,0 +1,15 @@
+[package]
+name = "oc-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+oc-core.workspace = true
+oc-world.workspace = true
+oc-protocol.workspace = true
+glam.workspace = true
+rayon.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

@@ -1095,6 +1095,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oc-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam",
+ "oc-core",
+ "oc-protocol",
+ "oc-world",
+ "rayon",
+ "tracing",
+]
+
+[[package]]
 name = "oc-world"
 version = "0.1.0"
 dependencies = [
