@@ -66,7 +66,9 @@ dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
 rotating with the day. *Later polish:* per-direction fog color,
-per-cloud dusk tinting, sidereal drift. **Far terrain LOD** *(shipped, v2 — blocky)*:
+per-cloud dusk tinting, sidereal drift; cloud shadows (VV has them,
+players ask for a toggle — if ever added, OFF-able from day one;
+cheap analytically since the cloud pattern is a pure function). **Far terrain LOD** *(shipped, v2 — blocky)*:
 a colored ring generated from the seed on a worker thread (256-block
 tiles), built the way Minecraft's LOD mods (Voxy, Distant Horizons —
 approach studied, no code) keep distance blocky: 4-block cells render
