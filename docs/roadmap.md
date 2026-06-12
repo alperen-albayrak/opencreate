@@ -85,7 +85,9 @@ leak. Shadow setting: off / normal / high.
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,
 dazzling exits), AA options (off / FXAA / TAA + sharpen). *Shipped:*
 dual-Kawase bloom pyramid (half-res, up to 6 levels, soft-knee
-threshold at HDR 1.0, +0.35 mix before ACES). Ultra tier:
+threshold at HDR 1.0, +0.35 mix before ACES); auto-exposure (16x16
+log-luminance grid, CPU readback two frames later, geometric mean,
+eased at 1.8/s, clamped 0.55-2.4). Ultra tier:
 SSR water, volumetric clouds, god rays, SSAO, per-biome color grading.
 PBR texture channels (normal/roughness/emissive per texture) join with
 texture packs in §7.5.

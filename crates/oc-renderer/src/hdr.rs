@@ -400,9 +400,13 @@ impl TonemapPass {
                 None,
             )?;
 
+            let push_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .size(16);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&descriptor_layout)),
+                    .set_layouts(std::slice::from_ref(&descriptor_layout))
+                    .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
             let pipeline = create_pipeline(device, swapchain_pass, pipeline_layout)?;
@@ -452,7 +456,7 @@ impl TonemapPass {
 
     /// Records the fullscreen resolve. Must run inside the swapchain pass
     /// with viewport/scissor set to the native extent.
-    pub unsafe fn record(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
+    pub unsafe fn record(&self, device: &ash::Device, cmd: vk::CommandBuffer, exposure: f32) {
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_bind_descriptor_sets(
@@ -462,6 +466,14 @@ impl TonemapPass {
                 0,
                 &[self.descriptor_set],
                 &[],
+            );
+            let push = [exposure, 0.0, 0.0, 0.0];
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                crate::chunk_renderer::as_bytes(&push),
             );
             device.cmd_draw(cmd, 3, 1, 0, 0);
         }

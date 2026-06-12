@@ -5,6 +5,13 @@
 @group(0) @binding(1) var hdr_sampler: sampler;
 @group(0) @binding(2) var bloom_texture: texture_2d<f32>;
 
+struct PushConstants {
+    // x: auto-exposure multiplier; yzw: unused.
+    params: vec4<f32>,
+}
+
+var<immediate> pc: PushConstants;
+
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -37,7 +44,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Bloom: thresholded highlight pyramid, gently added before the
     // tonemap so the sun, glints and lamps glow.
     let bloom = textureSample(bloom_texture, hdr_sampler, in.uv).rgb;
-    var color = aces(hdr + bloom * 0.35);
+    // Auto-exposure scales the whole frame before the tonemap: the eye
+    // opens up in caves and at night, stops down against bright snow.
+    var color = aces((hdr + bloom * 0.35) * pc.params.x);
     // 1-LSB dither breaks up sky-gradient banding.
     let noise = fract(sin(dot(in.position.xy, vec2(12.9898, 78.233))) * 43758.5453);
     color += (noise - 0.5) / 255.0;

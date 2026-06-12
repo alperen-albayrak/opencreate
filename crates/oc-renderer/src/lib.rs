@@ -10,6 +10,7 @@ mod clouds;
 mod context;
 mod depth;
 mod entity;
+mod exposure;
 mod hdr;
 mod mesh;
 mod font;
@@ -32,6 +33,7 @@ use clouds::CloudLayer;
 use context::VulkanContext;
 use depth::DepthBuffer;
 use entity::EntityRenderer;
+use exposure::ExposurePass;
 use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
 use sky_pass::SkyPass;
@@ -116,6 +118,7 @@ pub struct Renderer {
     sky: SkyPass,
     clouds_layer: CloudLayer,
     bloom: BloomPass,
+    exposure: ExposurePass,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -176,6 +179,8 @@ impl Renderer {
             // UI target the swapchain pass.
             let hdr = HdrTarget::new(&ctx, &mut allocator, swapchain.extent)?;
             let bloom = BloomPass::new(&ctx, &mut allocator, hdr.view, hdr.extent)?;
+            let exposure =
+                ExposurePass::new(&ctx, &mut allocator, hdr.view, FRAMES_IN_FLIGHT)?;
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
             tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
             let chunks = ChunkRenderer::new(
@@ -225,6 +230,7 @@ impl Renderer {
                 sky,
                 clouds_layer,
                 bloom,
+                exposure,
                 ui,
                 command_pool,
                 command_buffers,
@@ -296,6 +302,9 @@ impl Renderer {
             // so buffers it referenced can be freed now.
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.chunks.collect_garbage(&self.ctx.device, allocator, self.frame);
+            // This slot's previous frame is done: its luminance grid is
+            // readable, so the eye adapts now.
+            let frame_exposure = self.exposure.adapt(slot, camera.time);
 
             if self.pending_extent.is_some() {
                 self.recreate_swapchain()?;
@@ -307,6 +316,7 @@ impl Renderer {
                 let allocator = self.allocator.as_mut().expect("allocator alive");
                 self.hdr.recreate(&self.ctx, allocator, extent)?;
                 self.bloom.recreate(&self.ctx, allocator, self.hdr.view, extent)?;
+                self.exposure.bind_input(&self.ctx.device, self.hdr.view);
                 self.tonemap
                     .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
                 self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
@@ -425,7 +435,9 @@ impl Renderer {
             );
             device.cmd_end_render_pass(cmd);
 
-            // Pass 1c: the bloom pyramid (downsample + additive upsample).
+            // Pass 1c: luminance measurement (for the next frames'
+            // exposure), then the bloom pyramid.
+            self.exposure.record(device, cmd, slot);
             self.bloom.record(device, cmd);
 
             // Pass 2: tonemap resolve + UI, at native resolution.
@@ -448,7 +460,7 @@ impl Renderer {
                     .clear_values(&clears),
                 vk::SubpassContents::INLINE,
             );
-            self.tonemap.record(device, cmd);
+            self.tonemap.record(device, cmd, frame_exposure);
             if !camera.hud.is_empty() || !camera.ui_quads.is_empty() || !camera.ui_texts.is_empty()
             {
                 let mut texts = Vec::with_capacity(camera.ui_texts.len() + 1);
@@ -530,6 +542,7 @@ impl Renderer {
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.hdr.recreate(&self.ctx, allocator, scaled)?;
             self.bloom.recreate(&self.ctx, allocator, self.hdr.view, scaled)?;
+            self.exposure.bind_input(&self.ctx.device, self.hdr.view);
             self.tonemap
                 .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
             self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
@@ -553,6 +566,7 @@ impl Drop for Renderer {
             self.clouds_layer.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
             self.bloom.destroy(device, &mut allocator);
+            self.exposure.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
