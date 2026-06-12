@@ -59,15 +59,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     var color = in.color.rgb;
     if (in.color.a < 0.5) {
-        // Far sea: the same fresnel/sky-environment look as the real
-        // water shader, so the ring continues the detailed sea without
-        // a color seam. (Camera sits at the origin.)
+        // Far sea: real water is mostly sky mirror plus a bright seabed,
+        // so the ring's sea leans heavily into the sky color — a floor
+        // of 35% even head-on, rising with the fresnel grazing term.
+        // (Camera sits at the origin of camera-relative space.)
         let view = normalize(in.world_rel);
         let cos_view = max(-view.y, 0.0);
         let fresnel = 0.02 + 0.58 * pow(1.0 - cos_view, 4.0);
-        let follow = clamp(fresnel * 2.2, 0.25, 1.0);
-        let env = mix(vec3(0.22, 0.42, 0.72) * pc.params.x, pc.fog.rgb, follow);
-        color = mix(in.color.rgb, env * 0.85, clamp(fresnel * 1.7, 0.0, 1.0));
+        let toward_sky = clamp(0.35 + fresnel * 1.5, 0.0, 1.0);
+        color = mix(in.color.rgb, pc.fog.rgb, toward_sky);
     }
     let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.fog.w, 2.0));
     return vec4<f32>(mix(color, pc.fog.rgb, fog_amount), 1.0);

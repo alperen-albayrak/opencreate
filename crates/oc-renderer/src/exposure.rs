@@ -22,7 +22,9 @@ const SIZE: u32 = 16;
 /// Average scene luminance the exposure steers toward.
 const KEY: f32 = 0.32;
 /// Exposure bounds: never crush daylight, never turn night into day.
-const MIN_EXPOSURE: f32 = 0.55;
+/// The floor is gentle — stopping down harder than this crushes deep
+/// ocean and shaded terrain to black whenever bright sky fills the view.
+const MIN_EXPOSURE: f32 = 0.75;
 const MAX_EXPOSURE: f32 = 2.4;
 /// Adaptation rate per second (eased exponentially).
 const SPEED: f32 = 1.8;

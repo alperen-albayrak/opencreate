@@ -66,13 +66,17 @@ dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
 rotating with the day. *Later polish:* per-direction fog color,
-per-cloud dusk tinting, sidereal drift. **Far terrain LOD** *(shipped, v1)*:
-a coarse colored heightmap ring generated from the seed on a worker
-thread (256-block tiles, 8-block grid, biome colors, slope shade, seas
-flattened to sea level), drawn after the chunks so depth keeps detail
-on top; fog saturates near the ring's edge (~970 blocks) instead of
-the chunk radius. Far terrain toggle in graphics settings. *Later:*
-multiple rings/resolutions, far trees, server-driven tiles for MP.
+per-cloud dusk tinting, sidereal drift. **Far terrain LOD** *(shipped, v2 — blocky)*:
+a colored ring generated from the seed on a worker thread (256-block
+tiles), built the way Minecraft's LOD mods (Voxy, Distant Horizons —
+approach studied, no code) keep distance blocky: 4-block cells render
+as flat-topped columns at quantized heights with vertical stair-step
+walls (tops bright, sides 0.72), run-length merged; seas flatten to a
+sky-leaning fresnel sheet so the ring continues the real water. Drawn
+after the chunks (depth keeps detail on top) and discarded inside the
+loaded square; fog saturates near the ring's edge (~970 blocks). Far
+terrain toggle in graphics settings. *Later:* multiple rings with
+halving resolution, far trees, server-driven tiles for MP.
 
 **D. Lighting**
 Per-vertex ambient occlusion (corner darkening; AO joins the greedy

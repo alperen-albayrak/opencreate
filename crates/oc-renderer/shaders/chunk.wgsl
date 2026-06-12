@@ -99,9 +99,10 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let block_term = block_level * 0.95;
 
     // Ambient occlusion: corners boxed in by neighbors darken, which is
-    // what makes block edges read as solid geometry.
+    // what makes block edges read as solid geometry. Kept gentle — the
+    // edge seams read as dirt lines when this gets heavy.
     let ao = f32((w0 >> 28u) & 3u);
-    let ao_mul = 0.55 + 0.15 * ao;
+    let ao_mul = 0.66 + (0.34 / 3.0) * ao;
 
     var out: VsOut;
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
@@ -190,7 +191,9 @@ fn linearize(depth: f32) -> f32 {
 // shows up as a line that follows the camera.
 fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
     let texel_world = shadow.params[1u + u32(cascade)];
-    let pos = world_rel + normal * texel_world * 1.5;
+    // One texel of normal offset: enough against acne, small enough that
+    // shadows stay attached to the walls that cast them.
+    let pos = world_rel + normal * texel_world;
     let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
     // Vulkan rasterizes NDC y-down into the map; the lookup matches.
     let uv = ndc.xy * 0.5 + vec2(0.5);
@@ -198,7 +201,7 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
         return 1.0;
     }
     // 400 = the cascades' shared light-space depth range, blocks.
-    let bias = 0.0004 + texel_world * 2.5 / 400.0;
+    let bias = 0.0003 + texel_world * 2.5 / 400.0;
     // 3x3 PCF on top of the sampler's bilinear comparison.
     var lit = 0.0;
     let step = 1.0 / 2048.0;

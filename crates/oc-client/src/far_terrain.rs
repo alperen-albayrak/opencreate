@@ -1,9 +1,11 @@
-//! Far terrain LOD (graphics roadmap, stage C "later"): a coarse colored
-//! heightmap ring beyond the full-detail chunks, generated straight from
-//! the world seed on a worker thread. Each tile covers 256x256 blocks at
-//! 8-block resolution — cheap enough to push the horizon (and the fog)
-//! kilometers out. Water becomes a flat sea-level sheet; land is colored
-//! by biome with a simple slope shade baked into the vertex color.
+//! Far terrain LOD (graphics roadmap, stage C "later"): a blocky colored
+//! ring beyond the full-detail chunks, generated straight from the world
+//! seed on a worker thread. Following the approach of Minecraft's LOD
+//! mods (Voxy, Distant Horizons — studied, not copied): 4-block cells
+//! render as flat-topped columns at quantized heights with vertical
+//! stair-step walls where neighbors differ, tops brighter than sides —
+//! never a smoothed heightmap sheet. Water flattens to a sea-level sheet
+//! the shader shades like the real water (fresnel toward the sky).
 
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -14,8 +16,11 @@ use oc_world::terrain::{Biome, SEA_LEVEL, TerrainGenerator};
 
 /// Tile edge in blocks.
 pub const TILE: i32 = 256;
-/// Sample spacing in blocks (grid is TILE/STEP + 1 vertices per edge).
-const STEP: i32 = 8;
+/// LOD cell size in blocks: each cell renders as one flat-topped block
+/// column, the stair-step look Voxy/Distant Horizons keep at distance.
+const STEP: i32 = 4;
+/// Side faces are dimmer than tops, like the chunk shader's sun diffuse.
+const SIDE_SHADE: f32 = 0.72;
 /// How far the ring reaches, in tiles (Chebyshev radius around camera).
 const RADIUS: i32 = 4;
 
@@ -44,13 +49,19 @@ fn biome_color(biome: Biome, height: i32) -> [f32; 3] {
     }
 }
 
-/// Generates one tile's mesh: a height grid with per-vertex biome color,
-/// water flattened to sea level. Pure — runs on the worker.
+/// Generates one tile's mesh, the way Minecraft's LOD mods keep distance
+/// blocky: every STEP-sized cell is a flat-topped column at its quantized
+/// height, with vertical walls where neighbor cells differ — stair-steps,
+/// not a smoothed sheet. Tops run-length merge along x; water flattens to
+/// sea level and carries alpha 0 so the shader shades it like real water.
+/// Pure — runs on the worker.
 pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile {
-    let n = (TILE / STEP) as usize + 1;
+    // One extra sample row/column: the +x/+z edge walls compare against
+    // the neighbor tile's first cells, so tiles seam exactly.
+    let cells = (TILE / STEP) as usize;
+    let n = cells + 1;
     let (x0, z0) = (tx * TILE, tz * TILE);
 
-    // Sample the corner grid once.
     let mut heights = vec![0i32; n * n];
     let mut colors = vec![[0.0f32; 3]; n * n];
     let mut water = vec![false; n * n];
@@ -60,9 +71,6 @@ pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile 
             let surface = generator.surface_height(x, z);
             let biome = generator.biome(x, z);
             let underwater = surface < SEA_LEVEL;
-            // Water renders the sea surface; the shader gives flagged
-            // vertices the real water's fresnel/sky look so the ring
-            // meets the detailed sea without a color seam.
             heights[gz * n + gx] = if underwater { SEA_LEVEL } else { surface };
             water[gz * n + gx] = underwater;
             colors[gz * n + gx] = if underwater {
@@ -72,41 +80,93 @@ pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile 
             };
         }
     }
+    let cell = |gx: usize, gz: usize| (heights[gz * n + gx], colors[gz * n + gx], water[gz * n + gx]);
 
-    let mut vertices = Vec::with_capacity(n * n);
-    for gz in 0..n {
-        for gx in 0..n {
-            let h = heights[gz * n + gx];
-            // Slope shade from the height gradient: east/south-facing
-            // slopes brighten slightly, the rest darken — enough relief
-            // to read as terrain through the fog.
-            let hx = heights[gz * n + (gx + 1).min(n - 1)] - h;
-            let hz = heights[(gz + 1).min(n - 1) * n + gx] - h;
-            let slope = ((hx + hz) as f32 / STEP as f32).clamp(-1.0, 1.0);
-            let shade = 0.82 - 0.18 * slope;
-            let c = colors[gz * n + gx];
-            // Water keeps full brightness (its shading is view-dependent,
-            // done in the shader); alpha 0 flags it.
-            let (shade, alpha) = if water[gz * n + gx] { (1.0, 0.0) } else { (shade, 1.0) };
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    // Quad in chunk-mesh corner order; indices [0,1,2, 2,1,3].
+    let mut quad = |corners: [[f32; 3]; 4], c: [f32; 3], shade: f32, alpha: f32| {
+        let base = vertices.len() as u32;
+        for position in corners {
             vertices.push(FarVertex {
-                position: [
-                    (gx as i32 * STEP) as f32,
-                    // The +1 matches block tops (surface block fills [h, h+1]).
-                    (h + 1) as f32,
-                    (gz as i32 * STEP) as f32,
-                ],
+                position,
                 color: [c[0] * shade, c[1] * shade, c[2] * shade, alpha],
             });
         }
-    }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    };
 
-    let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
-    for gz in 0..n - 1 {
-        for gx in 0..n - 1 {
-            let i = (gz * n + gx) as u32;
-            let right = i + 1;
-            let down = i + n as u32;
-            indices.extend_from_slice(&[i, down, right, right, down, down + 1]);
+    for gz in 0..cells {
+        let (za, zb) = ((gz as i32 * STEP) as f32, ((gz + 1) as i32 * STEP) as f32);
+        // Tops: run-length merge equal cells along x.
+        let mut gx = 0;
+        while gx < cells {
+            let (h, c, wet) = cell(gx, gz);
+            let mut run = gx + 1;
+            while run < cells && cell(run, gz) == (h, c, wet) {
+                run += 1;
+            }
+            let (xa, xb) = ((gx as i32 * STEP) as f32, (run as i32 * STEP) as f32);
+            // The +1 matches block tops (the surface block fills [h, h+1]).
+            let y = (h + 1) as f32;
+            let alpha = if wet { 0.0 } else { 1.0 };
+            quad(
+                [[xa, y, zb], [xb, y, zb], [xa, y, za], [xb, y, za]],
+                c,
+                1.0,
+                alpha,
+            );
+            gx = run;
+        }
+
+        for gx in 0..cells {
+            let (xa, xb) = ((gx as i32 * STEP) as f32, ((gx + 1) as i32 * STEP) as f32);
+            let (h, c, _) = cell(gx, gz);
+            // East wall, against the next cell along x (the last cell
+            // compares into the neighbor tile via the extra sample).
+            let (he, ce, _) = cell(gx + 1, gz);
+            if he != h {
+                let (lo, hi) = ((h.min(he) + 1) as f32, (h.max(he) + 1) as f32);
+                let wall = if h > he { c } else { ce };
+                if h > he {
+                    // Faces +x (the lower side).
+                    quad(
+                        [[xb, lo, zb], [xb, lo, za], [xb, hi, zb], [xb, hi, za]],
+                        wall,
+                        SIDE_SHADE,
+                        1.0,
+                    );
+                } else {
+                    quad(
+                        [[xb, lo, za], [xb, lo, zb], [xb, hi, za], [xb, hi, zb]],
+                        wall,
+                        SIDE_SHADE,
+                        1.0,
+                    );
+                }
+            }
+            // South wall, against the next cell along z.
+            let (hs, cs, _) = cell(gx, gz + 1);
+            if hs != h {
+                let (lo, hi) = ((h.min(hs) + 1) as f32, (h.max(hs) + 1) as f32);
+                let wall = if h > hs { c } else { cs };
+                if h > hs {
+                    // Faces +z.
+                    quad(
+                        [[xa, lo, zb], [xb, lo, zb], [xa, hi, zb], [xb, hi, zb]],
+                        wall,
+                        SIDE_SHADE,
+                        1.0,
+                    );
+                } else {
+                    quad(
+                        [[xb, lo, zb], [xa, lo, zb], [xb, hi, zb], [xa, hi, zb]],
+                        wall,
+                        SIDE_SHADE,
+                        1.0,
+                    );
+                }
+            }
         }
     }
 
@@ -208,28 +268,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tile_grid_is_well_formed() {
+    fn tiles_are_blocky() {
         let generator = TerrainGenerator::new(20260611);
-        let tile = generate_tile(&generator, 0, 0);
-        let n = (TILE / STEP) as usize + 1;
-        assert_eq!(tile.vertices.len(), n * n);
-        assert_eq!(tile.indices.len(), (n - 1) * (n - 1) * 6);
+        // The spawn-area tile: known land with relief for this seed.
+        let tile = generate_tile(&generator, -3, 1);
+        assert!(!tile.vertices.is_empty());
+        assert_eq!(tile.vertices.len() % 4, 0, "quads only");
+        assert_eq!(tile.indices.len(), tile.vertices.len() / 4 * 6);
         assert!(tile.indices.iter().all(|&i| (i as usize) < tile.vertices.len()));
-        // Water never renders below sea level; land tops sit on block tops.
-        assert!(tile.vertices.iter().all(|v| v.position[1] >= (SEA_LEVEL + 1) as f32 - 0.01
-            || v.position[1] > SEA_LEVEL as f32 - 64.0));
+        let mut walls = 0;
+        for q in tile.vertices.chunks(4) {
+            let ys: [f32; 4] = std::array::from_fn(|i| q[i].position[1]);
+            // Every quad is a flat top or a vertical wall, on block units —
+            // never a slanted heightmap triangle.
+            let flat = ys.iter().all(|&y| y == ys[0]);
+            let wall = ys[0] == ys[1] && ys[2] == ys[3] && ys[0] != ys[2];
+            assert!(flat || wall, "slanted quad in blocky LOD: {ys:?}");
+            assert!(ys.iter().all(|&y| y.fract() == 0.0), "non-quantized height");
+            walls += wall as usize;
+        }
+        assert!(walls > 0, "terrain with relief must emit stair-step walls");
+        // Water never renders below the sea surface.
+        for q in tile.vertices.chunks(4) {
+            if q[0].color[3] < 0.5 {
+                assert!(q.iter().all(|v| v.position[1] == (SEA_LEVEL + 1) as f32));
+            }
+        }
     }
 
     #[test]
-    fn adjacent_tiles_share_edge_heights() {
+    fn adjacent_tiles_seam_exactly() {
+        // The +x edge walls of tile (0,0) compare against the same
+        // generator samples tile (1,0) renders as its first column, so
+        // generation is deterministic and the boundary cannot crack.
         let generator = TerrainGenerator::new(20260611);
-        let a = generate_tile(&generator, 0, 0);
+        let a1 = generate_tile(&generator, 0, 0);
+        let a2 = generate_tile(&generator, 0, 0);
+        assert_eq!(a1.vertices.len(), a2.vertices.len());
+        assert!(
+            a1.vertices
+                .iter()
+                .zip(&a2.vertices)
+                .all(|(p, q)| p.position == q.position && p.color == q.color),
+            "tile generation must be deterministic"
+        );
+        // Edge walls exist where the neighbor tile's heights differ.
         let b = generate_tile(&generator, 1, 0);
-        let n = (TILE / STEP) as usize + 1;
-        for gz in 0..n {
-            let right_of_a = a.vertices[gz * n + (n - 1)].position[1];
-            let left_of_b = b.vertices[gz * n].position[1];
-            assert_eq!(right_of_a, left_of_b, "edge seam at row {gz}");
-        }
+        let edge_height = |tile: &oc_renderer::FarTile, x: f32| {
+            tile.vertices
+                .iter()
+                .filter(|v| v.position[0] == x)
+                .map(|v| v.position[1] as i32)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        // Heights present on A's east edge (x=256 local) include B's west
+        // edge (x=0 local) tops: the same world samples.
+        let a_edge = edge_height(&a1, TILE as f32);
+        let b_edge = edge_height(&b, 0.0);
+        assert!(
+            b_edge.is_subset(&a_edge) || a_edge.is_subset(&b_edge),
+            "shared edge disagrees: {a_edge:?} vs {b_edge:?}"
+        );
     }
 }
