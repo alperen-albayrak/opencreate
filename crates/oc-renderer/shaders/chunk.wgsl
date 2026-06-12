@@ -202,21 +202,10 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
     }
     // 400 = the cascades' shared light-space depth range, blocks.
     let bias = 0.0003 + texel_world * 2.5 / 400.0;
-    // 3x3 PCF on top of the sampler's bilinear comparison.
-    var lit = 0.0;
-    let step = 1.0 / 2048.0;
-    for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-            lit += textureSampleCompareLevel(
-                shadow_map,
-                shadow_sampler,
-                uv + vec2(f32(dx), f32(dy)) * step,
-                cascade,
-                ndc.z - bias,
-            );
-        }
-    }
-    return lit / 9.0;
+    // A single bilinear comparison tap: one texel of softness, no more.
+    // Wider PCF smeared distant tree shadows into shapeless gray smudges
+    // — crisp edges read as shadows in a voxel world.
+    return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, cascade, ndc.z - bias);
 }
 
 // How much of the sun reaches this fragment. Cascades cross-fade over
