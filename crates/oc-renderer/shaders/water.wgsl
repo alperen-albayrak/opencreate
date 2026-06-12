@@ -124,11 +124,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let water_depth = max(linearize(scene_depth) - linearize(in.clip.z), 0.0);
 
     // Geometry stays flat; only a texture-scale ripple perturbs the top
-    // normal (the sparkling sun path), never multi-block swells.
+    // normal (the sparkling sun path), never multi-block swells — and it
+    // fades with distance: far water is a calm mirror, like the genre
+    // look (shimmer is a near-field effect).
     let t = pc.rel.w;
+    let view_dist = length(pc.rel.xyz + in.local);
+    let ripple_fade = 1.0 - smoothstep(24.0, 72.0, view_dist);
     var normal: vec3<f32>;
     if (in.face == 0u) {
-        normal = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
+        let rippled = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
+        normal = normalize(mix(vec3(0.0, 1.0, 0.0), rippled, ripple_fade));
     } else {
         var side = array<vec3<f32>, 6>(
             vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
@@ -154,11 +159,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let base = mix(vec3(0.16, 0.46, 0.52), vec3(0.03, 0.13, 0.32), absorb)
         * ripple * in.shade;
 
-    // Reflection: the sky, pulled toward blue so a pale dawn sky doesn't
-    // wash the ocean white; lit by the same shade so cave water doesn't
-    // mirror a bright sky. (Stage C's real sky() function replaces this.)
+    // Reflection: blue water head-on, but at grazing angles (where the
+    // mirror dominates) it reflects the REAL sky color — sunset water
+    // mirrors the sunset. (Stage C's sky() function enriches this.)
     let reflect_dir = reflect(to_fragment, normal);
-    let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, 0.45);
+    let sky_follow = clamp(fresnel * 2.2, 0.25, 1.0);
+    let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, sky_follow);
     let sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
 
     // Sun glint: tight specular off the perturbed normal. pc.sun.xyz is
