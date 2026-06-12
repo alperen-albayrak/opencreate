@@ -395,7 +395,10 @@ impl Slider {
     }
 
     fn display(&self) -> String {
-        if self.step >= 1.0 {
+        if self.min == 0.0 && self.max == 1.0 && self.step == 1.0 {
+            // A toggle in slider's clothing.
+            if self.value > 0.5 { "On".into() } else { "Off".into() }
+        } else if self.step >= 1.0 {
             format!("{}", self.value.round() as i64)
         } else {
             format!("{:.2}", self.value)
@@ -464,6 +467,14 @@ impl SettingsScreen {
                     settings.resolution_scale,
                 ),
                 slider("max_fps", "settings.max_fps", 1, MAX_FPS_RANGE, 10.0, settings.max_fps as f32),
+                slider(
+                    "clouds",
+                    "settings.clouds",
+                    1,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.clouds { 1.0 } else { 0.0 },
+                ),
             ],
             tab: 0,
             back_to_pause,
@@ -506,6 +517,7 @@ impl SettingsScreen {
                 "ui_scale" => settings.ui_scale = slider.value,
                 "resolution_scale" => settings.resolution_scale = slider.value,
                 "max_fps" => settings.max_fps = slider.value.round() as i32,
+                "clouds" => settings.clouds = slider.value > 0.5,
                 _ => {}
             }
         }
@@ -855,7 +867,10 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 6);
+        assert_eq!(screen.sliders.len(), 7);
+        // The clouds toggle reads On/Off and round-trips.
+        let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
+        assert_eq!(screen.sliders[clouds].display(), "On");
 
         let (w, h, ui) = (1280.0, 720.0, 1.0);
         // FOV lives on the Graphics tab (row 1 there, sliders[3]).

@@ -31,6 +31,8 @@ pub struct Settings {
     pub resolution_scale: f32,
     /// Frame-rate cap; 0 = uncapped.
     pub max_fps: i32,
+    /// Draw the cloud layer.
+    pub clouds: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             resolution_scale: 1.0,
             max_fps: 0,
+            clouds: true,
         }
     }
 }
@@ -111,6 +114,7 @@ mod tests {
             ui_scale: 100.0,
             resolution_scale: 9.0,
             max_fps: 100000,
+            clouds: true,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
@@ -130,6 +134,7 @@ mod tests {
             ui_scale: 2.0,
             resolution_scale: 0.75,
             max_fps: 60,
+            clouds: false,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();

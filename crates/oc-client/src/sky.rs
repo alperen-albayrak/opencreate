@@ -16,6 +16,8 @@ pub struct SkyState {
     pub sky_color: [f32; 4],
     /// Overhead color (deeper blue by day, near-black at night).
     pub zenith: [f32; 4],
+    /// Cloud slab color (rgb) and opacity (a).
+    pub clouds: [f32; 4],
 }
 
 const DAY_SKY: Vec3 = Vec3::new(0.47, 0.71, 0.99);
@@ -44,10 +46,14 @@ pub fn sky_at(day_fraction: f64) -> SkyState {
     // Never fully dark: moonlight floor at night.
     let ambient = 0.16 + 0.32 * daylight;
 
+    // Clouds: white by day, warm-tinted at dusk, dim at night.
+    let cloud = Vec3::splat(0.06 + 0.94 * daylight).lerp(DUSK_SKY * 1.05, dusk * 0.55);
+
     SkyState {
         sun: (sun_dir * daylight).extend(ambient),
         sky_color: [sky.x, sky.y, sky.z, 1.0],
         zenith: [zenith.x, zenith.y, zenith.z, 1.0],
+        clouds: [cloud.x, cloud.y, cloud.z, 0.82],
     }
 }
 

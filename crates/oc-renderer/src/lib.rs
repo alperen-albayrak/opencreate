@@ -5,6 +5,7 @@
 //! logic; it consumes meshes and transforms.
 
 mod chunk_renderer;
+mod clouds;
 mod context;
 mod depth;
 mod entity;
@@ -25,6 +26,7 @@ use oc_core::{BlockPos, SectionPos};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use chunk_renderer::ChunkRenderer;
+use clouds::CloudLayer;
 use context::VulkanContext;
 use depth::DepthBuffer;
 use entity::EntityRenderer;
@@ -63,6 +65,10 @@ pub struct FrameCamera {
     pub sky_zenith: [f32; 4],
     /// Where distance fog saturates, in blocks (~the render distance).
     pub fog_distance: f32,
+    /// Draw the cloud layer this frame (graphics setting).
+    pub clouds: bool,
+    /// Cloud slab color (rgb) + opacity (a) for the moment of day.
+    pub cloud_color: [f32; 4],
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
@@ -98,6 +104,7 @@ pub struct Renderer {
     entity: EntityRenderer,
     outline: OutlineRenderer,
     sky: SkyPass,
+    clouds_layer: CloudLayer,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -170,6 +177,7 @@ impl Renderer {
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let sky = SkyPass::new(&ctx, hdr.render_pass)?;
+            let clouds_layer = CloudLayer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
@@ -203,6 +211,7 @@ impl Renderer {
                 entity,
                 outline,
                 sky,
+                clouds_layer,
                 ui,
                 command_pool,
                 command_buffers,
@@ -362,6 +371,16 @@ impl Renderer {
                 Vec4::from_array(camera.sky_color),
                 Vec4::from_array(camera.sky_zenith),
             );
+            if camera.clouds {
+                self.clouds_layer.record(
+                    device,
+                    cmd,
+                    camera.view_proj,
+                    camera.position,
+                    camera.time,
+                    Vec4::from_array(camera.cloud_color),
+                );
+            }
             device.cmd_end_render_pass(cmd);
 
             // Pass 1b: water, blended over the opaques, sampling their
@@ -506,6 +525,7 @@ impl Drop for Renderer {
             self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);
             self.sky.destroy(device);
+            self.clouds_layer.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
