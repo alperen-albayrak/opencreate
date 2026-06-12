@@ -102,10 +102,21 @@ pub struct CreatureDef {
     pub name: String,
     /// Collision box (width, height) in blocks.
     pub size: (f32, f32),
-    /// Placeholder cuboid tint (sRGB) until entity models exist.
+    /// Primary body tint (sRGB).
     pub color: (u8, u8, u8),
+    /// Secondary tint — face/legs for quadrupeds (defaults to `color`).
+    #[serde(default)]
+    pub accent: Option<(u8, u8, u8)>,
+    /// Client model: "box" (single cuboid) or "quadruped" (body, head,
+    /// four legs — cows, sheep).
+    #[serde(default = "default_creature_model")]
+    pub model: String,
     /// Walk speed, blocks per second.
     pub speed: f32,
+}
+
+fn default_creature_model() -> String {
+    "box".into()
 }
 
 /// A recipe's shopping list, independent of arrangement.
@@ -579,9 +590,10 @@ mod tests {
     fn creatures_load_with_stable_ids() {
         let reg = registry();
         assert!(reg.creature_count() >= 2);
-        let critter = reg.creature(reg.find_creature("oc:critter").unwrap());
-        assert_eq!(critter.name, "Critter");
-        assert!(critter.size.0 > 0.0 && critter.speed > 0.0);
+        let cow = reg.creature(reg.find_creature("oc:cow").unwrap());
+        assert_eq!(cow.name, "Cow");
+        assert_eq!(cow.model, "quadruped");
+        assert!(cow.size.0 > 0.0 && cow.speed > 0.0);
         assert!(reg.find_creature("oc:missing").is_none());
     }
 

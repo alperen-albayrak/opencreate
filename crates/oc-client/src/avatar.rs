@@ -97,11 +97,12 @@ pub fn body_draws(feet: DVec3, yaw: f32, view_pitch: f32, swing: f32, skin: &Ski
             TORSO_H,
             skin.arms,
         ),
-        // The head nods with the camera pitch.
+        // The head nods with the camera pitch (positive pitch = looking
+        // up tips the face skyward).
         part(
             place(0.0, LEG_H + TORSO_H, 0.0),
             [HEAD, HEAD, HEAD],
-            (-view_pitch).clamp(-1.1, 1.1),
+            view_pitch.clamp(-1.1, 1.1),
             0.0,
             skin.head,
         ),
