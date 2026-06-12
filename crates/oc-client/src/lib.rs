@@ -329,12 +329,14 @@ impl App {
                 }
             }
             _ if action.starts_with("mode:") => {
+                // Stay on the picker: the [x] marker moves only when the
+                // server's GameMode confirmation arrives, so the player
+                // sees the change land before going back themselves.
                 if let Some(session) = &mut self.session
                     && let Ok(mode) = action["mode:".len()..].parse::<u16>()
                 {
                     session.queue(ClientMessage::SetGameMode(mode));
                 }
-                self.screen = Screen::Paused;
             }
             _ if action.starts_with("world:") => {
                 let world = action["world:".len()..].to_owned();
@@ -426,13 +428,6 @@ impl App {
                 if caps.can_fly && !caps.noclip {
                     session.player.flying = !session.player.flying;
                     info!(flying = session.player.flying, "movement mode toggled");
-                }
-            }
-            KeyCode::KeyG if pressed => {
-                // Changing mode is a cheat; the server enforces this too.
-                if session.cheats {
-                    let next = self.registry.next_mode(session.mode);
-                    session.queue(ClientMessage::SetGameMode(next.0));
                 }
             }
             KeyCode::KeyC if pressed => session.craft_open = !session.craft_open,

@@ -344,7 +344,7 @@ impl Session {
         let stats = renderer.stats();
         let p = self.player.position;
         format!(
-            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [g] mode  [c] craft  [f3] hud  [f] {}",
+            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [c] craft  [f3] hud  [f] {}",
             (1.0 / frame_time_ema).round(),
             frame_time_ema * 1e3,
             stats.chunks_drawn,

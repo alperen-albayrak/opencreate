@@ -39,7 +39,6 @@ cheats from the pause menu). Menus, labels and languages are data:
 | Left Shift | Descend while flying |
 | Left Ctrl | Sprint (drains stamina when walking) |
 | F | Toggle fly/walk (creative & spectator only) |
-| G | Cycle game mode (the pause menu has the full picker) |
 | Left / right click | Break / place the targeted block |
 | 1–9 / mouse wheel | Select hotbar slot |
 | C | Open/close the crafting recipe book (digits craft while open) |

@@ -26,7 +26,6 @@ The game opens on a title screen — create worlds (name, seed, game mode) or pi
 | 1–9 / mouse wheel | Select hotbar slot |
 | C | Crafting recipe book (digits craft while open) |
 | E | Eat an apple (survival; apples drop from leaves) |
-| G | Cycle game mode |
 | F3 | Toggle the debug HUD |
 
 ## Goals

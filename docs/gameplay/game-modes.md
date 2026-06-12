@@ -2,8 +2,8 @@
 
 Modes are **data** (`data/gamemodes.ron`), not code: each is a namespaced
 id, a display name, and five engine capability flags. Mods add modes by
-shipping more entries — the G-key cycle walks registry order, so modded
-modes join automatically.
+shipping more entries — the pause menu's mode picker lists registry
+order, so modded modes join automatically.
 
 | Mode | edit blocks | uses inventory | stats & falls | flight | noclip |
 |---|---|---|---|---|---|
@@ -37,10 +37,10 @@ Changing game mode is a **cheat**. Worlds carry a cheats flag, chosen at
 creation (default off) and persisted in `level.txt`:
 
 - **Cheats off** — `SetGameMode` is rejected (the server re-asserts the
-  current mode, so the G key and the mode picker snap back). The pause
-  menu's mode picker explains instead of listing modes.
-- **Cheats on** — mode changes are free (G key cycles, the pause menu
-  picks directly).
+  current mode, so a desynced client snaps back). The pause menu's mode
+  picker explains instead of listing modes.
+- **Cheats on** — pick a mode from the pause menu's picker; the `[x]`
+  marker moves when the server confirms, and you back out yourself.
 - The **world owner can always re-toggle cheats** from the pause menu —
   in singleplayer the local player is the owner.
 
