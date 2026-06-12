@@ -2,11 +2,11 @@
 //! provides real ones.
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 11;
+pub const LAYER_COUNT: u32 = 12;
 
 /// RGBA pixels for the block texture array. Layer order must match
 /// `mesh::layers`: grass top, dirt, stone, grass side, sand, water,
-/// log side, log top, leaves, lamp, snow.
+/// log side, log top, leaves, lamp, snow, planks.
 pub fn build_block_textures() -> Vec<u8> {
     let size = TEXTURE_SIZE as usize;
     let mut pixels = Vec::with_capacity(size * size * 4 * LAYER_COUNT as usize);
@@ -28,6 +28,9 @@ pub fn build_block_textures() -> Vec<u8> {
                     7 => shade([151, 122, 73], n, 16),
                     8 => shade([58, 134, 52], n, 30),
                     10 => shade([238, 242, 248], n, 8),
+                    // Planks: horizontal board stripes.
+                    11 if y % 4 == 0 => shade([142, 110, 68], n, 8),
+                    11 => shade([172, 136, 84], hash_noise(0, y as u32 / 4, layer), 14),
                     // Lamp: bright warm glow with a darker rim.
                     _ if x == 0 || y == 0 || x == size - 1 || y == size - 1 => {
                         shade([142, 105, 55], n, 12)
@@ -60,6 +63,7 @@ pub fn block_swatch(block: oc_world::BlockId) -> [f32; 4] {
         blocks::LEAVES => [58, 134, 52],
         blocks::LAMP => [255, 222, 150],
         blocks::SNOW => [238, 242, 248],
+        blocks::PLANKS => [172, 136, 84],
         _ => [255, 0, 255],
     };
     [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]

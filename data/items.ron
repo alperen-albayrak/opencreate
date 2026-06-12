@@ -1,0 +1,15 @@
+// Item definitions (ARCHITECTURE.md §7). `block` is the numeric block-state
+// id an item places, until the data-driven block registry replaces the
+// hardcoded ids. Namespaced string ids are the stable identity (§7.6).
+[
+    (id: "oc:stone", name: "Stone", block: Some(1)),
+    (id: "oc:dirt", name: "Dirt", block: Some(2)),
+    (id: "oc:grass", name: "Grass Block", block: Some(3)),
+    (id: "oc:sand", name: "Sand", block: Some(4)),
+    (id: "oc:log", name: "Log", block: Some(6)),
+    (id: "oc:leaves", name: "Leaves", block: Some(7)),
+    (id: "oc:lamp", name: "Lamp", block: Some(8)),
+    (id: "oc:snow", name: "Snow", block: Some(9)),
+    (id: "oc:planks", name: "Planks", block: Some(10)),
+    (id: "oc:stick", name: "Stick", block: None),
+]

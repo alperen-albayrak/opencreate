@@ -67,4 +67,5 @@ pub mod blocks {
     pub const LEAVES: BlockId = BlockId(7);
     pub const LAMP: BlockId = BlockId(8);
     pub const SNOW: BlockId = BlockId(9);
+    pub const PLANKS: BlockId = BlockId(10);
 }

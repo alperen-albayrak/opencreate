@@ -4,13 +4,14 @@
 use oc_renderer::{UiQuad, block_swatch};
 use oc_world::{BlockId, blocks};
 
-/// Placeable palette, in slot order (keys 1..=8).
-pub const ITEMS: [BlockId; 8] = [
+/// Placeable palette, in slot order (keys 1..=9).
+pub const ITEMS: [BlockId; 9] = [
     blocks::STONE,
     blocks::DIRT,
     blocks::GRASS,
     blocks::SAND,
     blocks::LOG,
+    blocks::PLANKS,
     blocks::LEAVES,
     blocks::LAMP,
     blocks::SNOW,
@@ -26,6 +27,7 @@ pub fn block_name(block: BlockId) -> &'static str {
         blocks::LEAVES => "leaves",
         blocks::LAMP => "lamp",
         blocks::SNOW => "snow",
+        blocks::PLANKS => "planks",
         _ => "block",
     }
 }
@@ -158,20 +160,21 @@ mod tests {
     fn selection_via_keys_and_scroll() {
         let mut hotbar = Hotbar::new();
         assert_eq!(hotbar.block(), blocks::STONE);
-        hotbar.select(6);
+        hotbar.select(7);
         assert_eq!(hotbar.block(), blocks::LAMP);
         hotbar.select(99); // out of range: ignored
-        assert_eq!(hotbar.selected, 6);
-
-        hotbar.scroll(-1.0); // scroll down: next slot
         assert_eq!(hotbar.selected, 7);
+
+        let last = ITEMS.len() - 1;
+        hotbar.scroll(-1.0); // scroll down: next slot
+        assert_eq!(hotbar.selected, last);
         hotbar.scroll(-1.0); // wraps
         assert_eq!(hotbar.selected, 0);
         hotbar.scroll(1.0); // scroll up: previous, wraps back
-        assert_eq!(hotbar.selected, 7);
+        assert_eq!(hotbar.selected, last);
         // Sub-step scrolling accumulates without switching.
         hotbar.scroll(-0.4);
-        assert_eq!(hotbar.selected, 7);
+        assert_eq!(hotbar.selected, last);
         hotbar.scroll(-0.7);
         assert_eq!(hotbar.selected, 0);
     }

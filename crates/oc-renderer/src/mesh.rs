@@ -91,6 +91,7 @@ mod layers {
     pub const LEAVES: u32 = 8;
     pub const LAMP: u32 = 9;
     pub const SNOW: u32 = 10;
+    pub const PLANKS: u32 = 11;
 }
 
 fn face_texture(block: BlockId, face: usize) -> u32 {
@@ -110,6 +111,7 @@ fn face_texture(block: BlockId, face: usize) -> u32 {
         blocks::LEAVES => layers::LEAVES,
         blocks::LAMP => layers::LAMP,
         blocks::SNOW => layers::SNOW,
+        blocks::PLANKS => layers::PLANKS,
         _ => layers::STONE,
     }
 }
@@ -432,6 +434,7 @@ mod tests {
         assert_eq!(layer_of(blocks::LEAVES), layers::LEAVES);
         assert_eq!(layer_of(blocks::LAMP), layers::LAMP);
         assert_eq!(layer_of(blocks::SNOW), layers::SNOW);
+        assert_eq!(layer_of(blocks::PLANKS), layers::PLANKS);
     }
 
     /// Floor at y=0 with a roof slab at y=8: the floor's +Y faces under the

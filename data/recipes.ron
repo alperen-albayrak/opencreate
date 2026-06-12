@@ -1,0 +1,28 @@
+// Crafting recipes (ARCHITECTURE.md §7): shaped patterns use row strings
+// over a key map; shapeless recipes list ingredients in any arrangement.
+[
+    Shapeless(
+        ingredients: ["oc:log"],
+        result: ("oc:planks", 4),
+    ),
+    Shaped(
+        pattern: [
+            "P",
+            "P",
+        ],
+        keys: {'P': "oc:planks"},
+        result: ("oc:stick", 4),
+    ),
+    Shaped(
+        pattern: [
+            "PP",
+            "PP",
+        ],
+        keys: {'P': "oc:planks"},
+        result: ("oc:lamp", 1),
+    ),
+    Shapeless(
+        ingredients: ["oc:snow", "oc:snow"],
+        result: ("oc:stone", 1),
+    ),
+]

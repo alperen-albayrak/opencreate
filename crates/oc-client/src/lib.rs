@@ -270,6 +270,7 @@ impl App {
             KeyCode::Digit6 if pressed => self.hotbar.select(5),
             KeyCode::Digit7 if pressed => self.hotbar.select(6),
             KeyCode::Digit8 if pressed => self.hotbar.select(7),
+            KeyCode::Digit9 if pressed => self.hotbar.select(8),
             KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}

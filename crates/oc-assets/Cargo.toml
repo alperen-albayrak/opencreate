@@ -1,0 +1,12 @@
+[package]
+name = "oc-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+oc-world.workspace = true
+serde.workspace = true
+ron.workspace = true
+anyhow.workspace = true
