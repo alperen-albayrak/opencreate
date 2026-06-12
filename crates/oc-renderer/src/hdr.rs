@@ -216,8 +216,13 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_ref)
             .depth_stencil_attachment(&depth_ref);
-        // Entry: same as the old pass. Exit: color must be visible to the
-        // tonemap pass's fragment sampling.
+        // Entry: with two frames in flight, the PREVIOUS frame's water
+        // pass samples this depth image and the tonemap samples the color
+        // image — both in FRAGMENT_SHADER. The clears here must wait for
+        // those reads (write-after-read needs only the execution
+        // dependency), or water flickers out whenever the GPU overlaps
+        // frames. Exit: color must be visible to the tonemap pass's
+        // fragment sampling.
         let dependencies = [
             vk::SubpassDependency::default()
                 .src_subpass(vk::SUBPASS_EXTERNAL)
@@ -225,7 +230,8 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
                 .src_stage_mask(
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
                         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 )
                 .src_access_mask(vk::AccessFlags::empty())
                 .dst_stage_mask(
