@@ -38,6 +38,9 @@ pub enum ClientMessage {
     /// Ask to switch game mode by per-load registry id (granted freely in
     /// singleplayer; permission checks arrive with multiplayer).
     SetGameMode(u16),
+    /// Eat one of an item (per-load id). The server validates it is food,
+    /// consumes it, and answers with Stats + Inventory.
+    Eat { item: u16 },
 }
 
 /// Everything the server may tell a client.

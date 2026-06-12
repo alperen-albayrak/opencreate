@@ -285,6 +285,7 @@ impl App {
                     .push(ClientMessage::SetGameMode(self.registry.next_mode(self.mode).0));
             }
             KeyCode::KeyC if pressed => self.craft_open = !self.craft_open,
+            KeyCode::KeyE if pressed => self.eat(),
             KeyCode::Digit1 if pressed => self.digit(0),
             KeyCode::Digit2 if pressed => self.digit(1),
             KeyCode::Digit3 if pressed => self.digit(2),
@@ -315,6 +316,22 @@ impl App {
 
     fn hotbar_counts(&self) -> [u32; hotbar::ITEMS.len()] {
         std::array::from_fn(|i| self.count_of(hotbar::ITEMS[i]))
+    }
+
+    /// Eats an apple if we carry one and aren't full; the server validates
+    /// and its Stats/Inventory replies confirm the prediction.
+    fn eat(&mut self) {
+        if !self.caps().uses_inventory || !self.caps().has_stats || self.stats[1] >= 9.95 {
+            return;
+        }
+        let Some(apple) = self.registry.find("oc:apple") else {
+            return;
+        };
+        match self.inventory.get_mut(&apple.0) {
+            Some(count) if *count > 0 => *count -= 1, // predicted consumption
+            _ => return,
+        }
+        self.outbox.push(ClientMessage::Eat { item: apple.0 });
     }
 
     /// Number keys: hotbar slots normally, recipes while the book is open.
@@ -524,6 +541,21 @@ impl App {
                         self.inventory.get(&item.0).copied().unwrap_or(0)
                     });
                     texts.extend(craft_menu::panel(&lines, w).1);
+                }
+                // Food on hand: a hint above the stat bars.
+                if self.caps().has_stats
+                    && let Some(apple) = self.registry.find("oc:apple")
+                {
+                    let apples = self.inventory.get(&apple.0).copied().unwrap_or(0);
+                    if apples > 0 {
+                        let plural = if apples == 1 { "" } else { "s" };
+                        texts.push(oc_renderer::UiText {
+                            text: format!("{apples} apple{plural} - E to eat"),
+                            x: w / 2.0 - 220.0,
+                            y: h - 150.0,
+                            scale: 2.0,
+                        });
+                    }
                 }
                 texts
             },

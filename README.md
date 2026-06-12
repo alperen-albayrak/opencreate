@@ -21,7 +21,10 @@ Procedural terrain streams in around you: Minecraft-1.18-style multi-noise world
 | Left Ctrl | Sprint |
 | F | Toggle fly/walk |
 | Left / right click | Break / place block |
-| 1 2 3 4 | Select stone / dirt / grass / lamp |
+| 1–9 / mouse wheel | Select hotbar slot |
+| C | Crafting recipe book (digits craft while open) |
+| E | Eat an apple (survival; apples drop from leaves) |
+| G | Cycle game mode |
 | F3 | Toggle the debug HUD |
 
 ## Goals

@@ -282,6 +282,7 @@ impl Server {
                     // client matching the authoritative counts.
                     self.send_inventory()?;
                 }
+                ClientMessage::Eat { item } => self.handle_eat(item)?,
                 ClientMessage::SubscribeColumn(chunk) => {
                     self.subscriptions.insert(chunk);
                     // Already loaded: ship it immediately.
@@ -322,12 +323,30 @@ impl Server {
             if !self.world.set_block(pos, block) {
                 return Ok(());
             }
-            if self.registry.mode(self.mode).uses_inventory
-                && let Some(item) = self.registry.item_for_block(existing)
-            {
-                let mut entry = self.ecs.entity_mut(self.player_entity);
-                entry.get_mut::<Inventory>().expect("inventory").add(item, 1);
-                inventory_changed = true;
+            if self.registry.mode(self.mode).uses_inventory {
+                if let Some(item) = self.registry.item_for_block(existing) {
+                    let mut entry = self.ecs.entity_mut(self.player_entity);
+                    entry.get_mut::<Inventory>().expect("inventory").add(item, 1);
+                    inventory_changed = true;
+                }
+                // Leaves sometimes hide an apple (the food source until
+                // farming exists). Position-hashed so it's not farmable by
+                // replacing the same leaves block.
+                if existing == oc_world::blocks::LEAVES
+                    && let Some(apple) = self.registry.find("oc:apple")
+                {
+                    let h = (pos.x as u64)
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        .wrapping_add((pos.y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
+                        ^ (pos.z as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93)
+                        ^ self.seed;
+                    let h = (h ^ (h >> 31)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    if h % 3 == 0 {
+                        let mut entry = self.ecs.entity_mut(self.player_entity);
+                        entry.get_mut::<Inventory>().expect("inventory").add(apple, 1);
+                        inventory_changed = true;
+                    }
+                }
             }
             self.transport.send(ServerMessage::BlockChanged { pos, block })?;
         } else {
@@ -353,6 +372,30 @@ impl Server {
             self.send_inventory()?;
         }
         Ok(())
+    }
+
+    /// Eats one of `item` when the mode tracks stats + inventory and the
+    /// item is food: consumes it, restores hunger, resyncs immediately.
+    fn handle_eat(&mut self, item: u16) -> Result<(), Disconnected> {
+        let mode = self.registry.mode(self.mode);
+        if !mode.uses_inventory || !mode.has_stats {
+            return Ok(());
+        }
+        let mut entry = self.ecs.entity_mut(self.player_entity);
+        let mut stats = *entry.get::<Stats>().expect("stats");
+        let inventory = entry.get_mut::<Inventory>().expect("inventory").into_inner();
+        if !try_eat(inventory, &mut stats, &self.registry, ItemId(item)) {
+            return Ok(());
+        }
+        *entry.get_mut::<Stats>().expect("stats") = stats;
+        self.last_sent_stats = Some(stats);
+        self.transport.send(ServerMessage::Stats {
+            health: stats.health,
+            hunger: stats.hunger,
+            stamina: stats.stamina,
+            oxygen: stats.oxygen,
+        })?;
+        self.send_inventory()
     }
 
     fn send_inventory(&mut self) -> Result<(), Disconnected> {
@@ -574,6 +617,25 @@ pub fn try_craft(inventory: &mut Inventory, registry: &Registry, recipe: usize) 
     true
 }
 
+/// Eats one of `item` if it is food, the player carries it, and there is
+/// hunger to restore. Pure over (inventory, stats); the caller resyncs.
+pub fn try_eat(
+    inventory: &mut Inventory,
+    stats: &mut Stats,
+    registry: &Registry,
+    item: ItemId,
+) -> bool {
+    if item.0 as usize >= registry.item_count() {
+        return false;
+    }
+    let food = registry.item(item).food;
+    if food == 0 || stats.hunger >= 9.95 || !inventory.take(item, 1) {
+        return false;
+    }
+    stats.hunger = (stats.hunger + food as f32).min(10.0);
+    true
+}
+
 /// Nearest dry land to the origin (outward ring search over the pure
 /// heightmap), standing just above the surface.
 fn find_spawn(world: &World) -> DVec3 {
@@ -672,6 +734,40 @@ mod craft_tests {
         assert_eq!(inv.count(lamp), 1);
         assert!(!try_craft(&mut inv, &registry, to_lamp), "out of planks");
         assert!(!try_craft(&mut inv, &registry, 9999), "bogus index");
+    }
+
+    #[test]
+    fn eating_restores_hunger_and_consumes_the_food() {
+        let registry = Registry::load_default().unwrap();
+        let apple = registry.find("oc:apple").unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+        assert_eq!(registry.item(apple).food, 3, "apple is food");
+        assert_eq!(registry.item(stone).food, 0, "stone is not");
+
+        let mut inv = Inventory::default();
+        let mut stats = Stats::full();
+        stats.hunger = 4.0;
+
+        assert!(!try_eat(&mut inv, &mut stats, &registry, apple), "nothing to eat");
+        inv.add(apple, 2);
+        inv.add(stone, 5);
+        assert!(!try_eat(&mut inv, &mut stats, &registry, stone), "stone is not food");
+        assert_eq!(inv.count(stone), 5);
+
+        assert!(try_eat(&mut inv, &mut stats, &registry, apple));
+        assert_eq!(stats.hunger, 7.0);
+        assert_eq!(inv.count(apple), 1);
+
+        // Restoration caps at a full belly...
+        assert!(try_eat(&mut inv, &mut stats, &registry, apple));
+        assert_eq!(stats.hunger, 10.0);
+        assert_eq!(inv.count(apple), 0);
+        // ...and a full belly refuses food entirely.
+        inv.add(apple, 1);
+        assert!(!try_eat(&mut inv, &mut stats, &registry, apple), "already full");
+        assert_eq!(inv.count(apple), 1);
+        // Bogus item ids are rejected.
+        assert!(!try_eat(&mut inv, &mut stats, &registry, ItemId(9999)));
     }
 }
 

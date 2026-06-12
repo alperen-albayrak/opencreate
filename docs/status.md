@@ -40,6 +40,9 @@ rendering (floating origin); textured chunk; fly camera.
 - Items/recipes/game-modes/creatures all data-driven (RON registry)
 - Survival inventory (gather on break, consume on place, server-validated
   with prediction rollback), crafting via the C-key recipe book
+- Food & eating: apples drop from leaves (1-in-3, position-hashed),
+  E eats (+3 hunger, server-validated); any item with a `food:` value
+  in items.ron is edible
 - Four game modes (survival/creative/adventure/spectator) as data
 - Passive creatures: server wander AI + interpolated client rendering
 
@@ -51,6 +54,6 @@ rendering (floating origin); textured chunk; fly camera.
 
 ## Not started yet
 
-Food/eating, drag-grid inventory screen, `./mods/` loader,
+Drag-grid inventory screen, `./mods/` loader,
 texture packs/skins, dedicated server binary + QUIC, palette compression,
 LOD, GPU occlusion culling, physics grids. See [roadmap.md](roadmap.md).

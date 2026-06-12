@@ -16,9 +16,9 @@ The first "it's a game" build.
 Done: client/server split, stats, inventory, crafting, game modes,
 passive creatures, MC 1.18-style multi-noise worldgen, villages
 (two-phase placement: region-hashed centers, per-chunk hash-placed
-houses with lit interiors).
+houses with lit interiors), food & eating (apples from leaves, data-driven
+`food:` values).
 Remaining:
-- **Food & eating** — close the hunger loop (food items, eat action)
 - **Inventory screen** — drag-and-drop grid UI + real crafting grid
 - **Ocean creatures** — fish with water movement AI
 - Local skin + texture pack selection (overlay stack)

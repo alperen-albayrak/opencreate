@@ -12,4 +12,5 @@
     (id: "oc:snow", name: "Snow", block: Some(9)),
     (id: "oc:planks", name: "Planks", block: Some(10)),
     (id: "oc:stick", name: "Stick", block: None),
+    (id: "oc:apple", name: "Apple", block: None, food: 3),
 ]

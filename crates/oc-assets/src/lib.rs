@@ -29,6 +29,9 @@ pub struct ItemDef {
     pub name: String,
     /// Block-state id this item places, if it's a block item.
     pub block: Option<u16>,
+    /// Hunger points (0..=10 scale) restored when eaten; 0 = not food.
+    #[serde(default)]
+    pub food: u32,
 }
 
 #[derive(Debug, Deserialize)]

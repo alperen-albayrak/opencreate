@@ -34,6 +34,7 @@ counts) every 5 s, plus server lifecycle messages.
 | Left / right click | Break / place the targeted block |
 | 1–9 / mouse wheel | Select hotbar slot |
 | C | Open/close the crafting recipe book (digits craft while open) |
+| E | Eat an apple (survival; apples drop from leaves) |
 | F3 | Toggle the debug HUD |
 
 New worlds start in survival on the nearest dry land to the origin. You
