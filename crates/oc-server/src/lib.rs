@@ -213,13 +213,20 @@ impl Server {
         if slots == 0 {
             return;
         }
-        let wanted: Vec<ChunkPos> = self
+        // Nearest to the player first — they're standing on (or falling
+        // toward) the closest column.
+        let player_chunk = oc_core::coords::block_to_chunk(self.player_position.floor().as_ivec3());
+        let mut wanted: Vec<ChunkPos> = self
             .subscriptions
             .iter()
             .filter(|c| !self.world.is_generated(**c) && !self.gen_inflight.contains(c))
-            .take(slots)
             .copied()
             .collect();
+        wanted.sort_by_key(|c| {
+            let (dx, dz) = ((c.x - player_chunk.x) as i64, (c.z - player_chunk.z) as i64);
+            dx * dx + dz * dz
+        });
+        wanted.truncate(slots);
         for chunk in wanted {
             self.gen_inflight.insert(chunk);
             let generator = *self.world.generator();

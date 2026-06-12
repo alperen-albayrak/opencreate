@@ -8,7 +8,6 @@ mod streaming;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use glam::DVec3;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tracing::{error, info};
 use winit::application::ApplicationHandler;
@@ -18,13 +17,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use camera::Camera;
+use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
+use oc_server::{ServerConfig, ServerHandle};
 use oc_world::raycast::{RayHit, raycast};
-use oc_world::store::FolderStore;
 use oc_world::{BlockId, blocks};
 use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
@@ -37,77 +34,7 @@ const SAVE_DIR: &str = "saves/world";
 /// How far the player can reach to break/place blocks.
 const REACH: f64 = 6.0;
 
-/// Per-world metadata persisted in `level.txt` (key=value lines; becomes a
-/// real header with the §9 region format).
-struct LevelMeta {
-    seed: u64,
-    day_fraction: f64,
-    position: DVec3,
-    yaw: f32,
-    pitch: f32,
-}
-
-fn load_level(path: &Path) -> Option<LevelMeta> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut map = std::collections::HashMap::new();
-    for line in text.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            map.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
-    let get = |k: &str| map.get(k);
-    Some(LevelMeta {
-        seed: get("seed")?.parse().ok()?,
-        day_fraction: get("day")?.parse().ok()?,
-        position: DVec3::new(
-            get("px")?.parse().ok()?,
-            get("py")?.parse().ok()?,
-            get("pz")?.parse().ok()?,
-        ),
-        yaw: get("yaw")?.parse().ok()?,
-        pitch: get("pitch")?.parse().ok()?,
-    })
-}
-
-fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
-    let text = format!(
-        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\n",
-        meta.seed,
-        meta.day_fraction,
-        meta.position.x,
-        meta.position.y,
-        meta.position.z,
-        meta.yaw,
-        meta.pitch,
-    );
-    let tmp = path.with_extension("txt.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
-/// Nearest dry land to the origin (outward ring search over the pure
-/// heightmap), standing just above the surface.
-fn find_spawn(world: &oc_world::World) -> DVec3 {
-    const STEP: i32 = 8;
-    for radius in 0..256 {
-        let r = radius * STEP;
-        for z in (-r..=r).step_by(STEP as usize) {
-            for x in (-r..=r).step_by(STEP as usize) {
-                // Ring only: skip the interior already searched.
-                if x.abs() != r && z.abs() != r {
-                    continue;
-                }
-                let h = world.surface_height(x, z);
-                if h > 1 {
-                    return DVec3::new(x as f64 + 0.5, h as f64 + 2.0, z as f64 + 0.5);
-                }
-            }
-        }
-    }
-    // No land within 2048 blocks: float above the ocean at the origin.
-    DVec3::new(0.5, 24.0, 0.5)
-}
+type ClientEnd = InProcEnd<ClientMessage, ServerMessage>;
 
 /// Runs the client until the window is closed.
 pub fn run() -> Result<()> {
@@ -138,20 +65,18 @@ struct App {
     place_clicked: bool,
     mouse_captured: bool,
     last_frame: Instant,
-    /// Time of day in [0, 1); see `sky::sky_at` for the phase convention.
+    /// Time of day in [0, 1); locally advanced, corrected by server Time.
     day_fraction: f64,
     perf: PerfLog,
-    level_path: PathBuf,
-    seed: u64,
-    last_autosave: Instant,
+    /// Connection to the (embedded) server; None after shutdown.
+    transport: Option<ClientEnd>,
+    server: Option<ServerHandle>,
+    /// Messages queued for the server this frame.
+    outbox: Vec<ClientMessage>,
     hud_visible: bool,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
 }
-
-/// Dirty columns and level metadata are also written on this cadence, so a
-/// crash or force-quit loses at most this much progress.
-const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets,
 /// until the in-game HUD exists).
@@ -192,28 +117,40 @@ impl PerfLog {
 
 impl App {
     fn new() -> Result<Self> {
-        let store = Arc::new(FolderStore::open(SAVE_DIR)?);
-        let level_path = PathBuf::from(SAVE_DIR).join("level.txt");
-        let level = load_level(&level_path);
+        // Offline play is still client-server (§1): an embedded server on
+        // its own thread, connected by the in-proc transport.
+        let (mut transport, server_end) = in_proc_channel();
+        let server = oc_server::start(
+            ServerConfig { seed: WORLD_SEED, save_dir: SAVE_DIR.into() },
+            server_end,
+        )?;
 
-        let seed = level.as_ref().map_or(WORLD_SEED, |l| l.seed);
-        let streamer = ChunkStreamer::new(seed, store);
-        let player = Player::new(match &level {
-            Some(l) => l.position,
-            None => find_spawn(streamer.world()),
-        });
-        let mut camera = Camera::new(player.eye());
-        if let Some(l) = &level {
-            camera.yaw = l.yaw;
-            camera.pitch = l.pitch;
-            info!("resumed world from {}", level_path.display());
-        }
+        // The Welcome carries the seed, spawn and time of day.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (seed, spawn, day_fraction) = loop {
+            match transport
+                .try_recv()
+                .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
+            {
+                Some(ServerMessage::Welcome { seed, spawn, day_fraction }) => {
+                    break (seed, spawn, day_fraction);
+                }
+                Some(_) => {}
+                None if Instant::now() > deadline => {
+                    anyhow::bail!("timed out waiting for the server welcome")
+                }
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        };
+        info!(seed, "connected to embedded server");
+
+        let player = Player::new(spawn);
         Ok(Self {
             renderer: None,
             window: None,
             error: None,
-            streamer,
-            camera,
+            streamer: ChunkStreamer::new(seed),
+            camera: Camera::new(player.eye()),
             player,
             input: MoveInput::default(),
             selected_block: blocks::STONE,
@@ -221,15 +158,22 @@ impl App {
             place_clicked: false,
             mouse_captured: false,
             last_frame: Instant::now(),
-            // Start mid-morning so a new world's first impression is lit.
-            day_fraction: level.as_ref().map_or(0.15, |l| l.day_fraction),
+            day_fraction,
             perf: PerfLog::new(),
-            level_path,
-            seed,
-            last_autosave: Instant::now(),
+            transport: Some(transport),
+            server: Some(server),
+            outbox: Vec::new(),
             hud_visible: true,
             frame_time_ema: 1.0 / 60.0,
         })
+    }
+
+    /// Disconnects from the server and waits for its final save.
+    fn shutdown(&mut self) {
+        drop(self.transport.take());
+        if let Some(server) = self.server.take() {
+            server.join();
+        }
     }
 
     fn hud_text(&self, renderer: &Renderer) -> String {
@@ -251,23 +195,6 @@ impl App {
             if self.player.flying { "flying" } else { "walking" },
             if self.player.flying { "walk" } else { "fly" },
         )
-    }
-
-    /// Persists edited columns and the level metadata.
-    fn save_world(&mut self) {
-        let saved = self.streamer.save_dirty();
-        let meta = LevelMeta {
-            seed: self.seed,
-            day_fraction: self.day_fraction,
-            position: self.player.position,
-            yaw: self.camera.yaw,
-            pitch: self.camera.pitch,
-        };
-        if let Err(err) = save_level(&self.level_path, &meta) {
-            error!("saving level metadata: {err:#}");
-        } else {
-            info!(columns = saved, "world saved");
-        }
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -340,7 +267,6 @@ impl App {
         }
     }
 
-    /// The solid block the camera looks at, within reach.
     fn target(&self) -> Option<RayHit> {
         raycast(
             self.streamer.world(),
@@ -350,12 +276,16 @@ impl App {
         )
     }
 
+    /// Applies an edit locally (prediction) and tells the server. The
+    /// server's BlockChanged echo is a no-op when it matches.
     fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
         if std::mem::take(&mut self.break_clicked)
             && let Some(hit) = self.target()
             && self.streamer.world_mut().set_block(hit.block, BlockId::AIR)
         {
             self.streamer.remesh_after_edit(renderer, hit.block)?;
+            self.outbox
+                .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
         }
         if std::mem::take(&mut self.place_clicked)
             && let Some(hit) = self.target()
@@ -368,9 +298,32 @@ impl App {
                 && !self.player.aabb().intersects_block(pos);
             if free && self.streamer.world_mut().set_block(pos, self.selected_block) {
                 self.streamer.remesh_after_edit(renderer, pos)?;
+                self.outbox
+                    .push(ClientMessage::SetBlock { pos, block: self.selected_block });
             }
         }
         Ok(())
+    }
+
+    /// Integrates everything the server sent since last frame.
+    fn drain_server_messages(&mut self, renderer: &mut Renderer) -> Result<()> {
+        let Some(transport) = &mut self.transport else {
+            return Ok(());
+        };
+        loop {
+            let msg = transport
+                .try_recv()
+                .map_err(|_| anyhow::anyhow!("server disconnected"))?;
+            match msg {
+                Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
+                Some(ServerMessage::BlockChanged { pos, block }) => {
+                    self.streamer.apply_block_change(renderer, pos, block)?;
+                }
+                Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
+                Some(ServerMessage::Welcome { .. }) => {} // already consumed at startup
+                None => return Ok(()),
+            }
+        }
     }
 
     fn frame(&mut self) -> Result<()> {
@@ -390,12 +343,36 @@ impl App {
         self.frame_time_ema = self.frame_time_ema * 0.95 + dt * 0.05;
         self.day_fraction = (self.day_fraction + dt / sky::DAY_LENGTH_SECS).fract();
 
-        self.player
-            .update(self.streamer.world(), &self.input, self.camera.yaw, dt);
+        self.drain_server_messages(renderer)?;
+
+        // Hold physics until the column under the player has terrain, so
+        // nobody falls through a world that hasn't streamed in yet.
+        let feet_chunk =
+            oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
+        if self.streamer.world().is_generated(feet_chunk) {
+            self.player
+                .update(self.streamer.world(), &self.input, self.camera.yaw, dt);
+        }
         self.camera.position = self.player.eye();
 
         self.apply_block_edits(renderer)?;
-        self.streamer.update(renderer, self.camera.position)?;
+        self.streamer
+            .update(renderer, self.camera.position, &mut self.outbox)?;
+
+        // Flush this frame's messages, plus the player state the server
+        // persists (and will reconcile in phase 4).
+        self.outbox.push(ClientMessage::PlayerState {
+            position: self.player.position,
+            yaw: self.camera.yaw,
+            pitch: self.camera.pitch,
+        });
+        if let Some(transport) = &mut self.transport {
+            for msg in self.outbox.drain(..) {
+                transport
+                    .send(msg)
+                    .map_err(|_| anyhow::anyhow!("server disconnected"))?;
+            }
+        }
 
         let Some(window) = &self.window else {
             return Ok(());
@@ -412,11 +389,6 @@ impl App {
             hud: self.hud_text(renderer),
         })?;
         self.perf.frame(frame_start.elapsed(), renderer);
-
-        if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
-            self.last_autosave = Instant::now();
-            self.save_world();
-        }
         Ok(())
     }
 }
@@ -433,7 +405,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.save_world();
+                self.shutdown(); // the server runs the final save
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {

@@ -15,3 +15,5 @@ glam.workspace = true
 rayon.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+oc-protocol.workspace = true
+oc-server.workspace = true

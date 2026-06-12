@@ -1,9 +1,11 @@
-//! Chunk streaming: keeps terrain generated and meshed around the camera.
+//! Chunk streaming: keeps the server-fed world mirror meshed around the
+//! camera.
 //!
-//! The §4 async pipeline: generation and meshing run as rayon jobs and post
-//! results back over channels; the main thread integrates world data,
-//! uploads meshes under a per-frame budget, and unloads what falls behind.
-//! Block-edit remeshing stays synchronous so edits never lag a frame.
+//! Terrain arrives from `oc-server` via column subscriptions (§1/§8); this
+//! side holds a read-mirror `World` for physics/raycasts, meshes it with
+//! rayon jobs (§4), uploads under a per-frame budget, and unloads what
+//! falls behind. Block-edit remeshing stays synchronous so local
+//! prediction never lags a frame.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -13,13 +15,12 @@ use anyhow::Result;
 use glam::{DVec3, IVec3};
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
+use oc_protocol::ClientMessage;
 use oc_renderer::{ChunkMesh, Renderer, mesh_section};
 use oc_world::light::{LightField, compute_light};
-use oc_world::store::WorldStore;
 use oc_world::terrain::BOTTOM_SECTION_Y;
-use oc_world::world::{GeneratedColumn, generate_column_data};
+use oc_world::world::GeneratedColumn;
 use oc_world::{BlockId, Section, World};
-use tracing::warn;
 
 /// Columns of meshed terrain kept around the camera (view distance).
 const VIEW_RADIUS: i32 = 12;
@@ -29,7 +30,7 @@ const GEN_MARGIN: i32 = 1;
 /// Extra retained ring before unloading, so pacing back and forth across a
 /// column border doesn't thrash generate/unload.
 const UNLOAD_MARGIN: i32 = 2;
-/// Maximum generation + meshing jobs in flight at once.
+/// Maximum meshing jobs in flight at once.
 const MAX_INFLIGHT: usize = 24;
 /// Section meshes uploaded to the GPU per frame (bounds frame-time spikes).
 const UPLOAD_BUDGET: usize = 32;
@@ -41,13 +42,11 @@ struct MeshJobResult {
 
 pub struct ChunkStreamer {
     world: World,
-    store: Arc<dyn WorldStore>,
     /// Section meshes currently uploaded to the renderer, per column.
     meshed: HashMap<ChunkPos, Vec<SectionPos>>,
-    gen_inflight: HashSet<ChunkPos>,
+    /// Columns we asked the server for.
+    subscribed: HashSet<ChunkPos>,
     mesh_inflight: HashSet<ChunkPos>,
-    gen_tx: Sender<GeneratedColumn>,
-    gen_rx: Receiver<GeneratedColumn>,
     mesh_tx: Sender<MeshJobResult>,
     mesh_rx: Receiver<MeshJobResult>,
     /// Mesh results that arrived but exceeded the frame's upload budget.
@@ -55,42 +54,36 @@ pub struct ChunkStreamer {
 }
 
 impl ChunkStreamer {
-    pub fn new(seed: u64, store: Arc<dyn WorldStore>) -> Self {
-        let (gen_tx, gen_rx) = channel();
+    pub fn new(seed: u64) -> Self {
         let (mesh_tx, mesh_rx) = channel();
         Self {
             world: World::new(seed),
-            store,
             meshed: HashMap::new(),
-            gen_inflight: HashSet::new(),
+            subscribed: HashSet::new(),
             mesh_inflight: HashSet::new(),
-            gen_tx,
-            gen_rx,
             mesh_tx,
             mesh_rx,
             upload_queue: Vec::new(),
         }
     }
 
-    /// Persists one dirty column and clears its flag.
-    fn save_column(&mut self, chunk: ChunkPos) {
-        let Some(column) = self.world.export_column(chunk) else {
-            return;
-        };
-        match self.store.save_column(chunk, &column) {
-            Ok(()) => self.world.mark_saved(chunk),
-            Err(e) => warn!("saving column ({}, {}): {e:#}", chunk.x, chunk.z),
-        }
+    /// Terrain arrived from the server.
+    pub fn insert_column(&mut self, column: GeneratedColumn) {
+        self.world.insert_column(column);
     }
 
-    /// Persists every edited column (call on exit).
-    pub fn save_dirty(&mut self) -> usize {
-        let dirty: Vec<ChunkPos> = self.world.dirty_columns().collect();
-        let count = dirty.len();
-        for chunk in dirty {
-            self.save_column(chunk);
+    /// A remote block change (or the echo of a local one). Applies and
+    /// remeshes only if the mirror doesn't already have the value.
+    pub fn apply_block_change(
+        &mut self,
+        renderer: &mut Renderer,
+        pos: BlockPos,
+        block: BlockId,
+    ) -> Result<()> {
+        if self.world.block(pos) != block && self.world.set_block(pos, block) {
+            self.remesh_after_edit(renderer, pos)?;
         }
-        count
+        Ok(())
     }
 
     pub fn world(&self) -> &World {
@@ -101,26 +94,20 @@ impl ChunkStreamer {
         &mut self.world
     }
 
-    /// Runs one frame of streaming work around the camera.
-    pub fn update(&mut self, renderer: &mut Renderer, camera_pos: DVec3) -> Result<()> {
+    /// Runs one frame of streaming work around the camera. Subscription
+    /// changes for the server are appended to `outbox`.
+    pub fn update(
+        &mut self,
+        renderer: &mut Renderer,
+        camera_pos: DVec3,
+        outbox: &mut Vec<ClientMessage>,
+    ) -> Result<()> {
         let center = block_to_chunk(camera_pos.floor().as_ivec3());
-        self.integrate_generated(center);
         self.upload_meshes(renderer, center)?;
-        self.unload_far(renderer, center);
-        self.dispatch_gen_jobs(center);
+        self.unload_far(renderer, center, outbox);
+        self.subscribe_near(center, outbox);
         self.dispatch_mesh_jobs(center);
         Ok(())
-    }
-
-    /// Pulls finished generation jobs into the world.
-    fn integrate_generated(&mut self, center: ChunkPos) {
-        while let Ok(column) = self.gen_rx.try_recv() {
-            self.gen_inflight.remove(&column.chunk);
-            // Stale if the player moved on while the job ran.
-            if chebyshev(column.chunk, center) <= VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN {
-                self.world.insert_column(column);
-            }
-        }
     }
 
     /// Uploads finished meshes, spreading work across frames.
@@ -150,7 +137,12 @@ impl ChunkStreamer {
         Ok(())
     }
 
-    fn unload_far(&mut self, renderer: &mut Renderer, center: ChunkPos) {
+    fn unload_far(
+        &mut self,
+        renderer: &mut Renderer,
+        center: ChunkPos,
+        outbox: &mut Vec<ClientMessage>,
+    ) {
         let limit = VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN;
         let far: Vec<ChunkPos> = self
             .world
@@ -165,45 +157,28 @@ impl ChunkStreamer {
             for pos in self.world.column_sections(chunk) {
                 renderer.remove_chunk(pos);
             }
-            if self.world.is_dirty(chunk) {
-                self.save_column(chunk);
-            }
+            // The server owns persistence; the mirror just forgets.
             self.world.unload_column(chunk);
+            if self.subscribed.remove(&chunk) {
+                outbox.push(ClientMessage::UnsubscribeColumn(chunk));
+            }
         }
     }
 
-    fn dispatch_gen_jobs(&mut self, center: ChunkPos) {
-        let slots = MAX_INFLIGHT.saturating_sub(self.gen_inflight.len() + self.mesh_inflight.len());
-        if slots == 0 {
-            return;
-        }
+    /// Asks the server for every in-range column we don't have yet.
+    fn subscribe_near(&mut self, center: ChunkPos, outbox: &mut Vec<ClientMessage>) {
         let mut wanted: Vec<ChunkPos> = ring(center, VIEW_RADIUS + GEN_MARGIN)
-            .filter(|c| !self.world.is_generated(*c) && !self.gen_inflight.contains(c))
+            .filter(|c| !self.subscribed.contains(c))
             .collect();
         wanted.sort_by_key(|&c| dist2(c, center));
-        for chunk in wanted.into_iter().take(slots) {
-            self.gen_inflight.insert(chunk);
-            let generator = *self.world.generator();
-            let store = Arc::clone(&self.store);
-            let tx = self.gen_tx.clone();
-            rayon::spawn(move || {
-                // Saved edits win over fresh generation.
-                let column = match store.load_column(chunk) {
-                    Ok(Some(stored)) => stored.into_generated(chunk),
-                    Ok(None) => generate_column_data(&generator, chunk),
-                    Err(e) => {
-                        warn!("loading column ({}, {}): {e:#}", chunk.x, chunk.z);
-                        generate_column_data(&generator, chunk)
-                    }
-                };
-                // Receiver gone only during shutdown; nothing to do then.
-                let _ = tx.send(column);
-            });
+        for chunk in wanted {
+            self.subscribed.insert(chunk);
+            outbox.push(ClientMessage::SubscribeColumn(chunk));
         }
     }
 
     fn dispatch_mesh_jobs(&mut self, center: ChunkPos) {
-        let slots = MAX_INFLIGHT.saturating_sub(self.gen_inflight.len() + self.mesh_inflight.len());
+        let slots = MAX_INFLIGHT.saturating_sub(self.mesh_inflight.len());
         if slots == 0 {
             return;
         }

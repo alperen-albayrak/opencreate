@@ -5,7 +5,7 @@ use ash::vk;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 
-use crate::chunk_renderer::{GpuBuffer, as_bytes, create_filled_buffer};
+use crate::chunk_renderer::{as_bytes, create_filled_buffer};
 use crate::context::VulkanContext;
 use crate::font;
 
