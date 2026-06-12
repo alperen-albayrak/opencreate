@@ -129,25 +129,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // hitting whatever is behind it (sky counts as "very far").
     let water_depth = max(linearize(scene_depth) - linearize(in.clip.z), 0.0);
 
-    // Geometry stays flat; only a texture-scale ripple perturbs the top
-    // normal (the sparkling sun path), never multi-block swells — and it
-    // fades with distance: far water is a calm mirror, like the genre
-    // look (shimmer is a near-field effect).
-    let t = pc.rel.w;
-    let view_dist = length(pc.rel.xyz + in.local);
-    let ripple_fade = 1.0 - smoothstep(24.0, 72.0, view_dist);
-    var normal: vec3<f32>;
-    if (in.face == 0u) {
-        let rippled = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
-        normal = normalize(mix(vec3(0.0, 1.0, 0.0), rippled, ripple_fade));
-    } else {
-        var side = array<vec3<f32>, 6>(
-            vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
-            vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
-            vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
-        );
-        normal = side[in.face];
-    }
+    // The body, fresnel and sky reflection all use the FLAT face normal:
+    // the water sheet stays perfectly smooth at every distance (no
+    // light/dark wave strips). The ripple only sparkles the sun glint.
+    var side = array<vec3<f32>, 6>(
+        vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
+        vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+    );
+    let normal = side[in.face];
 
     // Camera sits at the origin of camera-relative space.
     let to_fragment = normalize(pc.rel.xyz + in.local);
@@ -173,14 +163,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, sky_follow);
     let sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
 
-    // Sun glint: tight specular off the perturbed normal. pc.sun.xyz is
+    // Sun glint: the ONLY place the ripple acts — a tight specular off
+    // the rippled normal breaks into the pixel-sparkle sun path, fading
+    // with distance (far water is a calm mirror). pc.sun.xyz is
     // pre-scaled by daylight, so the glint dies at night.
     let daylight = length(pc.sun.xyz);
     var glint = 0.0;
-    if (daylight > 0.01) {
+    if (daylight > 0.01 && in.face == 0u) {
+        let view_dist = length(pc.rel.xyz + in.local);
+        let ripple_fade = 1.0 - smoothstep(24.0, 64.0, view_dist);
+        let t = pc.rel.w;
+        let rippled = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
+        let glint_normal = normalize(mix(normal, rippled, ripple_fade));
+        let glint_dir = reflect(to_fragment, glint_normal);
         let sun_dir = pc.sun.xyz / daylight;
-        // The ripple breaks the glint into the sparkling sun path.
-        glint = pow(max(dot(reflect_dir, sun_dir), 0.0), 500.0) * 1.3 * daylight * in.shade;
+        glint = pow(max(dot(glint_dir, sun_dir), 0.0), 500.0) * 1.3 * daylight * in.shade;
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);
