@@ -57,6 +57,23 @@ pub fn sky_at(day_fraction: f64) -> SkyState {
     }
 }
 
+/// How far you can see underwater before the fog saturates, in blocks.
+pub const UNDERWATER_FOG_DISTANCE: f32 = 40.0;
+
+/// Submerged camera: dense blue fog swallows the sky and the horizon —
+/// both fade to deep water blue, scaled by daylight so night dives are
+/// dark. The sun keeps shining through as a bright glow overhead.
+pub fn underwater(state: &SkyState) -> SkyState {
+    let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
+    let water = Vec3::new(0.05, 0.22, 0.42) * (0.04 + 0.96 * daylight);
+    SkyState {
+        sun: state.sun,
+        sky_color: [water.x, water.y, water.z, 1.0],
+        zenith: [water.x * 0.7, water.y * 0.75, water.z * 0.85, 1.0],
+        clouds: state.clouds,
+    }
+}
+
 fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -90,6 +107,23 @@ mod tests {
             sky.sky_color[0] > sky.sky_color[2],
             "sunset should be warmer than blue: {:?}",
             sky.sky_color
+        );
+    }
+
+    #[test]
+    fn underwater_is_blue_fog_and_tracks_daylight() {
+        let noon = underwater(&sky_at(0.25));
+        assert!(
+            noon.sky_color[2] > noon.sky_color[0] * 3.0,
+            "underwater fog should be deep blue: {:?}",
+            noon.sky_color
+        );
+        let night = underwater(&sky_at(0.75));
+        assert!(
+            night.sky_color[2] < noon.sky_color[2] * 0.2,
+            "night dives should be dark: {:?} vs {:?}",
+            night.sky_color,
+            noon.sky_color
         );
     }
 

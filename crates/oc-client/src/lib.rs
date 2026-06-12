@@ -298,7 +298,16 @@ impl App {
             return;
         };
         match rx.try_recv() {
-            Ok(Ok(session)) => {
+            Ok(Ok(mut session)) => {
+                // Dev hook companion to OC_WORLD: OC_POS=x,y,z places the
+                // camera (graphics verification; harmless in normal play).
+                if let Ok(pos) = std::env::var("OC_POS") {
+                    let v: Vec<f64> = pos.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if let [x, y, z] = v[..] {
+                        session.player.position = glam::DVec3::new(x, y, z);
+                        session.camera.position = session.player.eye();
+                    }
+                }
                 self.session = Some(session);
                 self.apply_settings();
                 self.screen = Screen::InGame;

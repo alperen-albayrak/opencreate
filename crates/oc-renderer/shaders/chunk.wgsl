@@ -22,7 +22,10 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
     @location(2) shade: f32,
-    @location(3) local: vec3<f32>,
+    // Caustic-plane coords: world position (mod-256 anchored) projected
+    // onto the face's plane, so dapples wrap around vertical faces
+    // instead of smearing down them.
+    @location(3) cpos: vec2<f32>,
     @location(4) @interpolate(flat) underwater: u32,
 }
 
@@ -76,28 +79,62 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
     out.shade = max(sky_term, block_term);
-    out.local = pos;
+    let world = pc.params.xyz + pos;
+    if (face < 2u) {
+        out.cpos = world.xz;
+    } else if (face < 4u) {
+        out.cpos = world.xy;
+    } else {
+        out.cpos = world.zy;
+    }
     out.underwater = (packed.y >> 24u) & 1u;
     return out;
 }
 
-// Caustic dapples: bright cell lines (a sum of waves crossing zero) plus
-// a fine sparkle octave, snapped to the 16x16 texel grid with stepped
-// time — dense pixel-art shimmer over submerged surfaces. Wave vectors
-// are integer cycles over 256 blocks, seamless across chunks.
+fn hash2(c: vec2<f32>) -> vec2<f32> {
+    let n = sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3))));
+    return fract(n * 43758.5453);
+}
+
+// Caustic dapples: an animated Voronoi web — thin bright cell borders
+// over dark interiors, the shape sunlight takes when surface ripples
+// focus it. ~5 cells per block; each cell's focus point drifts in a
+// small loop. Snapped to a half-texel grid (32 steps per block) with
+// stepped time, and dotted per texel so the lines read as pixel art.
+// Cell ids wrap every 256 blocks, matching the chunk phase anchor, so
+// the pattern is seamless and fp32-exact anywhere in the world.
 fn caustic(p_raw: vec2<f32>, t_raw: f32) -> f32 {
     let tau = 6.28318530718;
-    let p = floor(p_raw * 16.0) / 16.0;
+    let p = floor(p_raw * 32.0) / 32.0;
     let t = floor(t_raw * 5.0) / 5.0;
-    let a = sin(tau * dot(p, vec2(64.0, 24.0)) / 256.0 + t * 0.5);
-    let b = sin(tau * dot(p, vec2(-32.0, 72.0)) / 256.0 + t * 0.7);
-    let c = sin(tau * dot(p, vec2(48.0, -56.0)) / 256.0 + t * 0.4);
-    let web = pow(1.0 - abs((a + b + c) / 3.0), 5.0);
-    // Fine grain (~1-block wavelength) that rides on the web.
-    let d = sin(tau * dot(p, vec2(168.0, 200.0)) / 256.0 + t * 0.8);
-    let e = sin(tau * dot(p, vec2(-216.0, 144.0)) / 256.0 + t * 1.1);
-    let fine = pow(1.0 - abs((d + e) / 2.0), 3.0);
-    return web * (0.55 + 0.45 * fine) + 0.25 * fine * web;
+    let q = p * 5.0;
+    let base = floor(q);
+    var f1 = 8.0;
+    var f2 = 8.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let cell = base + vec2(f32(dx), f32(dy));
+            let wrapped = cell - floor(cell / 1280.0) * 1280.0;
+            let h = hash2(wrapped);
+            let feature = cell + vec2(0.5)
+                + 0.38 * vec2(sin(t * 0.8 + h.x * tau), sin(t * 1.0 + h.y * tau));
+            let d = distance(q, feature);
+            if (d < f1) {
+                f2 = f1;
+                f1 = d;
+            } else if (d < f2) {
+                f2 = d;
+            }
+        }
+    }
+    // Bright where two cells nearly tie (the border between them).
+    let web = 1.0 - smoothstep(0.0, 0.22, f2 - f1);
+    // Per-texel flicker breaks the lines into shifting dots, with the
+    // occasional fully bright sparkle pixel.
+    let tex = p * 32.0 - floor(p * 32.0 / 8192.0) * 8192.0;
+    let n = hash2(tex + vec2(t * 7.0, t * 13.0)).x;
+    let sparkle = select(0.0, 0.5, n > 0.93);
+    return web * (0.3 + 0.35 * n * n + sparkle);
 }
 
 @group(0) @binding(0) var block_textures: texture_2d_array<f32>;
@@ -114,20 +151,20 @@ fn linearize(depth: f32) -> f32 {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
-    var shade = in.shade;
+    var color = texel.rgb * in.shade;
     if (in.underwater == 1u) {
         // Sun dapples on submerged surfaces; daylight-gated (pc.sun.xyz
         // is pre-scaled by daylight) and scene-lit so caves stay dark.
         let daylight = length(pc.sun.xyz);
         // Caustics are a near-field effect too: gone past ~100 blocks.
         let dist_fade = 1.0 - smoothstep(40.0, 110.0, linearize(in.clip.z));
-        let p = pc.params.xz + in.local.xz;
-        let dapple = caustic(p, pc.params.w) * daylight * dist_fade;
-        // Slightly green-cyan dapples, like sunlight through water.
-        return vec4<f32>(
-            texel.rgb * shade * (vec3(1.0) + vec3(0.55, 0.80, 0.70) * dapple),
-            1.0,
-        );
+        let dapple = caustic(in.cpos, pc.params.w) * daylight * dist_fade;
+        // Slightly green-cyan dapples, like sunlight through water —
+        // kept faint: a shimmer on the sand, not a pattern painted on it.
+        color *= vec3(1.0) + vec3(0.30, 0.44, 0.38) * dapple;
     }
-    return vec4<f32>(texel.rgb * shade, 1.0);
+    // Horizon fog, same curve as water: far terrain melts into the sky;
+    // underwater the client passes a short distance and deep blue color.
+    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.fog.w, 2.0));
+    return vec4<f32>(mix(color, pc.fog.rgb, fog_amount), 1.0);
 }

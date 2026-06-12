@@ -44,6 +44,10 @@ fresnel, sky reflection + high-exponent sun glint, screen-space
 refraction with the depth guard, per-channel Beer–Lambert depth
 absorption (shallow turquoise → deep blue), soft shorelines via depth
 fade. Water setting: low (flat) / normal / high; ultra adds SSR later.
+*Shipped so far:* texel-quantized ripple living only in the sun glint,
+Beer–Lambert absorption, crisp waterline, Voronoi-web caustics in the
+style of the official sprite sheet (procedural, our own), and an
+underwater camera mode — dense blue fog, blue sky dome, clouds off.
 
 **C. Sky & atmosphere**
 One reusable `sky(direction)` function feeding the sky pass, water

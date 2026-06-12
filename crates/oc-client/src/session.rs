@@ -360,6 +360,21 @@ impl Session {
         )
     }
 
+    /// True when the camera eye is inside water — below the 14/16 surface
+    /// of the topmost water block, or anywhere in a submerged one.
+    fn camera_underwater(&self) -> bool {
+        let p = self.camera.position;
+        let bp = p.floor().as_ivec3();
+        let world = self.streamer.world();
+        if world.block(bp) != oc_world::blocks::WATER {
+            return false;
+        }
+        // The top sliver of a surface block is air: the water sits at 14/16.
+        let in_top_sliver = p.y - p.y.floor() > 0.875
+            && world.block(bp + glam::IVec3::Y) != oc_world::blocks::WATER;
+        !in_top_sliver
+    }
+
     /// Builds the world frame: camera, entities, and in-game UI at the
     /// effective UI scale.
     pub fn frame_camera(
@@ -377,7 +392,11 @@ impl Session {
     ) -> FrameCamera {
         let (w, h) = size;
         let aspect = w.max(1.0) / h.max(1.0);
-        let sky = sky::sky_at(self.day_fraction);
+        let mut sky = sky::sky_at(self.day_fraction);
+        let underwater = self.camera_underwater();
+        if underwater {
+            sky = sky::underwater(&sky);
+        }
         let caps = self.caps(registry);
 
         let mut texts = if caps.uses_inventory {
@@ -443,8 +462,12 @@ impl Session {
             sun: sky.sun,
             sky_color: sky.sky_color,
             sky_zenith: sky.zenith,
-            fog_distance,
-            clouds,
+            fog_distance: if underwater {
+                sky::UNDERWATER_FOG_DISTANCE.min(fog_distance)
+            } else {
+                fog_distance
+            },
+            clouds: clouds && !underwater,
             cloud_color: sky.clouds,
             entities: self.entities.draws(registry, Instant::now()),
             hud: if hud_visible {
