@@ -4,7 +4,8 @@
 use oc_renderer::{UiQuad, UiText, block_swatch};
 use oc_world::{BlockId, blocks};
 
-/// Placeable palette, in slot order (keys 1..=9).
+/// Default palette, in slot order (keys 1..=9); the inventory screen
+/// can rebind slots by dragging blocks onto them.
 pub const ITEMS: [BlockId; 9] = [
     blocks::STONE,
     blocks::DIRT,
@@ -34,17 +35,19 @@ pub fn block_name(block: BlockId) -> &'static str {
 
 pub struct Hotbar {
     pub selected: usize,
+    /// The bound palette (defaults to ITEMS; rebindable per slot).
+    pub items: [BlockId; 9],
     /// Accumulated scroll, consumed in whole steps.
     scroll: f64,
 }
 
 impl Hotbar {
     pub fn new() -> Self {
-        Self { selected: 0, scroll: 0.0 }
+        Self { selected: 0, items: ITEMS, scroll: 0.0 }
     }
 
     pub fn block(&self) -> BlockId {
-        ITEMS[self.selected]
+        self.items[self.selected]
     }
 
     /// Selects slot `n` (0-based) if it exists.
@@ -80,7 +83,7 @@ impl Hotbar {
         let (slot, gap, inset) = (SLOT * ui, GAP * ui, INSET * ui);
         let (x0, y) = Self::origin(width, height, ui);
         let mut quads = Vec::with_capacity(ITEMS.len() * 2 + 1);
-        for (i, &block) in ITEMS.iter().enumerate() {
+        for (i, &block) in self.items.iter().enumerate() {
             let x = x0 + i as f32 * (slot + gap);
             if i == self.selected {
                 // Selection ring: a slightly larger bright quad behind.

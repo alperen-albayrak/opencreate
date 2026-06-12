@@ -16,7 +16,7 @@ use crate::far_terrain::FarTerrain;
 use crate::hotbar::{self, Hotbar};
 use crate::player::{MoveInput, Player};
 use crate::streaming::ChunkStreamer;
-use crate::{craft_menu, sky};
+use crate::{craft_menu, inventory_screen, sky};
 use oc_assets::{GameModeDef, ModeId, Registry};
 use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
@@ -63,7 +63,9 @@ pub struct Session {
     server: Option<ServerHandle>,
     /// Messages queued for the server this frame.
     outbox: Vec<ClientMessage>,
-    pub craft_open: bool,
+    pub inventory_open: bool,
+    /// Block item picked up in the inventory screen, riding the cursor.
+    drag_item: Option<oc_assets::ItemId>,
     pub mode: ModeId,
     /// May this player use cheats (change mode / later run commands)?
     /// Server-authoritative; toggled from the pause menu by the owner.
@@ -127,7 +129,8 @@ impl Session {
             transport: Some(transport),
             server: Some(server),
             outbox: Vec::new(),
-            craft_open: false,
+            inventory_open: false,
+            drag_item: None,
             mode,
             cheats,
             stats: [10.0; 4],
@@ -162,7 +165,61 @@ impl Session {
     }
 
     fn hotbar_counts(&self, registry: &Registry) -> [u32; hotbar::ITEMS.len()] {
-        std::array::from_fn(|i| self.count_of(registry, hotbar::ITEMS[i]))
+        std::array::from_fn(|i| self.count_of(registry, self.hotbar.items[i]))
+    }
+
+    /// Carried stacks for the inventory screen, sorted by item id.
+    fn stacks(&self, registry: &Registry) -> Vec<inventory_screen::Stack> {
+        let mut stacks: Vec<inventory_screen::Stack> = self
+            .inventory
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(&id, &count)| inventory_screen::Stack {
+                item: oc_assets::ItemId(id),
+                count,
+                name: registry.item(oc_assets::ItemId(id)).name.clone(),
+            })
+            .collect();
+        stacks.sort_by_key(|s| s.item.0);
+        stacks
+    }
+
+    /// A click inside the open inventory screen, framebuffer pixels.
+    pub fn inventory_click(
+        &mut self,
+        registry: &Registry,
+        pos: (f32, f32),
+        size: (f32, f32),
+        ui: f32,
+    ) {
+        let stacks = self.stacks(registry);
+        let recipes = craft_menu::lines(registry, |item| {
+            self.inventory.get(&item.0).copied().unwrap_or(0)
+        });
+        match inventory_screen::hit(pos, size.0, size.1, ui, stacks.len(), recipes.len()) {
+            inventory_screen::Hit::Stack(index) => {
+                // Pick up blocks (only blocks can bind to the hotbar).
+                let item = stacks[index].item;
+                self.drag_item = match self.drag_item {
+                    Some(current) if current == item => None,
+                    _ if registry.block_for_item(item).is_some() => Some(item),
+                    other => other,
+                };
+            }
+            inventory_screen::Hit::HotbarSlot(slot) => {
+                if let Some(item) = self.drag_item.take() {
+                    if let Some(block) = registry.block_for_item(item) {
+                        self.hotbar.items[slot] = block;
+                    }
+                }
+            }
+            inventory_screen::Hit::Recipe(recipe) => {
+                if recipes[recipe].craftable {
+                    self.outbox.push(ClientMessage::Craft { recipe: recipe as u32 });
+                }
+            }
+            inventory_screen::Hit::None => self.drag_item = None,
+        }
     }
 
     /// Eats an apple if we carry one and aren't full; the server validates
@@ -182,15 +239,10 @@ impl Session {
         self.outbox.push(ClientMessage::Eat { item: apple.0 });
     }
 
-    /// Number keys: hotbar slots normally, recipes while the book is open.
-    pub fn digit(&mut self, registry: &Registry, n: usize) {
-        if self.craft_open {
-            if registry.craftable(n, |item| self.inventory.get(&item.0).copied().unwrap_or(0)) {
-                self.outbox.push(ClientMessage::Craft { recipe: n as u32 });
-            }
-        } else {
-            self.hotbar.select(n);
-        }
+    /// Number keys select hotbar slots (recipes are clicked in the
+    /// inventory screen).
+    pub fn digit(&mut self, _registry: &Registry, n: usize) {
+        self.hotbar.select(n);
     }
 
     fn target(&self) -> Option<RayHit> {
@@ -384,7 +436,7 @@ impl Session {
         let stats = renderer.stats();
         let p = self.player.position;
         format!(
-            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [c] craft  [f3] hud  [f] {}",
+            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [e] inv  [f3] hud  [f] {}",
             (1.0 / frame_time_ema).round(),
             frame_time_ema * 1e3,
             stats.chunks_drawn,
@@ -476,6 +528,7 @@ impl Session {
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
+        mouse: (f32, f32),
     ) -> FrameCamera {
         let (w, h) = size;
         let aspect = w.max(1.0) / h.max(1.0);
@@ -502,11 +555,22 @@ impl Session {
             };
             self.hotbar.quads(w, h, ui, &counts)
         };
-        if self.craft_open {
-            let lines = craft_menu::lines(registry, |item| {
+        if self.inventory_open {
+            let recipes = craft_menu::lines(registry, |item| {
                 self.inventory.get(&item.0).copied().unwrap_or(0)
             });
-            let (panel_quads, panel_texts) = craft_menu::panel(&lines, w, ui);
+            let (panel_quads, panel_texts) = inventory_screen::panel(
+                registry,
+                &self.stacks(registry),
+                &recipes,
+                &self.hotbar.items,
+                self.hotbar.selected,
+                self.drag_item,
+                mouse,
+                w,
+                h,
+                ui,
+            );
             quads.extend(panel_quads);
             texts.extend(panel_texts);
         }
@@ -518,7 +582,7 @@ impl Session {
             if apples > 0 {
                 let plural = if apples == 1 { "" } else { "s" };
                 texts.push(oc_renderer::UiText {
-                    text: format!("{apples} apple{plural} - E to eat"),
+                    text: format!("{apples} apple{plural} - G to eat"),
                     x: w / 2.0 - 110.0 * ui,
                     y: h - 75.0 * ui,
                     scale: ui,

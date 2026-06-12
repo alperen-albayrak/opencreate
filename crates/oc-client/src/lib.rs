@@ -8,6 +8,7 @@ mod craft_menu;
 mod entities;
 mod far_terrain;
 mod hotbar;
+mod inventory_screen;
 mod menu;
 mod player;
 mod session;
@@ -310,6 +311,9 @@ impl App {
                         session.camera.position = session.player.eye();
                     }
                 }
+                if std::env::var("OC_INV").is_ok() {
+                    session.inventory_open = true;
+                }
                 if let Ok(cam) = std::env::var("OC_CAM") {
                     session.camera_mode = match cam.as_str() {
                         "back" => session::CameraMode::ThirdBack,
@@ -564,8 +568,12 @@ impl App {
                 }
             }
             KeyCode::F5 if pressed => session.cycle_camera(),
-            KeyCode::KeyC if pressed => session.craft_open = !session.craft_open,
-            KeyCode::KeyE if pressed => session.eat(&self.registry),
+            KeyCode::KeyE | KeyCode::KeyC if pressed => {
+                session.inventory_open = !session.inventory_open;
+                let open = session.inventory_open;
+                self.set_mouse_captured(!open);
+            }
+            KeyCode::KeyG if pressed => session.eat(&self.registry),
             KeyCode::Digit1 if pressed => session.digit(&self.registry, 0),
             KeyCode::Digit2 if pressed => session.digit(&self.registry, 1),
             KeyCode::Digit3 if pressed => session.digit(&self.registry, 2),
@@ -577,6 +585,11 @@ impl App {
             KeyCode::Digit9 if pressed => session.digit(&self.registry, 8),
             KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => {
+                if session.inventory_open {
+                    session.inventory_open = false;
+                    self.set_mouse_captured(true);
+                    return;
+                }
                 // Stop moving, drop the mouse, show the pause menu, and
                 // freeze the singleplayer simulation (a multiplayer
                 // server would ignore the request and keep the world on).
@@ -633,6 +646,7 @@ impl App {
                 self.frame_time_ema,
                 self.hud_visible && in_game,
                 in_game,
+                self.mouse_pos,
             )
         } else {
             // Menu screens without a world: a fixed late-morning sky.
@@ -761,7 +775,20 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 let (w, h) = self.window_size();
                 let ui = self.ui();
+                let inventory_open =
+                    self.session.as_ref().is_some_and(|session| session.inventory_open);
                 match (&mut self.screen, button) {
+                    (Screen::InGame, MouseButton::Left) if inventory_open => {
+                        if let Some(session) = &mut self.session {
+                            session.inventory_click(
+                                &self.registry,
+                                self.mouse_pos,
+                                (w, h),
+                                ui,
+                            );
+                        }
+                    }
+                    (Screen::InGame, _) if inventory_open => {}
                     (Screen::InGame, _) if !self.mouse_captured => self.set_mouse_captured(true),
                     (Screen::InGame, MouseButton::Left) => {
                         if let Some(session) = &mut self.session {
