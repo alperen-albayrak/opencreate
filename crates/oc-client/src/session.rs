@@ -292,7 +292,9 @@ impl Session {
         self.drain_server_messages(renderer, registry)?;
 
         if active {
-            self.day_fraction = (self.day_fraction + dt / sky::DAY_LENGTH_SECS).fract();
+            // Cumulative days (whole days = moon phase); the server's Time
+            // broadcasts keep it honest.
+            self.day_fraction += dt / sky::DAY_LENGTH_SECS;
 
             // Out of stamina: no sprinting (the server drains/regens it).
             let mut input = MoveInput { ..self.input };
@@ -461,7 +463,15 @@ impl Session {
                 .flatten(),
             sun: sky.sun,
             sky_color: sky.sky_color,
-            sky_zenith: sky.zenith,
+            sky_zenith: [sky.zenith[0], sky.zenith[1], sky.zenith[2], sky.stars],
+            sky_sun: sky.sun_dir,
+            sky_away: [
+                sky.horizon_away[0],
+                sky.horizon_away[1],
+                sky.horizon_away[2],
+                sky.moon_phase,
+            ],
+            sky_angle: sky.angle,
             fog_distance: if underwater {
                 sky::UNDERWATER_FOG_DISTANCE.min(fog_distance)
             } else {

@@ -621,7 +621,9 @@ impl Server {
     }
 
     fn advance_time(&mut self, dt: f64) {
-        self.day_fraction = (self.day_fraction + dt / DAY_LENGTH_SECS).fract();
+        // Cumulative days, not just the fraction: whole days drive the
+        // moon phase on the client.
+        self.day_fraction += dt / DAY_LENGTH_SECS;
         if self.tick % TIME_BROADCAST_TICKS == 0 {
             let _ = self
                 .transport

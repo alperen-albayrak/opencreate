@@ -61,8 +61,16 @@ pub struct FrameCamera {
     pub hud_scale: f32,
     /// Seconds since the client started (wave animation phase).
     pub time: f32,
-    /// Overhead sky color (the dome blends horizon -> zenith).
+    /// Overhead sky color (the dome blends horizon -> zenith); w: star
+    /// visibility 0..1.
     pub sky_zenith: [f32; 4],
+    /// xyz: unscaled sun direction; w: daylight 0..1 (sky dome).
+    pub sky_sun: [f32; 4],
+    /// rgb: horizon color opposite the sun (dusk darkens there first);
+    /// w: moon phase 0..1.
+    pub sky_away: [f32; 4],
+    /// Celestial rotation angle, radians (stars turn with the day).
+    pub sky_angle: f32,
     /// Where distance fog saturates, in blocks (~the render distance).
     pub fog_distance: f32,
     /// Draw the cloud layer this frame (graphics setting).
@@ -362,13 +370,18 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
-            // The sky dome shades only pixels no geometry wrote.
+            // The sky dome shades only pixels no geometry wrote. The
+            // scalars ride in the w slots; see SkyPush.
+            let horizon = Vec4::from_array(camera.sky_color)
+                .truncate()
+                .extend(camera.sky_angle);
             self.sky.record(
                 device,
                 cmd,
                 camera.view_proj,
-                camera.sun,
-                Vec4::from_array(camera.sky_color),
+                Vec4::from_array(camera.sky_sun),
+                horizon,
+                Vec4::from_array(camera.sky_away),
                 Vec4::from_array(camera.sky_zenith),
             );
             if camera.clouds {

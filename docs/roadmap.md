@@ -60,6 +60,13 @@ where they belong. **Fog**: exponential height + distance fog colored
 by `sky()` (terrain dissolves into atmosphere; permanently hides chunk
 pop-in). **Clouds**: scrolling blocky noise layer with an on/off
 toggle; 2.5D raymarched slab as a later "volumetric" tier.
+*Shipped so far:* sun disc + glow, horizon fog, blocky cloud layer
+(depth-prepass so only outer silhouettes read as edges), directional
+dusk (the anti-sun horizon darkens first), moon with 8 phases and a
+halo, procedural star field plus a real bright-star catalog (Orion,
+Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
+rotating with the day. *Later polish:* per-direction fog color,
+per-cloud dusk tinting, sidereal drift.
 
 **D. Lighting**
 Per-vertex ambient occlusion (corner darkening; AO joins the greedy

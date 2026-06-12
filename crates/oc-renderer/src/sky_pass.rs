@@ -11,13 +11,19 @@ use crate::context::VulkanContext;
 
 const SKY_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sky.spv"));
 
-/// Push constants; must match `sky.wgsl`.
+/// Push constants; must match `sky.wgsl`. Exactly 128 bytes — the
+/// minimum-spec push budget; the scalars ride in the colors' w slots.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SkyPush {
     inv_view_proj: Mat4,
+    /// xyz: unscaled sun direction; w: daylight.
     sun: Vec4,
+    /// rgb: toward-sun horizon; w: celestial angle, radians.
     horizon: Vec4,
+    /// rgb: anti-sun horizon; w: moon phase 0..1.
+    away: Vec4,
+    /// rgb: zenith; w: star visibility 0..1.
     zenith: Vec4,
 }
 
@@ -106,6 +112,7 @@ impl SkyPass {
         view_proj: Mat4,
         sun: Vec4,
         horizon: Vec4,
+        away: Vec4,
         zenith: Vec4,
     ) {
         unsafe {
@@ -113,6 +120,7 @@ impl SkyPass {
                 inv_view_proj: view_proj.inverse(),
                 sun,
                 horizon,
+                away,
                 zenith,
             };
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
