@@ -649,6 +649,7 @@ impl App {
                 shadows: false,
                 water_reflections: false,
                 far_terrain: false,
+                far_cut: [0.0; 4],
                 cloud_color: sky.clouds,
                 entities: Vec::new(),
                 hud: String::new(),

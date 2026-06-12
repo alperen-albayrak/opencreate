@@ -76,6 +76,11 @@ impl ChunkStreamer {
         self.radius = radius.max(2);
     }
 
+    /// Current view radius in chunks (the loaded square's half-extent).
+    pub fn radius(&self) -> i32 {
+        self.radius
+    }
+
     /// Terrain arrived from the server.
     pub fn insert_column(&mut self, column: GeneratedColumn) {
         self.world.insert_column(column);

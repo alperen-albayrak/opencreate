@@ -27,18 +27,18 @@ pub fn fog_distance() -> f32 {
 /// Land color by biome, slope-shaded per vertex.
 fn biome_color(biome: Biome, height: i32) -> [f32; 3] {
     match biome {
-        Biome::DeepOcean | Biome::Ocean | Biome::River => [0.05, 0.17, 0.35],
-        Biome::Beach => [0.76, 0.70, 0.50],
-        Biome::Desert => [0.78, 0.71, 0.48],
-        Biome::StonyShore | Biome::StonyPeaks => [0.52, 0.52, 0.54],
-        Biome::SnowyPlains | Biome::SnowyTaiga | Biome::SnowyPeaks => [0.92, 0.94, 0.97],
-        Biome::Taiga => [0.25, 0.42, 0.26],
-        Biome::Forest => [0.27, 0.48, 0.22],
+        Biome::DeepOcean | Biome::Ocean | Biome::River => [0.05, 0.15, 0.30],
+        Biome::Beach => [0.62, 0.57, 0.40],
+        Biome::Desert => [0.64, 0.58, 0.39],
+        Biome::StonyShore | Biome::StonyPeaks => [0.42, 0.42, 0.44],
+        Biome::SnowyPlains | Biome::SnowyTaiga | Biome::SnowyPeaks => [0.78, 0.80, 0.84],
+        Biome::Taiga => [0.20, 0.34, 0.21],
+        Biome::Forest => [0.22, 0.39, 0.18],
         Biome::Plains => {
             if height > 90 {
-                [0.55, 0.55, 0.56] // bare rock above the grass line
+                [0.45, 0.45, 0.46] // bare rock above the grass line
             } else {
-                [0.33, 0.54, 0.24]
+                [0.27, 0.44, 0.20]
             }
         }
     }

@@ -491,6 +491,19 @@ impl Session {
             shadows,
             water_reflections,
             far_terrain: far_terrain && !underwater,
+            far_cut: {
+                // The loaded-chunk square, camera-relative: the far ring
+                // discards inside it (real terrain renders there).
+                let p = self.camera.position;
+                let cc = oc_core::coords::block_to_chunk(p.floor().as_ivec3());
+                let r = self.streamer.radius();
+                [
+                    (((cc.x - r) * 16) as f64 - p.x) as f32,
+                    (((cc.z - r) * 16) as f64 - p.z) as f32,
+                    (((cc.x + r + 1) * 16) as f64 - p.x) as f32,
+                    (((cc.z + r + 1) * 16) as f64 - p.z) as f32,
+                ]
+            },
             cloud_color: sky.clouds,
             entities: self.entities.draws(registry, Instant::now()),
             hud: if hud_visible {

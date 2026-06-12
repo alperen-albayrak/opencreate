@@ -90,6 +90,9 @@ pub struct FrameCamera {
     pub water_reflections: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
+    /// Loaded-chunk square, camera-relative (min x, min z, max x, max z):
+    /// the far ring discards inside it.
+    pub far_cut: [f32; 4],
     /// Cloud slab color (rgb) + opacity (a) for the moment of day.
     pub cloud_color: [f32; 4],
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
@@ -446,6 +449,7 @@ impl Renderer {
                     camera.position,
                     fog,
                     camera.sun.w + (1.0 - camera.sun.w) * daylight * 0.8,
+                    Vec4::from_array(camera.far_cut),
                 );
             }
             self.entity

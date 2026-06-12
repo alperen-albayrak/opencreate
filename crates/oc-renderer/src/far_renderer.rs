@@ -38,6 +38,8 @@ struct FarPush {
     mvp: Mat4,
     fog: Vec4,
     params: Vec4,
+    /// Loaded-chunk square, camera-relative: (min x, min z, max x, max z).
+    cut: Vec4,
 }
 
 struct TileGpu {
@@ -150,6 +152,7 @@ impl FarRenderer {
         camera_pos: DVec3,
         fog: Vec4,
         daylight: f32,
+        cut: Vec4,
     ) {
         unsafe {
             if self.tiles.is_empty() {
@@ -170,7 +173,8 @@ impl FarRenderer {
                 let push = FarPush {
                     mvp: view_proj * Mat4::from_translation(rel),
                     fog,
-                    params: Vec4::new(daylight, 0.0, 0.0, 0.0),
+                    params: Vec4::new(daylight, rel.x, rel.z, 0.0),
+                    cut,
                 };
                 device.cmd_push_constants(
                     cmd,
