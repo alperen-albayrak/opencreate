@@ -7,6 +7,7 @@
 mod chunk_renderer;
 mod context;
 mod depth;
+mod entity;
 mod mesh;
 mod font;
 mod outline;
@@ -24,12 +25,14 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use chunk_renderer::ChunkRenderer;
 use context::VulkanContext;
 use depth::DepthBuffer;
+use entity::EntityRenderer;
 use outline::OutlineRenderer;
 use swapchain::Swapchain;
 use ui::UiRenderer;
 
 pub use mesh::{ChunkMesh, mesh_section};
 pub use texture::block_swatch;
+pub use entity::EntityDraw;
 pub use ui::{UiQuad, UiText};
 
 /// Number of frames the CPU may record ahead of the GPU.
@@ -52,6 +55,8 @@ pub struct FrameCamera {
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
     pub ui_texts: Vec<UiText>,
+    /// Entities to draw this frame (placeholder cuboids).
+    pub entities: Vec<EntityDraw>,
 }
 
 /// Renderer counters for the perf log (§11).
@@ -72,6 +77,7 @@ pub struct Renderer {
     depth: DepthBuffer,
     framebuffers: Vec<vk::Framebuffer>,
     chunks: ChunkRenderer,
+    entity: EntityRenderer,
     outline: OutlineRenderer,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
@@ -130,6 +136,7 @@ impl Renderer {
             )?;
 
             let chunks = ChunkRenderer::new(&ctx, &mut allocator, render_pass, command_pool)?;
+            let entity = EntityRenderer::new(&ctx, &mut allocator, render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, render_pass)?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
@@ -157,6 +164,7 @@ impl Renderer {
                 depth,
                 framebuffers,
                 chunks,
+                entity,
                 outline,
                 ui,
                 command_pool,
@@ -265,6 +273,8 @@ impl Renderer {
             self.chunks_drawn =
                 self.chunks
                     .record(device, cmd, camera.view_proj, camera.position, camera.sun);
+            self.entity
+                .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
             if let Some(block) = camera.highlight {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
@@ -357,6 +367,7 @@ impl Drop for Renderer {
             let mut allocator = self.allocator.take().expect("allocator alive");
 
             self.chunks.destroy(device, &mut allocator);
+            self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {

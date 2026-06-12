@@ -2,6 +2,7 @@
 
 mod camera;
 mod craft_menu;
+mod entities;
 mod hotbar;
 mod player;
 mod sky;
@@ -20,6 +21,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
 use camera::Camera;
+use entities::EntityMirror;
 use hotbar::Hotbar;
 use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
@@ -86,6 +88,7 @@ struct App {
     registry: Registry,
     /// Server-authoritative item counts, keyed by per-load item id.
     inventory: std::collections::HashMap<u16, u32>,
+    entities: EntityMirror,
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets,
@@ -180,6 +183,7 @@ impl App {
             stats: [10.0; 4],
             registry: Registry::load_default()?,
             inventory: std::collections::HashMap::new(),
+            entities: EntityMirror::default(),
         })
     }
 
@@ -414,6 +418,9 @@ impl App {
                         self.player.flying = false;
                     }
                 }
+                Some(ServerMessage::Entities(snapshot)) => {
+                    self.entities.apply(snapshot, Instant::now());
+                }
                 Some(ServerMessage::Inventory { counts }) => {
                     self.inventory = counts.into_iter().collect();
                 }
@@ -503,6 +510,7 @@ impl App {
                 .flatten(),
             sun: sky.sun,
             sky_color: sky.sky_color,
+            entities: self.entities.draws(&self.registry, Instant::now()),
             hud: self.hud_text(renderer),
             ui_texts: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
