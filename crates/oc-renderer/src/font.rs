@@ -5,8 +5,20 @@
 pub const CELL_W: u32 = 6;
 pub const CELL_H: u32 = 8;
 
-/// Characters in atlas order. Anything else renders as space.
-pub const CHARSET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-+/,%[] ";
+/// Characters in atlas order. Anything else renders as space. `#` is a
+/// fully-set cell, used by the UI as a solid-fill region.
+pub const CHARSET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-+/,%[]# ";
+
+/// Atlas UV rect of the solid-fill region (inset to the middle of the `#`
+/// glyph so filtering can never catch a neighboring cell).
+pub fn solid_uv() -> (f32, f32, f32, f32) {
+    let index = CHARSET.find('#').expect("# in charset") as u32;
+    let w = atlas_width() as f32;
+    let u0 = (index * CELL_W) as f32 / w;
+    let texel_u = 1.0 / w;
+    let texel_v = 1.0 / CELL_H as f32;
+    (u0 + 2.0 * texel_u, 2.0 * texel_v, u0 + 3.0 * texel_u, 3.0 * texel_v)
+}
 
 /// One quad's worth of layout: pixel rect + atlas texel rect.
 pub struct GlyphQuad {
@@ -124,6 +136,7 @@ fn glyph(ch: char) -> [&'static str; 7] {
         '%' => ["##  #", "##  #", "   # ", "  #  ", " #   ", "#  ##", "#  ##"],
         '[' => ["  ## ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  ## "],
         ']' => [" ##  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ##  "],
+        '#' => ["#####"; 7],
         _ => ["     "; 7],
     }
 }

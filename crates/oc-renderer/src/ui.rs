@@ -32,6 +32,16 @@ struct UiPush {
     color: [f32; 4],
 }
 
+/// A solid-colored rectangle in framebuffer pixels (top-left origin).
+#[derive(Debug, Clone, Copy)]
+pub struct UiQuad {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub color: [f32; 4],
+}
+
 pub struct UiRenderer {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
@@ -172,8 +182,8 @@ impl UiRenderer {
         }
     }
 
-    /// Writes `text` into this frame's buffer and records the draws (drop
-    /// shadow + text). Must run inside the render pass with viewport set.
+    /// Writes the HUD text and colored quads into this frame's buffer and
+    /// records the draws. Must run inside the render pass with viewport set.
     pub unsafe fn record(
         &mut self,
         device: &ash::Device,
@@ -181,24 +191,31 @@ impl UiRenderer {
         slot: usize,
         extent: vk::Extent2D,
         text: &str,
+        quads: &[UiQuad],
     ) {
         unsafe {
-            let quads = font::layout(text, MARGIN, MARGIN, TEXT_SCALE);
-            let count = quads.len().min(MAX_GLYPHS);
-            if count == 0 {
+            let glyphs = font::layout(text, MARGIN, MARGIN, TEXT_SCALE);
+            let glyph_count = glyphs.len().min(MAX_GLYPHS);
+            let quad_count = quads.len().min(MAX_GLYPHS - glyph_count);
+            if glyph_count + quad_count == 0 {
                 return;
             }
-            let mut vertices = Vec::with_capacity(count * 6);
-            for q in &quads[..count] {
-                let corners = [
-                    UiVertex { pos: [q.x, q.y], uv: [q.u0, q.v0] },
-                    UiVertex { pos: [q.x + q.w, q.y], uv: [q.u1, q.v0] },
-                    UiVertex { pos: [q.x, q.y + q.h], uv: [q.u0, q.v1] },
-                ];
-                let far = UiVertex { pos: [q.x + q.w, q.y + q.h], uv: [q.u1, q.v1] };
-                vertices.extend_from_slice(&[
-                    corners[0], corners[1], corners[2], corners[2], corners[1], far,
-                ]);
+
+            let mut vertices = Vec::with_capacity((glyph_count + quad_count) * 6);
+            let mut emit = |x: f32, y: f32, w: f32, h: f32, uv: (f32, f32, f32, f32)| {
+                let (u0, v0, u1, v1) = uv;
+                let a = UiVertex { pos: [x, y], uv: [u0, v0] };
+                let b = UiVertex { pos: [x + w, y], uv: [u1, v0] };
+                let c = UiVertex { pos: [x, y + h], uv: [u0, v1] };
+                let d = UiVertex { pos: [x + w, y + h], uv: [u1, v1] };
+                vertices.extend_from_slice(&[a, b, c, c, b, d]);
+            };
+            for g in &glyphs[..glyph_count] {
+                emit(g.x, g.y, g.w, g.h, (g.u0, g.v0, g.u1, g.v1));
+            }
+            let solid = font::solid_uv();
+            for q in &quads[..quad_count] {
+                emit(q.x, q.y, q.w, q.h, solid);
             }
 
             let (buffer, allocation) = &mut self.vertex_buffers[slot];
@@ -220,11 +237,7 @@ impl UiRenderer {
             device.cmd_bind_vertex_buffers(cmd, 0, &[*buffer], &[0]);
 
             let screen = [extent.width as f32, extent.height as f32];
-            for (offset, color) in [
-                ([TEXT_SCALE, TEXT_SCALE], [0.0, 0.0, 0.0, 0.85]), // shadow
-                ([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]),
-            ] {
-                let push = UiPush { screen, offset, color };
+            let mut draw = |push: UiPush, first: u32, count: u32| {
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
@@ -232,7 +245,25 @@ impl UiRenderer {
                     0,
                     as_bytes(std::slice::from_ref(&push)),
                 );
-                device.cmd_draw(cmd, (count * 6) as u32, 1, 0, 0);
+                device.cmd_draw(cmd, count, 1, first, 0);
+            };
+
+            // Colored quads first (panels), one draw each for its color.
+            for (i, q) in quads[..quad_count].iter().enumerate() {
+                draw(
+                    UiPush { screen, offset: [0.0, 0.0], color: q.color },
+                    ((glyph_count + i) * 6) as u32,
+                    6,
+                );
+            }
+            // Text on top: drop shadow, then white.
+            if glyph_count > 0 {
+                for (offset, color) in [
+                    ([TEXT_SCALE, TEXT_SCALE], [0.0, 0.0, 0.0, 0.85]),
+                    ([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]),
+                ] {
+                    draw(UiPush { screen, offset, color }, 0, (glyph_count * 6) as u32);
+                }
             }
         }
     }

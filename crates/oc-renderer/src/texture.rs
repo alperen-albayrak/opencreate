@@ -46,6 +46,25 @@ fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
     base.map(|c| (c as i32 + delta).clamp(0, 255) as u8)
 }
 
+/// Representative color of a block for UI swatches (hotbar icons until
+/// the asset pipeline brings real item icons). sRGB 0..1 with alpha.
+pub fn block_swatch(block: oc_world::BlockId) -> [f32; 4] {
+    use oc_world::blocks;
+    let rgb: [u32; 3] = match block {
+        blocks::GRASS => [106, 170, 64],
+        blocks::DIRT => [134, 96, 67],
+        blocks::STONE => [125, 125, 125],
+        blocks::SAND => [219, 209, 160],
+        blocks::WATER => [54, 106, 224],
+        blocks::LOG => [104, 82, 50],
+        blocks::LEAVES => [58, 134, 52],
+        blocks::LAMP => [255, 222, 150],
+        blocks::SNOW => [238, 242, 248],
+        _ => [255, 0, 255],
+    };
+    [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]
+}
+
 /// Small deterministic integer hash (xorshift-style) for texture grain.
 fn hash_noise(x: u32, y: u32, layer: u32) -> u32 {
     let mut h = x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263) ^ layer.wrapping_mul(2246822519);

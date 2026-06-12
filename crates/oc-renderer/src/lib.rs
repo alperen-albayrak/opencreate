@@ -29,6 +29,8 @@ use swapchain::Swapchain;
 use ui::UiRenderer;
 
 pub use mesh::{ChunkMesh, mesh_section};
+pub use texture::block_swatch;
+pub use ui::UiQuad;
 
 /// Number of frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -46,6 +48,8 @@ pub struct FrameCamera {
     pub sky_color: [f32; 4],
     /// Debug HUD text; empty hides the overlay.
     pub hud: String,
+    /// Solid UI rectangles (hotbar etc.), drawn under the text.
+    pub ui_quads: Vec<UiQuad>,
 }
 
 /// Renderer counters for the perf log (§11).
@@ -263,8 +267,9 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
-            if !camera.hud.is_empty() {
-                self.ui.record(device, cmd, slot, extent, &camera.hud);
+            if !camera.hud.is_empty() || !camera.ui_quads.is_empty() {
+                self.ui
+                    .record(device, cmd, slot, extent, &camera.hud, &camera.ui_quads);
             }
 
             device.cmd_end_render_pass(cmd);

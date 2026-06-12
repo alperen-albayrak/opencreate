@@ -1,6 +1,7 @@
 //! The game client: window, input, and the frame loop (ARCHITECTURE.md §2).
 
 mod camera;
+mod hotbar;
 mod player;
 mod sky;
 mod streaming;
@@ -18,6 +19,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
 use camera::Camera;
+use hotbar::Hotbar;
 use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
 use oc_server::{ServerConfig, ServerHandle};
@@ -58,8 +60,7 @@ struct App {
     camera: Camera,
     player: Player,
     input: MoveInput,
-    /// Block placed on right click; selected with the 1/2/3 keys.
-    selected_block: BlockId,
+    hotbar: Hotbar,
     /// Click edges captured by the event loop, consumed by the next frame.
     break_clicked: bool,
     place_clicked: bool,
@@ -153,7 +154,7 @@ impl App {
             camera: Camera::new(player.eye()),
             player,
             input: MoveInput::default(),
-            selected_block: blocks::STONE,
+            hotbar: Hotbar::new(),
             break_clicked: false,
             place_clicked: false,
             mouse_captured: false,
@@ -183,7 +184,7 @@ impl App {
         let stats = renderer.stats();
         let p = self.player.position;
         format!(
-            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}\n[f3] hud  [f] {}",
+            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n[f3] hud  [f] {}",
             (1.0 / self.frame_time_ema).round(),
             self.frame_time_ema * 1e3,
             stats.chunks_drawn,
@@ -193,6 +194,7 @@ impl App {
             p.z,
             self.day_fraction,
             if self.player.flying { "flying" } else { "walking" },
+            hotbar::block_name(self.hotbar.block()),
             if self.player.flying { "walk" } else { "fly" },
         )
     }
@@ -257,10 +259,14 @@ impl App {
                 self.player.flying = !self.player.flying;
                 info!(flying = self.player.flying, "movement mode toggled");
             }
-            KeyCode::Digit1 if pressed => self.selected_block = blocks::STONE,
-            KeyCode::Digit2 if pressed => self.selected_block = blocks::DIRT,
-            KeyCode::Digit3 if pressed => self.selected_block = blocks::GRASS,
-            KeyCode::Digit4 if pressed => self.selected_block = blocks::LAMP,
+            KeyCode::Digit1 if pressed => self.hotbar.select(0),
+            KeyCode::Digit2 if pressed => self.hotbar.select(1),
+            KeyCode::Digit3 if pressed => self.hotbar.select(2),
+            KeyCode::Digit4 if pressed => self.hotbar.select(3),
+            KeyCode::Digit5 if pressed => self.hotbar.select(4),
+            KeyCode::Digit6 if pressed => self.hotbar.select(5),
+            KeyCode::Digit7 if pressed => self.hotbar.select(6),
+            KeyCode::Digit8 if pressed => self.hotbar.select(7),
             KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
@@ -296,10 +302,10 @@ impl App {
             // Water is replaceable, like Minecraft.
             let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos);
-            if free && self.streamer.world_mut().set_block(pos, self.selected_block) {
+            if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox
-                    .push(ClientMessage::SetBlock { pos, block: self.selected_block });
+                    .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
             }
         }
         Ok(())
@@ -387,6 +393,9 @@ impl App {
             sun: sky.sun,
             sky_color: sky.sky_color,
             hud: self.hud_text(renderer),
+            ui_quads: self
+                .hotbar
+                .quads(size.width.max(1) as f32, size.height.max(1) as f32),
         })?;
         self.perf.frame(frame_start.elapsed(), renderer);
         Ok(())
@@ -417,6 +426,13 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     self.handle_key(code, event.state == ElementState::Pressed);
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.mouse_captured => {
+                let amount = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                };
+                self.hotbar.scroll(amount);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
