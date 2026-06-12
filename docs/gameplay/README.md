@@ -1,0 +1,33 @@
+# Gameplay
+
+How the game plays today. Controls live in
+[building-and-running.md](../building-and-running.md).
+
+## The loop
+
+You spawn on the nearest dry land with empty pockets, mid-morning of a
+10-minute day. In survival you punch terrain to gather blocks, craft
+through the recipe book (C), build, and manage four stats — while critters
+wander the grass and the sun sets on lamp-lit builds.
+
+- **World**: infinite procedural terrain — grassland, desert and snowy
+  biomes, rivers, oceans, beaches, caves (dark inside — bring lamps),
+  trees. Everything streams in around you and autosaves.
+- **Building**: break and place any of the 9 hotbar blocks; the wireframe
+  outline shows your target (reach: 6 blocks). In survival, blocks are
+  finite: what you place comes from what you gathered.
+- **Crafting**: log → planks → sticks/lamps via the recipe book. The
+  drag-and-drop grid UI is planned; recipes are data
+  ([modding](../modding/README.md)).
+- **Survival pressure**: hunger, stamina, oxygen and fall damage —
+  numbers in [survival.md](survival.md). Death returns you to spawn.
+- **Creatures**: passive wildlife spawns on grass nearby and wanders;
+  interaction (and hostiles) come later.
+- **Modes**: survival, creative, adventure, spectator — cycle with G.
+  Details in [game-modes.md](game-modes.md).
+
+## Sub-pages
+
+- [game-modes.md](game-modes.md)
+- [survival.md](survival.md)
+- [inventory-and-crafting.md](inventory-and-crafting.md)

@@ -2,7 +2,7 @@
 
 An open-source, Minecraft-class voxel game written in Rust with its own Vulkan engine.
 
-**Status:** playable world prototype (roadmap phase 2 of 6 complete). The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
+**Status:** playable survival prototype (roadmap phase 3 of 6 in progress). The original design is in [ARCHITECTURE.md](ARCHITECTURE.md); living documentation — how everything works, decisions, roadmap, gotchas — lives in [docs/](docs/README.md).
 
 ## Playing the prototype
 
