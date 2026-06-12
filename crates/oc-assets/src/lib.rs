@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 const DEFAULT_ITEMS: &str = include_str!("../../../data/items.ron");
 const DEFAULT_RECIPES: &str = include_str!("../../../data/recipes.ron");
+const DEFAULT_GAMEMODES: &str = include_str!("../../../data/gamemodes.ron");
 
 /// Runtime item handle (index into the registry). String ids (`oc:stone`)
 /// are the stable identity; numeric ids are per-load.
@@ -59,6 +60,30 @@ enum Recipe {
     },
 }
 
+/// Runtime game-mode handle (index into the registry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModeId(pub u16);
+
+/// A game mode: a named bundle of engine capability flags. Mods add modes
+/// by shipping more of these (§7.6); the flags themselves are engine
+/// vocabulary.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GameModeDef {
+    /// Namespaced stable id, e.g. `oc:survival`.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub can_edit_blocks: bool,
+    #[serde(default)]
+    pub uses_inventory: bool,
+    #[serde(default)]
+    pub has_stats: bool,
+    #[serde(default)]
+    pub can_fly: bool,
+    #[serde(default)]
+    pub noclip: bool,
+}
+
 /// A recipe's shopping list, independent of arrangement.
 #[derive(Debug, Clone)]
 pub struct RecipeView {
@@ -72,24 +97,26 @@ pub struct Registry {
     by_string_id: HashMap<String, ItemId>,
     by_block: HashMap<u16, ItemId>,
     recipes: Vec<Recipe>,
+    modes: Vec<GameModeDef>,
+    mode_by_id: HashMap<String, ModeId>,
 }
 
 impl Registry {
     /// Loads the embedded base-game content.
     pub fn load_default() -> Result<Self> {
-        Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES)
+        Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES, DEFAULT_GAMEMODES)
     }
 
-    /// Loads `items.ron` + `recipes.ron` from a directory.
+    /// Loads `items.ron` + `recipes.ron` + `gamemodes.ron` from a directory.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
-        let items = std::fs::read_to_string(dir.join("items.ron"))
-            .with_context(|| format!("reading {}", dir.join("items.ron").display()))?;
-        let recipes = std::fs::read_to_string(dir.join("recipes.ron"))
-            .with_context(|| format!("reading {}", dir.join("recipes.ron").display()))?;
-        Self::parse(&items, &recipes)
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name))
+                .with_context(|| format!("reading {}", dir.join(name).display()))
+        };
+        Self::parse(&read("items.ron")?, &read("recipes.ron")?, &read("gamemodes.ron")?)
     }
 
-    fn parse(items_ron: &str, recipes_ron: &str) -> Result<Self> {
+    fn parse(items_ron: &str, recipes_ron: &str, gamemodes_ron: &str) -> Result<Self> {
         let items: Vec<ItemDef> = ron::from_str(items_ron).context("parsing items")?;
         let mut by_string_id = HashMap::new();
         let mut by_block = HashMap::new();
@@ -156,7 +183,41 @@ impl Registry {
             });
         }
 
-        Ok(Self { items, by_string_id, by_block, recipes })
+        let modes: Vec<GameModeDef> =
+            ron::from_str(gamemodes_ron).context("parsing game modes")?;
+        if modes.is_empty() {
+            bail!("at least one game mode is required");
+        }
+        let mut mode_by_id = HashMap::new();
+        for (index, mode) in modes.iter().enumerate() {
+            if mode_by_id.insert(mode.id.clone(), ModeId(index as u16)).is_some() {
+                bail!("duplicate game mode id {:?}", mode.id);
+            }
+        }
+
+        Ok(Self { items, by_string_id, by_block, recipes, modes, mode_by_id })
+    }
+
+    pub fn mode(&self, id: ModeId) -> &GameModeDef {
+        &self.modes[(id.0 as usize).min(self.modes.len() - 1)]
+    }
+
+    pub fn mode_count(&self) -> usize {
+        self.modes.len()
+    }
+
+    pub fn find_mode(&self, string_id: &str) -> Option<ModeId> {
+        self.mode_by_id.get(string_id).copied()
+    }
+
+    /// The world default (survival if present, else the first defined).
+    pub fn default_mode(&self) -> ModeId {
+        self.find_mode("oc:survival").unwrap_or(ModeId(0))
+    }
+
+    /// The next mode in registry order, wrapping (for the cycle key).
+    pub fn next_mode(&self, id: ModeId) -> ModeId {
+        ModeId(((id.0 as usize + 1) % self.modes.len()) as u16)
     }
 
     pub fn item(&self, id: ItemId) -> &ItemDef {
@@ -360,13 +421,55 @@ mod tests {
     #[test]
     fn duplicate_item_ids_are_rejected() {
         let items = r#"[(id: "oc:x", name: "X", block: None), (id: "oc:x", name: "Y", block: None)]"#;
-        assert!(Registry::parse(items, "[]").is_err());
+        assert!(Registry::parse(items, "[]", MODES).is_err());
     }
 
     #[test]
     fn recipes_with_unknown_items_are_rejected() {
         let items = r#"[(id: "oc:x", name: "X", block: None)]"#;
         let recipes = r#"[Shapeless(ingredients: ["oc:missing"], result: ("oc:x", 1))]"#;
-        assert!(Registry::parse(items, recipes).is_err());
+        assert!(Registry::parse(items, recipes, MODES).is_err());
+    }
+
+    const MODES: &str = r#"[(id: "oc:survival", name: "Survival", can_edit_blocks: true, uses_inventory: true, has_stats: true)]"#;
+
+    #[test]
+    fn standard_modes_match_the_minecraft_model() {
+        let reg = registry();
+        assert_eq!(reg.mode_count(), 4);
+        let survival = reg.mode(reg.find_mode("oc:survival").unwrap());
+        assert!(survival.can_edit_blocks && survival.uses_inventory && survival.has_stats);
+        assert!(!survival.can_fly && !survival.noclip);
+        let creative = reg.mode(reg.find_mode("oc:creative").unwrap());
+        assert!(creative.can_edit_blocks && creative.can_fly && !creative.uses_inventory);
+        let spectator = reg.mode(reg.find_mode("oc:spectator").unwrap());
+        assert!(spectator.noclip && spectator.can_fly && !spectator.can_edit_blocks);
+        assert_eq!(reg.default_mode(), reg.find_mode("oc:survival").unwrap());
+        // The cycle wraps over every registered mode.
+        let mut m = reg.default_mode();
+        for _ in 0..reg.mode_count() {
+            m = reg.next_mode(m);
+        }
+        assert_eq!(m, reg.default_mode());
+    }
+
+    #[test]
+    fn mods_can_define_new_modes() {
+        // A mod-style mode: free building but grounded and mortal.
+        let modes = r#"[
+            (id: "oc:survival", name: "Survival", can_edit_blocks: true, uses_inventory: true, has_stats: true),
+            (id: "mymod:builder", name: "Builder", can_edit_blocks: true, has_stats: true),
+        ]"#;
+        let items = r#"[(id: "oc:x", name: "X", block: None)]"#;
+        let reg = Registry::parse(items, "[]", modes).unwrap();
+        assert_eq!(reg.mode_count(), 2);
+        let builder = reg.mode(reg.find_mode("mymod:builder").unwrap());
+        assert!(builder.can_edit_blocks && builder.has_stats);
+        assert!(!builder.uses_inventory && !builder.can_fly, "defaults are off");
+
+        // Duplicates and empty mode lists are load errors.
+        assert!(Registry::parse(items, "[]", "[]").is_err());
+        let dup = r#"[(id: "oc:a", name: "A"), (id: "oc:a", name: "B")]"#;
+        assert!(Registry::parse(items, "[]", dup).is_err());
     }
 }

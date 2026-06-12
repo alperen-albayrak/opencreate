@@ -1,0 +1,47 @@
+// Game modes (ARCHITECTURE.md §7: the base game is data the same way mods
+// are). A mode composes engine capability flags; mods add modes by shipping
+// entries like these in their own data packs (merged by the phase-5 loader).
+//
+//   can_edit_blocks  may break and place blocks
+//   uses_inventory   edits gather/consume items (otherwise free)
+//   has_stats        health/hunger/stamina/oxygen tick, falls hurt
+//   can_fly          flight can be toggled
+//   noclip           always flies, passes through blocks, hidden hotbar
+[
+    (
+        id: "oc:survival",
+        name: "Survival",
+        can_edit_blocks: true,
+        uses_inventory: true,
+        has_stats: true,
+        can_fly: false,
+        noclip: false,
+    ),
+    (
+        id: "oc:creative",
+        name: "Creative",
+        can_edit_blocks: true,
+        uses_inventory: false,
+        has_stats: false,
+        can_fly: true,
+        noclip: false,
+    ),
+    (
+        id: "oc:adventure",
+        name: "Adventure",
+        can_edit_blocks: false,
+        uses_inventory: false,
+        has_stats: true,
+        can_fly: false,
+        noclip: false,
+    ),
+    (
+        id: "oc:spectator",
+        name: "Spectator",
+        can_edit_blocks: false,
+        uses_inventory: false,
+        has_stats: false,
+        can_fly: true,
+        noclip: true,
+    ),
+]

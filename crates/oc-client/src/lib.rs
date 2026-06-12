@@ -24,9 +24,8 @@ use hotbar::Hotbar;
 use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
 use oc_server::{ServerConfig, ServerHandle};
-use oc_assets::Registry;
+use oc_assets::{GameModeDef, ModeId, Registry};
 use oc_world::raycast::{RayHit, raycast};
-use oc_core::GameMode;
 use oc_world::BlockId;
 use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
@@ -79,7 +78,7 @@ struct App {
     outbox: Vec<ClientMessage>,
     hud_visible: bool,
     craft_open: bool,
-    mode: GameMode,
+    mode: ModeId,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
@@ -144,7 +143,7 @@ impl App {
                 .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
             {
                 Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode }) => {
-                    break (seed, spawn, day_fraction, mode);
+                    break (seed, spawn, day_fraction, ModeId(mode));
                 }
                 Some(_) => {}
                 None if Instant::now() > deadline => {
@@ -210,7 +209,7 @@ impl App {
             self.day_fraction,
             if self.player.flying { "flying" } else { "walking" },
             hotbar::block_name(self.hotbar.block()),
-            self.mode.name(),
+            self.caps().name.to_lowercase(),
             if self.player.flying { "walk" } else { "fly" },
         )
     }
@@ -272,13 +271,14 @@ impl App {
             KeyCode::ShiftLeft => self.input.down = pressed,
             KeyCode::ControlLeft => self.input.fast = pressed,
             KeyCode::KeyF if pressed => {
-                if self.mode.can_fly() && !self.mode.is_noclip() {
+                if self.caps().can_fly && !self.caps().noclip {
                     self.player.flying = !self.player.flying;
                     info!(flying = self.player.flying, "movement mode toggled");
                 }
             }
             KeyCode::KeyG if pressed => {
-                self.outbox.push(ClientMessage::SetGameMode(self.mode.next()));
+                self.outbox
+                    .push(ClientMessage::SetGameMode(self.registry.next_mode(self.mode).0));
             }
             KeyCode::KeyC if pressed => self.craft_open = !self.craft_open,
             KeyCode::Digit1 if pressed => self.digit(0),
@@ -294,6 +294,11 @@ impl App {
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
         }
+    }
+
+    /// Capability flags of the current mode.
+    fn caps(&self) -> &GameModeDef {
+        self.registry.mode(self.mode)
     }
 
     /// How many of a block's item the player carries.
@@ -333,7 +338,7 @@ impl App {
     /// Applies an edit locally (prediction) and tells the server. The
     /// server's BlockChanged echo is a no-op when it matches.
     fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
-        if !self.mode.can_edit_blocks() {
+        if !self.caps().can_edit_blocks {
             self.break_clicked = false;
             self.place_clicked = false;
             return Ok(());
@@ -347,7 +352,7 @@ impl App {
                 self.outbox
                     .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
                 // Predict the pickup; the server's Inventory message confirms.
-                if self.mode.uses_inventory()
+                if self.caps().uses_inventory
                     && let Some(item) = self.registry.item_for_block(broken)
                 {
                     *self.inventory.entry(item.0).or_insert(0) += 1;
@@ -363,12 +368,12 @@ impl App {
             // Water is replaceable, like Minecraft.
             let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos)
-                && (!self.mode.uses_inventory() || self.count_of(self.hotbar.block()) > 0);
+                && (!self.caps().uses_inventory || self.count_of(self.hotbar.block()) > 0);
             if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox
                     .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
-                if self.mode.uses_inventory()
+                if self.caps().uses_inventory
                     && let Some(item) = self.registry.item_for_block(self.hotbar.block())
                 {
                     self.inventory
@@ -399,11 +404,13 @@ impl App {
                     self.stats = [health, hunger, stamina, oxygen];
                 }
                 Some(ServerMessage::GameMode(mode)) => {
-                    info!(mode = mode.name(), "game mode changed");
-                    self.mode = mode;
-                    if mode.is_noclip() {
+                    self.mode = ModeId(mode);
+                    // Field access keeps the borrow disjoint from `transport`.
+                    let caps = self.registry.mode(self.mode);
+                    info!(mode = caps.id, "game mode changed");
+                    if caps.noclip {
                         self.player.flying = true;
-                    } else if !mode.can_fly() {
+                    } else if !caps.can_fly {
                         self.player.flying = false;
                     }
                 }
@@ -455,7 +462,7 @@ impl App {
             oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
         if self.streamer.world().is_generated(feet_chunk) {
             self.player
-                .update(self.streamer.world(), &input, self.camera.yaw, dt, self.mode.is_noclip());
+                .update(self.streamer.world(), &input, self.camera.yaw, dt, self.caps().noclip);
         }
         self.camera.position = self.player.eye();
 
@@ -490,8 +497,8 @@ impl App {
             view_proj: self.camera.view_proj(aspect),
             position: self.camera.position,
             highlight: self
-                .mode
-                .can_edit_blocks()
+                .caps()
+                .can_edit_blocks
                 .then(|| self.target().map(|hit| hit.block))
                 .flatten(),
             sun: sky.sun,
@@ -499,7 +506,7 @@ impl App {
             hud: self.hud_text(renderer),
             ui_texts: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let mut texts = if self.mode.uses_inventory() {
+                let mut texts = if self.caps().uses_inventory {
                     self.hotbar.count_labels(w, h, &self.hotbar_counts())
                 } else {
                     Vec::new()
@@ -514,12 +521,12 @@ impl App {
             },
             ui_quads: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let counts = if self.mode.uses_inventory() {
+                let counts = if self.caps().uses_inventory {
                     self.hotbar_counts()
                 } else {
                     [1; hotbar::ITEMS.len()] // creative: everything available
                 };
-                let mut quads = if self.mode.is_noclip() {
+                let mut quads = if self.caps().noclip {
                     Vec::new() // spectators carry nothing
                 } else {
                     self.hotbar.quads(w, h, &counts)
@@ -530,7 +537,7 @@ impl App {
                     });
                     quads.extend(craft_menu::panel(&lines, w).0);
                 }
-                if self.mode.has_stats() {
+                if self.caps().has_stats {
                     quads.extend(hotbar::stat_bars(
                         w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
                     ));

@@ -4,10 +4,8 @@
 //! depends on the rest of the workspace (see ARCHITECTURE.md §2).
 
 pub mod coords;
-pub mod gamemode;
 
 pub use coords::{BlockPos, ChunkPos, SectionPos};
-pub use gamemode::GameMode;
 
 /// Edge length of a cubic chunk section, in blocks.
 pub const SECTION_SIZE: i32 = 16;
