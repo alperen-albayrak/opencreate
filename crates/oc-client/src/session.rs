@@ -589,6 +589,7 @@ impl Session {
                 &self.hotbar.items,
                 self.hotbar.selected,
                 self.drag_item,
+                &self.skin,
                 mouse,
                 w,
                 h,
