@@ -15,6 +15,7 @@ mod hdr;
 mod mesh;
 mod font;
 mod outline;
+mod shadow;
 mod sky_pass;
 mod swapchain;
 mod texture;
@@ -36,6 +37,7 @@ use entity::EntityRenderer;
 use exposure::ExposurePass;
 use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
+use shadow::ShadowPass;
 use sky_pass::SkyPass;
 use swapchain::Swapchain;
 use ui::UiRenderer;
@@ -79,6 +81,8 @@ pub struct FrameCamera {
     pub fog_distance: f32,
     /// Draw the cloud layer this frame (graphics setting).
     pub clouds: bool,
+    /// Sun shadows enabled (settings toggle).
+    pub shadows: bool,
     /// Cloud slab color (rgb) + opacity (a) for the moment of day.
     pub cloud_color: [f32; 4],
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
@@ -119,6 +123,7 @@ pub struct Renderer {
     clouds_layer: CloudLayer,
     bloom: BloomPass,
     exposure: ExposurePass,
+    shadow: ShadowPass,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -183,12 +188,14 @@ impl Renderer {
                 ExposurePass::new(&ctx, &mut allocator, hdr.view, FRAMES_IN_FLIGHT)?;
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
             tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
+            let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let chunks = ChunkRenderer::new(
                 &ctx,
                 &mut allocator,
                 hdr.render_pass,
                 hdr.water_pass,
                 command_pool,
+                shadow.descriptor_layout,
             )?;
             chunks.bind_water_depth(&ctx.device, hdr.depth.view);
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
@@ -231,6 +238,7 @@ impl Renderer {
                 clouds_layer,
                 bloom,
                 exposure,
+                shadow,
                 ui,
                 command_pool,
                 command_buffers,
@@ -343,6 +351,28 @@ impl Renderer {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
+            // Pass 0: the sun's view — three shadow cascades. Always run
+            // (a cleared map keeps the layout valid when inactive).
+            self.shadow.update(
+                slot,
+                camera.sun,
+                camera.position,
+                camera.shadows,
+            );
+            for cascade in 0..3 {
+                self.shadow.begin(device, cmd, cascade);
+                if self.shadow.active() {
+                    self.chunks.record_shadow(
+                        device,
+                        cmd,
+                        self.shadow.pipeline_layout,
+                        self.shadow.cascade(cascade),
+                        camera.position,
+                    );
+                }
+                device.cmd_end_render_pass(cmd);
+            }
+
             // Pass 1: the world, into the HDR target at the render scale.
             let world_extent = self.hdr.extent;
             device.cmd_set_viewport(
@@ -380,6 +410,7 @@ impl Renderer {
                 camera.sun,
                 camera.time,
                 fog,
+                self.shadow.descriptor_sets[slot],
             );
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
@@ -567,6 +598,7 @@ impl Drop for Renderer {
             self.ui.destroy(device, &mut allocator);
             self.bloom.destroy(device, &mut allocator);
             self.exposure.destroy(device, &mut allocator);
+            self.shadow.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {

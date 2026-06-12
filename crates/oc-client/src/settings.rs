@@ -33,6 +33,8 @@ pub struct Settings {
     pub max_fps: i32,
     /// Draw the cloud layer.
     pub clouds: bool,
+    /// Cascaded sun shadows.
+    pub shadows: bool,
 }
 
 impl Default for Settings {
@@ -45,6 +47,7 @@ impl Default for Settings {
             resolution_scale: 1.0,
             max_fps: 0,
             clouds: true,
+            shadows: true,
         }
     }
 }
@@ -115,6 +118,7 @@ mod tests {
             resolution_scale: 9.0,
             max_fps: 100000,
             clouds: true,
+            shadows: true,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
@@ -135,6 +139,7 @@ mod tests {
             resolution_scale: 0.75,
             max_fps: 60,
             clouds: false,
+            shadows: false,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();

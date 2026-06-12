@@ -38,6 +38,7 @@ impl GpuBuffer {
 /// Push constants for the chunk pipeline; must match `chunk.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy)]
+/// Exactly 128 bytes — the guaranteed push-constant minimum.
 struct ChunkPush {
     mvp: Mat4,
     /// xyz: direction toward the sun; w: ambient light level.
@@ -46,6 +47,8 @@ struct ChunkPush {
     params: Vec4,
     /// rgb: fog (horizon) color; w: fog saturation distance, blocks.
     fog: Vec4,
+    /// xyz: chunk origin camera-relative (shadow lookups); w: unused.
+    rel: Vec4,
 }
 
 /// Push constants for the water pipeline; must match `water.wgsl`.
@@ -104,6 +107,7 @@ impl ChunkRenderer {
         render_pass: vk::RenderPass,
         water_pass: vk::RenderPass,
         command_pool: vk::CommandPool,
+        shadow_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         unsafe {
             let device = &ctx.device;
@@ -183,9 +187,10 @@ impl ChunkRenderer {
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<ChunkPush>() as u32);
+            let chunk_sets = [descriptor_set_layout, shadow_layout];
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                    .set_layouts(&chunk_sets)
                     .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
@@ -353,6 +358,7 @@ impl ChunkRenderer {
     /// Records draw commands and returns how many chunks were drawn after
     /// culling. Must be called inside a render pass with dynamic
     /// viewport/scissor already set.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn record(
         &self,
         device: &ash::Device,
@@ -362,6 +368,7 @@ impl ChunkRenderer {
         sun: Vec4,
         time: f32,
         fog: Vec4,
+        shadow_set: vk::DescriptorSet,
     ) -> u32 {
         unsafe {
             if self.chunks.is_empty() {
@@ -375,7 +382,7 @@ impl ChunkRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set],
+                &[self.descriptor_set, shadow_set],
                 &[],
             );
 
@@ -408,6 +415,7 @@ impl ChunkRenderer {
                     sun,
                     params: phase.extend(time),
                     fog,
+                    rel: rel.extend(0.0),
                 };
                 device.cmd_push_constants(
                     cmd,
@@ -420,6 +428,45 @@ impl ChunkRenderer {
                 drawn += 1;
             }
             drawn
+        }
+    }
+
+    /// Records depth-only chunk draws for one shadow cascade. The caller
+    /// has begun the cascade pass and bound the shadow pipeline; chunks
+    /// are culled against the cascade's ortho box.
+    pub unsafe fn record_shadow(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        layout: vk::PipelineLayout,
+        cascade: Mat4,
+        camera_pos: DVec3,
+    ) {
+        unsafe {
+            // A section's bounding sphere in cascade NDC, per axis.
+            let section_radius = (SECTION_SIZE as f32) * 0.5 * 1.7321;
+            let pad_x = section_radius * cascade.x_axis.x.abs().max(cascade.y_axis.x.abs()).max(cascade.z_axis.x.abs());
+            let pad_y = section_radius * cascade.x_axis.y.abs().max(cascade.y_axis.y.abs()).max(cascade.z_axis.y.abs());
+            for chunk in self.chunks.values() {
+                let Some(solid) = &chunk.solid else { continue };
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                let center = rel + Vec3::splat(SECTION_SIZE as f32 * 0.5);
+                let ndc = cascade * center.extend(1.0);
+                if ndc.x.abs() > 1.0 + pad_x || ndc.y.abs() > 1.0 + pad_y {
+                    continue;
+                }
+                device.cmd_bind_vertex_buffers(cmd, 0, &[solid.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, solid.index.buffer, 0, vk::IndexType::UINT32);
+                let mvp = cascade * Mat4::from_translation(rel);
+                device.cmd_push_constants(
+                    cmd,
+                    layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    as_bytes(std::slice::from_ref(&mvp)),
+                );
+                device.cmd_draw_indexed(cmd, solid.index_count, 1, 0, 0, 0);
+            }
         }
     }
 

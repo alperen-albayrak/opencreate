@@ -388,6 +388,7 @@ impl Session {
         time: f32,
         fog_distance: f32,
         clouds: bool,
+        shadows: bool,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -478,6 +479,7 @@ impl Session {
                 fog_distance
             },
             clouds: clouds && !underwater,
+            shadows,
             cloud_color: sky.clouds,
             entities: self.entities.draws(registry, Instant::now()),
             hud: if hud_visible {

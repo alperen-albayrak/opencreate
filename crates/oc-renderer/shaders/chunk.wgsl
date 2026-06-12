@@ -13,21 +13,42 @@ struct PushConstants {
     params: vec4<f32>,
     // rgb: fog (horizon) color; w: distance where fog saturates, blocks.
     fog: vec4<f32>,
+    // xyz: chunk origin camera-relative (shadow lookups); w: unused.
+    rel: vec4<f32>,
 }
 
 // `immediate` is WGSL/naga's name for Vulkan push constants.
 var<immediate> pc: PushConstants;
 
+// Sun shadow cascades (set 1, written per frame).
+struct ShadowData {
+    // Camera-relative world -> cascade clip.
+    matrices: array<mat4x4<f32>, 3>,
+    // Cascade far distances; w unused.
+    splits: vec4<f32>,
+    // x: strength (0 = off/night); yzw: world units per texel, per cascade.
+    params: vec4<f32>,
+}
+
+@group(1) @binding(0) var<uniform> shadow: ShadowData;
+@group(1) @binding(1) var shadow_map: texture_depth_2d_array;
+@group(1) @binding(2) var shadow_sampler: sampler_comparison;
+
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
-    @location(2) shade: f32,
+    // Light terms, AO baked in: x = sky ambient, y = sun diffuse (the
+    // part shadows darken), z = block light.
+    @location(2) light_terms: vec3<f32>,
     // Caustic-plane coords: world position (mod-256 anchored) projected
     // onto the face's plane, so dapples wrap around vertical faces
     // instead of smearing down them.
     @location(3) cpos: vec2<f32>,
     @location(4) @interpolate(flat) underwater: u32,
+    // Camera-relative world position + flat face normal (shadows).
+    @location(5) world_rel: vec3<f32>,
+    @location(6) @interpolate(flat) normal: vec3<f32>,
 }
 
 @vertex
@@ -72,7 +93,6 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 
     let ambient = pc.sun.w;
     let diffuse = max(dot(face_normal[face], pc.sun.xyz), 0.0);
-    let sky_term = sky_level * (ambient + (1.0 - ambient) * diffuse);
     let block_term = block_level * 0.95;
 
     // Ambient occlusion: corners boxed in by neighbors darken, which is
@@ -84,7 +104,12 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
-    out.shade = max(sky_term, block_term) * ao_mul;
+    // Split so the fragment can shadow just the sun-diffuse part.
+    out.light_terms = vec3<f32>(
+        sky_level * ambient * ao_mul,
+        sky_level * (1.0 - ambient) * diffuse * ao_mul,
+        block_term * ao_mul,
+    );
     let world = pc.params.xyz + pos;
     if (face < 2u) {
         out.cpos = world.xz;
@@ -94,6 +119,8 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
         out.cpos = world.zy;
     }
     out.underwater = (packed.y >> 24u) & 1u;
+    out.world_rel = pc.rel.xyz + pos;
+    out.normal = face_normal[face];
     return out;
 }
 
@@ -154,16 +181,61 @@ fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
 }
 
+// How much of the sun reaches this fragment: PCF over the cascade that
+// contains it, fading out past the last cascade and through twilight.
+fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
+    let strength = shadow.params.x;
+    if (strength <= 0.0 || view_dist >= shadow.splits.z) {
+        return 1.0;
+    }
+    var cascade = 2;
+    if (view_dist < shadow.splits.x) {
+        cascade = 0;
+    } else if (view_dist < shadow.splits.y) {
+        cascade = 1;
+    }
+    // Normal offset (scaled to the cascade texel) prevents most acne.
+    let pos = world_rel + normal * shadow.params[1u + u32(cascade)] * 1.5;
+    let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
+    // Vulkan rasterizes NDC y-down into the map; the lookup matches.
+    let uv = ndc.xy * 0.5 + vec2(0.5);
+    if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
+        return 1.0;
+    }
+    // 3x3 PCF on top of the sampler's bilinear comparison.
+    var lit = 0.0;
+    let step = 1.0 / 2048.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            lit += textureSampleCompareLevel(
+                shadow_map,
+                shadow_sampler,
+                uv + vec2(f32(dx), f32(dy)) * step,
+                cascade,
+                ndc.z - 0.0015,
+            );
+        }
+    }
+    lit /= 9.0;
+    // Ease back to fully lit at the cascade horizon and with twilight.
+    let range_fade = smoothstep(shadow.splits.z * 0.8, shadow.splits.z, view_dist);
+    return mix(1.0, mix(lit, 1.0, range_fade), strength);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
-    var color = texel.rgb * in.shade;
+    let view_dist = linearize(in.clip.z);
+    let visibility = sun_visibility(in.world_rel, in.normal, view_dist);
+    // Shadow only steals the sun's diffuse; ambient and lamps remain.
+    let shade = max(in.light_terms.x + in.light_terms.y * visibility, in.light_terms.z);
+    var color = texel.rgb * shade;
     if (in.underwater == 1u) {
         // Sun dapples on submerged surfaces; daylight-gated (pc.sun.xyz
         // is pre-scaled by daylight) and scene-lit so caves stay dark.
         let daylight = length(pc.sun.xyz);
         // Caustics are a near-field effect too: gone past ~100 blocks.
-        let dist_fade = 1.0 - smoothstep(40.0, 110.0, linearize(in.clip.z));
+        let dist_fade = 1.0 - smoothstep(40.0, 110.0, view_dist);
         let dapple = caustic(in.cpos, pc.params.w) * daylight * dist_fade;
         // Slightly green-cyan dapples, like sunlight through water —
         // kept faint: a shimmer on the sand, not a pattern painted on it.
@@ -171,6 +243,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // Horizon fog, same curve as water: far terrain melts into the sky;
     // underwater the client passes a short distance and deep blue color.
-    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.fog.w, 2.0));
+    let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / pc.fog.w, 2.0));
     return vec4<f32>(mix(color, pc.fog.rgb, fog_amount), 1.0);
 }
