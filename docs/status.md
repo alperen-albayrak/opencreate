@@ -62,6 +62,11 @@ rendering (floating origin); textured chunk; fly camera.
   offscreen HDR target (B10G11R11) resolved by an ACES tonemap pass;
   resolution scale (0.5-2.0, UI stays native) and a max-FPS cap live in
   the new Graphics settings tab — see the graphics roadmap
+- **Graphics stage B (water v2)**: water meshes split from solids and
+  drawn in their own blended pass with animated wave normals, fresnel,
+  sky reflection, sun glint, and — from the sampled opaque depth —
+  Beer-Lambert absorption (shallow turquoise to deep blue), soft
+  shorelines and in-shader occlusion
 
 ## Known issues
 

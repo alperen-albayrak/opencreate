@@ -1,7 +1,9 @@
 // Water pass (graphics roadmap stage B): same packed vertices as chunk.wgsl,
-// drawn blended after opaques. Scrolling procedural wave normals, Schlick
-// fresnel, sky reflection and a sun glint — refraction/absorption join when
-// the opaque snapshot lands (B2).
+// drawn blended after opaques in its own render pass. Scrolling procedural
+// wave normals, Schlick fresnel, sky reflection, sun glint, and — from the
+// sampled opaque depth — Beer-Lambert absorption (shallow turquoise to deep
+// blue), soft shorelines and in-shader occlusion (the pass has no depth
+// attachment). Refraction/SSR arrive with the stage-E snapshot tier.
 
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
@@ -66,6 +68,15 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 
 @group(0) @binding(0) var block_textures: texture_2d_array<f32>;
 @group(0) @binding(1) var block_sampler: sampler;
+@group(1) @binding(0) var opaque_depth: texture_depth_2d;
+
+// Must match the projection in camera.rs.
+const NEAR: f32 = 0.05;
+const FAR: f32 = 4096.0;
+
+fn linearize(depth: f32) -> f32 {
+    return NEAR * FAR / (FAR - depth * (FAR - NEAR));
+}
 
 // Sum of directional sines; wave vectors are integer cycles over 256
 // blocks, so phase is seamless across the mod-256 chunk origins.
@@ -92,6 +103,15 @@ fn wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // The opaque scene at this pixel (same resolution as this pass).
+    let scene_depth = textureLoad(opaque_depth, vec2<i32>(in.clip.xy), 0);
+    if (scene_depth < in.clip.z) {
+        discard; // terrain in front of the water
+    }
+    // View-space distance the eye ray travels through water before
+    // hitting whatever is behind it (sky counts as "very far").
+    let water_depth = max(linearize(scene_depth) - linearize(in.clip.z), 0.0);
+
     let t = pc.rel.w;
     let wave_pos = pc.wave_origin.xz + in.local.xz;
 
@@ -117,9 +137,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // water-colored instead of a full sky mirror.
     let fresnel = 0.02 + 0.68 * pow(1.0 - cos_view, 5.0);
 
-    // Base: deep blue, tinted by the classic water texture, scene-lit.
+    // Water body color: Beer-Lambert-ish — red dies first, so shallow
+    // water reads turquoise and deep water converges to deep blue.
+    let absorb = 1.0 - exp(-water_depth * 0.22);
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
-    let base = texel.rgb * vec3(0.30, 0.42, 0.62) * in.shade;
+    let ripple = 0.85 + 0.30 * texel.b;
+    let base = mix(vec3(0.16, 0.46, 0.52), vec3(0.03, 0.13, 0.32), absorb)
+        * ripple * in.shade;
 
     // Reflection: the sky environment, blue-shifted and rippled by the
     // wave normal (R.y varies per pixel), lit by the same shade so cave
@@ -138,7 +162,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);
-    // More mirror-like at grazing angles; always translucent head-on.
-    let alpha = mix(0.70, 0.93, fresnel);
+    // Coverage: transparent over shallow bottoms, near-solid when deep
+    // or seen at grazing angles; fades out entirely at the waterline.
+    let shore = clamp(water_depth / 0.7, 0.0, 1.0);
+    let alpha = shore * max(mix(0.30, 0.95, absorb), fresnel * 0.95);
     return vec4<f32>(color, alpha);
 }

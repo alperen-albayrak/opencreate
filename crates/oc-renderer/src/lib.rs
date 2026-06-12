@@ -152,8 +152,14 @@ impl Renderer {
             let hdr = HdrTarget::new(&ctx, &mut allocator, swapchain.extent)?;
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
             tonemap.bind_input(&ctx.device, hdr.view);
-            let chunks =
-                ChunkRenderer::new(&ctx, &mut allocator, hdr.render_pass, command_pool)?;
+            let chunks = ChunkRenderer::new(
+                &ctx,
+                &mut allocator,
+                hdr.render_pass,
+                hdr.water_pass,
+                command_pool,
+            )?;
+            chunks.bind_water_depth(&ctx.device, hdr.depth.view);
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let ui =
@@ -270,6 +276,7 @@ impl Renderer {
                 let allocator = self.allocator.as_mut().expect("allocator alive");
                 self.hdr.recreate(&self.ctx, allocator, extent)?;
                 self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+                self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
             }
             let device = &self.ctx.device;
 
@@ -326,7 +333,22 @@ impl Renderer {
                     .record(device, cmd, camera.view_proj, camera.position, camera.sun);
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
-            // Water draws blended after everything opaque.
+            if let Some(block) = camera.highlight {
+                self.outline
+                    .record(device, cmd, camera.view_proj, camera.position, block);
+            }
+            device.cmd_end_render_pass(cmd);
+
+            // Pass 1b: water, blended over the opaques, sampling their
+            // depth (absorption, shore fade, in-shader occlusion).
+            device.cmd_begin_render_pass(
+                cmd,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.hdr.water_pass)
+                    .framebuffer(self.hdr.water_framebuffer)
+                    .render_area(world_extent.into()),
+                vk::SubpassContents::INLINE,
+            );
             self.chunks.record_water(
                 device,
                 cmd,
@@ -336,10 +358,6 @@ impl Renderer {
                 Vec4::from_array(camera.sky_color),
                 camera.time,
             );
-            if let Some(block) = camera.highlight {
-                self.outline
-                    .record(device, cmd, camera.view_proj, camera.position, block);
-            }
             device.cmd_end_render_pass(cmd);
 
             // Pass 2: tonemap resolve + UI, at native resolution.
@@ -444,6 +462,7 @@ impl Renderer {
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.hdr.recreate(&self.ctx, allocator, scaled)?;
             self.tonemap.bind_input(&self.ctx.device, self.hdr.view);
+            self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
             self.scale_dirty = false;
             Ok(())
         }

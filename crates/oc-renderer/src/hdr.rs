@@ -21,14 +21,19 @@ const TONEMAP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.spv
 /// swapchain size times the resolution scale).
 pub struct HdrTarget {
     pub extent: vk::Extent2D,
-    /// The world render pass (chunk/entity/outline pipelines live here).
-    /// Color ends in SHADER_READ_ONLY_OPTIMAL for the tonemap pass.
+    /// Opaque world pass (chunk/entity/outline pipelines). Depth ends
+    /// SHADER_READ_ONLY so the water pass can sample it.
     pub render_pass: vk::RenderPass,
+    /// Water pass: loads the color, no depth attachment (water samples
+    /// the opaque depth and depth-tests in the shader). Color ends in
+    /// SHADER_READ_ONLY_OPTIMAL for the tonemap pass.
+    pub water_pass: vk::RenderPass,
     image: vk::Image,
     allocation: Option<Allocation>,
     pub view: vk::ImageView,
     pub depth: DepthBuffer,
     pub framebuffer: vk::Framebuffer,
+    pub water_framebuffer: vk::Framebuffer,
 }
 
 impl HdrTarget {
@@ -39,16 +44,19 @@ impl HdrTarget {
     ) -> Result<Self> {
         unsafe {
             let render_pass = create_world_pass(&ctx.device)?;
-            let (image, allocation, view, depth, framebuffer) =
-                create_images(ctx, allocator, render_pass, extent)?;
+            let water_pass = create_water_pass(&ctx.device)?;
+            let (image, allocation, view, depth, framebuffer, water_framebuffer) =
+                create_images(ctx, allocator, render_pass, water_pass, extent)?;
             Ok(Self {
                 extent,
                 render_pass,
+                water_pass,
                 image,
                 allocation: Some(allocation),
                 view,
                 depth,
                 framebuffer,
+                water_framebuffer,
             })
         }
     }
@@ -63,20 +71,22 @@ impl HdrTarget {
     ) -> Result<()> {
         unsafe {
             self.destroy_images(&ctx.device, allocator);
-            let (image, allocation, view, depth, framebuffer) =
-                create_images(ctx, allocator, self.render_pass, extent)?;
+            let (image, allocation, view, depth, framebuffer, water_framebuffer) =
+                create_images(ctx, allocator, self.render_pass, self.water_pass, extent)?;
             self.extent = extent;
             self.image = image;
             self.allocation = Some(allocation);
             self.view = view;
             self.depth = depth;
             self.framebuffer = framebuffer;
+            self.water_framebuffer = water_framebuffer;
             Ok(())
         }
     }
 
     unsafe fn destroy_images(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         unsafe {
+            device.destroy_framebuffer(self.water_framebuffer, None);
             device.destroy_framebuffer(self.framebuffer, None);
             self.depth.destroy(device, allocator);
             device.destroy_image_view(self.view, None);
@@ -90,6 +100,7 @@ impl HdrTarget {
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         unsafe {
             self.destroy_images(device, allocator);
+            device.destroy_render_pass(self.water_pass, None);
             device.destroy_render_pass(self.render_pass, None);
         }
     }
@@ -99,8 +110,16 @@ unsafe fn create_images(
     ctx: &VulkanContext,
     allocator: &mut Allocator,
     render_pass: vk::RenderPass,
+    water_pass: vk::RenderPass,
     extent: vk::Extent2D,
-) -> Result<(vk::Image, Allocation, vk::ImageView, DepthBuffer, vk::Framebuffer)> {
+) -> Result<(
+    vk::Image,
+    Allocation,
+    vk::ImageView,
+    DepthBuffer,
+    vk::Framebuffer,
+    vk::Framebuffer,
+)> {
     unsafe {
         let image = ctx.device.create_image(
             &vk::ImageCreateInfo::default()
@@ -149,12 +168,22 @@ unsafe fn create_images(
                 .layers(1),
             None,
         )?;
-        Ok((image, allocation, view, depth, framebuffer))
+        let water_attachments = [view];
+        let water_framebuffer = ctx.device.create_framebuffer(
+            &vk::FramebufferCreateInfo::default()
+                .render_pass(water_pass)
+                .attachments(&water_attachments)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1),
+            None,
+        )?;
+        Ok((image, allocation, view, depth, framebuffer, water_framebuffer))
     }
 }
 
-/// The world pass: like the old swapchain pass, but the color image is
-/// HDR and transitions to shader-read for the tonemap resolve.
+/// The opaque world pass. Color stays an attachment (the water pass
+/// continues into it); depth ends shader-readable for the water pass.
 unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
     unsafe {
         let attachments = [
@@ -166,16 +195,16 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
             vk::AttachmentDescription::default()
                 .format(depth::DEPTH_FORMAT)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .store_op(vk::AttachmentStoreOp::STORE)
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         ];
         let color_ref = [vk::AttachmentReference::default()
             .attachment(0)
@@ -207,6 +236,79 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
                 .dst_access_mask(
                     vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                ),
+            vk::SubpassDependency::default()
+                .src_subpass(0)
+                .dst_subpass(vk::SUBPASS_EXTERNAL)
+                .src_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                )
+                .dst_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::SHADER_READ,
+                ),
+        ];
+        let render_pass = device.create_render_pass(
+            &vk::RenderPassCreateInfo::default()
+                .attachments(&attachments)
+                .subpasses(std::slice::from_ref(&subpass))
+                .dependencies(&dependencies),
+            None,
+        )?;
+        Ok(render_pass)
+    }
+}
+
+/// The water pass: continues into the HDR color (no clear, no depth
+/// attachment — water samples the opaque depth and tests in-shader) and
+/// hands the color to the tonemap pass.
+unsafe fn create_water_pass(device: &ash::Device) -> Result<vk::RenderPass> {
+    unsafe {
+        let attachments = [vk::AttachmentDescription::default()
+            .format(HDR_FORMAT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let color_ref = [vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_ref);
+        let dependencies = [
+            vk::SubpassDependency::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                )
+                .dst_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::SHADER_READ,
                 ),
             vk::SubpassDependency::default()
                 .src_subpass(0)

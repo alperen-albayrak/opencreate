@@ -79,6 +79,9 @@ pub struct ChunkRenderer {
     pipeline: vk::Pipeline,
     water_pipeline_layout: vk::PipelineLayout,
     water_pipeline: vk::Pipeline,
+    water_depth_layout: vk::DescriptorSetLayout,
+    water_depth_pool: vk::DescriptorPool,
+    water_depth_set: vk::DescriptorSet,
     texture_image: vk::Image,
     texture_allocation: Option<Allocation>,
     texture_view: vk::ImageView,
@@ -95,6 +98,7 @@ impl ChunkRenderer {
         ctx: &VulkanContext,
         allocator: &mut Allocator,
         render_pass: vk::RenderPass,
+        water_pass: vk::RenderPass,
         command_pool: vk::CommandPool,
     ) -> Result<Self> {
         unsafe {
@@ -183,17 +187,43 @@ impl ChunkRenderer {
             )?;
             let pipeline = create_pipeline(device, render_pass, pipeline_layout)?;
 
+            // Water set 1: the opaque depth texture (rebound on resize).
+            let depth_binding = [vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+            let water_depth_layout = device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&depth_binding),
+                None,
+            )?;
+            let depth_pool_size = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(1)];
+            let water_depth_pool = device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(1)
+                    .pool_sizes(&depth_pool_size),
+                None,
+            )?;
+            let water_depth_set = device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(water_depth_pool)
+                    .set_layouts(std::slice::from_ref(&water_depth_layout)),
+            )?[0];
+
             let water_push = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<WaterPush>() as u32);
+            let water_sets = [descriptor_set_layout, water_depth_layout];
             let water_pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                    .set_layouts(&water_sets)
                     .push_constant_ranges(std::slice::from_ref(&water_push)),
                 None,
             )?;
             let water_pipeline =
-                create_water_pipeline(device, render_pass, water_pipeline_layout)?;
+                create_water_pipeline(device, water_pass, water_pipeline_layout)?;
 
             Ok(Self {
                 descriptor_set_layout,
@@ -203,6 +233,9 @@ impl ChunkRenderer {
                 pipeline,
                 water_pipeline_layout,
                 water_pipeline,
+                water_depth_layout,
+                water_depth_pool,
+                water_depth_set,
                 texture_image,
                 texture_allocation: Some(texture_allocation),
                 texture_view,
@@ -376,6 +409,22 @@ impl ChunkRenderer {
         }
     }
 
+    /// Points the water pass at the (re)created opaque depth image.
+    /// Call while the device is idle.
+    pub unsafe fn bind_water_depth(&self, device: &ash::Device, view: vk::ImageView) {
+        unsafe {
+            let info = [vk::DescriptorImageInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(self.water_depth_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .image_info(&info);
+            device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+    }
+
     /// Records the blended water draws (after opaques and entities).
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn record_water(
@@ -412,7 +461,7 @@ impl ChunkRenderer {
                         vk::PipelineBindPoint::GRAPHICS,
                         self.water_pipeline_layout,
                         0,
-                        &[self.descriptor_set],
+                        &[self.descriptor_set, self.water_depth_set],
                         &[],
                     );
                     bound = true;
@@ -468,6 +517,8 @@ impl ChunkRenderer {
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline_layout(self.water_pipeline_layout, None);
+            device.destroy_descriptor_pool(self.water_depth_pool, None);
+            device.destroy_descriptor_set_layout(self.water_depth_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_sampler(self.sampler, None);
@@ -806,10 +857,9 @@ unsafe fn create_water_pipeline(
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS);
+        // The water pass has no depth attachment; the shader samples the
+        // opaque depth and discards occluded fragments itself.
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default();
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(true)
