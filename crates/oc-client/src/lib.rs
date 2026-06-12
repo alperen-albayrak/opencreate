@@ -2,6 +2,7 @@
 //! (ARCHITECTURE.md §2). Per-world state lives in [`session::Session`];
 //! this shell owns the window, renderer, registry and menu navigation.
 
+mod audio;
 mod avatar;
 mod camera;
 mod craft_menu;
@@ -93,6 +94,8 @@ struct App {
     drag_slider: Option<usize>,
     /// App epoch for shader animation time (waves).
     started: Instant,
+    /// Synthesized sound output; None when no device exists.
+    audio: Option<audio::Audio>,
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets).
@@ -170,6 +173,7 @@ impl App {
             settings: Settings::load(),
             drag_slider: None,
             started: Instant::now(),
+            audio: None,
         })
     }
 
@@ -184,6 +188,9 @@ impl App {
     fn apply_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_resolution_scale(self.settings.resolution_scale);
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.set_volume(self.settings.volume);
         }
         if let Some(session) = &mut self.session {
             session.camera.fov_y = self.settings.fov.to_radians();
@@ -246,6 +253,7 @@ impl App {
         info!("renderer initialized");
         self.window = Some(window);
         self.renderer = Some(renderer);
+        self.audio = audio::Audio::new(self.settings.volume);
         self.apply_settings(); // resolution scale etc. from settings.ron
         // Dev hook: OC_WORLD=<name> skips the menus into a world (used by
         // graphics verification; harmless in normal play).
@@ -493,6 +501,9 @@ impl App {
 
     /// A left click on a menu screen: resolve the button under the cursor.
     fn menu_click(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(audio) = &mut self.audio {
+            audio.play(audio::Sound::Click);
+        }
         let (w, h) = self.window_size();
         let action = self
             .menu_view(w, h)
@@ -629,6 +640,21 @@ impl App {
 
         let mut camera = if let Some(session) = &mut self.session {
             session.update(renderer, &self.registry, dt, in_game, self.settings.far_terrain)?;
+            if let Some(audio) = &mut self.audio {
+                for sound in session.sounds.drain(..) {
+                    audio.play(sound);
+                }
+                let speed = session.player.velocity.truncate().length() as f32;
+                audio.update(
+                    dt as f32,
+                    if in_game { speed } else { 0.0 },
+                    session.player.on_ground,
+                    session.player.flying,
+                    session.surface_block(),
+                    session.underwater,
+                    session.player.position.y as f32,
+                );
+            }
             session.frame_camera(
                 renderer,
                 &self.registry,

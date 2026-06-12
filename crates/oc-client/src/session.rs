@@ -64,6 +64,10 @@ pub struct Session {
     /// Messages queued for the server this frame.
     outbox: Vec<ClientMessage>,
     pub inventory_open: bool,
+    /// One-shot sounds queued for the app's audio (drained per frame).
+    pub sounds: Vec<crate::audio::Sound>,
+    /// Whether the camera was submerged last frame (splash detection).
+    pub underwater: bool,
     /// Block item picked up in the inventory screen, riding the cursor.
     drag_item: Option<oc_assets::ItemId>,
     pub mode: ModeId,
@@ -130,6 +134,8 @@ impl Session {
             server: Some(server),
             outbox: Vec::new(),
             inventory_open: false,
+            sounds: Vec::new(),
+            underwater: false,
             drag_item: None,
             mode,
             cheats,
@@ -236,6 +242,7 @@ impl Session {
             Some(count) if *count > 0 => *count -= 1, // predicted consumption
             _ => return,
         }
+        self.sounds.push(crate::audio::Sound::Eat);
         self.outbox.push(ClientMessage::Eat { item: apple.0 });
     }
 
@@ -267,6 +274,7 @@ impl Session {
         {
             let broken = self.streamer.world().block(hit.block);
             if self.streamer.world_mut().set_block(hit.block, BlockId::AIR) {
+                self.sounds.push(crate::audio::Sound::Break);
                 self.streamer.remesh_after_edit(renderer, hit.block)?;
                 self.outbox
                     .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
@@ -290,6 +298,7 @@ impl Session {
                 && (!self.caps(registry).uses_inventory
                     || self.count_of(registry, self.hotbar.block()) > 0);
             if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
+                self.sounds.push(crate::audio::Sound::Place);
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox
                     .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
@@ -396,6 +405,13 @@ impl Session {
             }
             self.camera.position = self.player.eye();
 
+            // Splash on submerging; the flag also drives the ambient mix.
+            let now_underwater = self.camera_underwater(self.camera.position);
+            if now_underwater && !self.underwater {
+                self.sounds.push(crate::audio::Sound::Splash);
+            }
+            self.underwater = now_underwater;
+
             // Walk-cycle state for the visible body: swing speed follows
             // ground speed, amplitude eases in and out.
             let speed = self.player.velocity.truncate().length() as f32;
@@ -450,6 +466,13 @@ impl Session {
             self.caps(registry).name.to_lowercase(),
             if self.player.flying { "walk" } else { "fly" },
         )
+    }
+
+    /// The block just under the player's feet (footstep material).
+    pub fn surface_block(&self) -> oc_world::BlockId {
+        let p = self.player.position;
+        let below = glam::DVec3::new(p.x, p.y - 0.05, p.z).floor().as_ivec3();
+        self.streamer.world().block(below)
     }
 
     /// F5: eyes -> behind -> facing -> eyes.

@@ -25,6 +25,12 @@ Remaining:
   item->count map; slot layout is client presentation. A true per-slot
   server inventory joins the multiplayer protocol work.
 - **Ocean creatures** — fish with water movement AI
+- ~~**Sound**~~ ✅ — fully synthesized at startup (zero audio assets in
+  the repo): per-surface footsteps with speed-following cadence, dig
+  crunch, place thud, eat, splash, menu clicks, and looping wind/
+  underwater ambience that fades with altitude and submersion. Master
+  volume slider in settings. Spatialized remote-entity sounds join
+  multiplayer.
 - Local skin + texture pack selection (overlay stack). *Started:* blocky
   six-part player body with walk swing, visible in the F5 third-person
   views (back/front, wall-aware camera); color-set skins in

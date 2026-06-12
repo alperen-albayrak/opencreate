@@ -37,6 +37,8 @@ pub struct Settings {
     pub water_reflections: bool,
     /// Coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
+    /// Master sound volume, 0..1.
+    pub volume: f32,
 }
 
 impl Default for Settings {
@@ -51,6 +53,7 @@ impl Default for Settings {
             clouds: true,
             water_reflections: true,
             far_terrain: true,
+            volume: 0.8,
         }
     }
 }
@@ -69,6 +72,7 @@ impl Settings {
             .clamp(RESOLUTION_SCALE_RANGE.0, RESOLUTION_SCALE_RANGE.1);
         self.max_fps =
             (self.max_fps as f32).clamp(MAX_FPS_RANGE.0, MAX_FPS_RANGE.1) as i32;
+        self.volume = self.volume.clamp(0.0, 1.0);
         self
     }
 
@@ -123,6 +127,7 @@ mod tests {
             clouds: true,
             water_reflections: true,
             far_terrain: true,
+            volume: 5.0,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
@@ -145,6 +150,7 @@ mod tests {
             clouds: false,
             water_reflections: false,
             far_terrain: false,
+            volume: 0.5,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();

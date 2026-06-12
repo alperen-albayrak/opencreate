@@ -20,3 +20,4 @@ oc-server.workspace = true
 oc-assets.workspace = true
 serde.workspace = true
 ron.workspace = true
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
