@@ -1,0 +1,11 @@
+[package]
+name = "oc-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+oc-core.workspace = true
+oc-world.workspace = true
+glam.workspace = true

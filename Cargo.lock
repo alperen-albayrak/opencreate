@@ -1069,6 +1069,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oc-protocol"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "oc-core",
+ "oc-world",
+]
+
+[[package]]
 name = "oc-renderer"
 version = "0.1.0"
 dependencies = [
