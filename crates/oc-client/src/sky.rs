@@ -12,12 +12,17 @@ pub const DAY_LENGTH_SECS: f64 = 600.0;
 pub struct SkyState {
     /// xyz: direction toward the sun (normalized); w: ambient light level.
     pub sun: Vec4,
+    /// Horizon color — also the fog color and the water's environment.
     pub sky_color: [f32; 4],
+    /// Overhead color (deeper blue by day, near-black at night).
+    pub zenith: [f32; 4],
 }
 
 const DAY_SKY: Vec3 = Vec3::new(0.47, 0.71, 0.99);
 const DUSK_SKY: Vec3 = Vec3::new(0.82, 0.52, 0.31);
 const NIGHT_SKY: Vec3 = Vec3::new(0.012, 0.018, 0.05);
+const DAY_ZENITH: Vec3 = Vec3::new(0.18, 0.42, 0.86);
+const NIGHT_ZENITH: Vec3 = Vec3::new(0.004, 0.007, 0.022);
 
 /// Computes the sky for `day_fraction` in [0, 1): 0.0 = sunrise at the
 /// horizon, 0.25 = noon, 0.5 = sunset, 0.75 = midnight.
@@ -34,12 +39,15 @@ pub fn sky_at(day_fraction: f64) -> SkyState {
     let dusk = smoothstep(-0.25, -0.02, elevation) * (1.0 - smoothstep(0.02, 0.35, elevation));
 
     let sky = NIGHT_SKY.lerp(DAY_SKY, daylight).lerp(DUSK_SKY, dusk * 0.85);
+    // The zenith keeps its blue while the horizon warms at dusk.
+    let zenith = NIGHT_ZENITH.lerp(DAY_ZENITH, daylight).lerp(DUSK_SKY * 0.35, dusk * 0.3);
     // Never fully dark: moonlight floor at night.
     let ambient = 0.16 + 0.32 * daylight;
 
     SkyState {
         sun: (sun_dir * daylight).extend(ambient),
         sky_color: [sky.x, sky.y, sky.z, 1.0],
+        zenith: [zenith.x, zenith.y, zenith.z, 1.0],
     }
 }
 

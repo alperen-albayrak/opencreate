@@ -14,8 +14,8 @@ struct PushConstants {
     sky: vec4<f32>,
     // xyz: chunk origin camera-relative (view vector); w: time in seconds.
     rel: vec4<f32>,
-    // xyz: chunk origin mod 256 (reserved for texture-scale surface
-    // animation; keeps the Rust push layout stable).
+    // xyz: chunk origin mod 256 (shimmer phase anchor); w: distance at
+    // which fog saturates, in blocks.
     wave_origin: vec4<f32>,
 }
 
@@ -179,7 +179,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         glint = pow(max(dot(glint_dir, sun_dir), 0.0), 500.0) * 0.95 * daylight * in.shade;
     }
 
-    let color = mix(base, sky_reflect, fresnel) + vec3(glint);
+    var color = mix(base, sky_reflect, fresnel) + vec3(glint);
+    // The same horizon fog as terrain, so far water melts into the sky.
+    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.wave_origin.w, 2.0));
+    color = mix(color, pc.sky.rgb, fog_amount);
     // Coverage: transparent over shallow bottoms, near-solid when deep or
     // at grazing angles. The waterline itself stays crisp — water meets
     // terrain at block boundaries, so the mesh edge IS the shoreline; a

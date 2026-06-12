@@ -12,6 +12,7 @@ mod hdr;
 mod mesh;
 mod font;
 mod outline;
+mod sky_pass;
 mod swapchain;
 mod texture;
 mod ui;
@@ -29,6 +30,7 @@ use depth::DepthBuffer;
 use entity::EntityRenderer;
 use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
+use sky_pass::SkyPass;
 use swapchain::Swapchain;
 use ui::UiRenderer;
 
@@ -57,6 +59,10 @@ pub struct FrameCamera {
     pub hud_scale: f32,
     /// Seconds since the client started (wave animation phase).
     pub time: f32,
+    /// Overhead sky color (the dome blends horizon -> zenith).
+    pub sky_zenith: [f32; 4],
+    /// Where distance fog saturates, in blocks (~the render distance).
+    pub fog_distance: f32,
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
@@ -91,6 +97,7 @@ pub struct Renderer {
     chunks: ChunkRenderer,
     entity: EntityRenderer,
     outline: OutlineRenderer,
+    sky: SkyPass,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -162,6 +169,7 @@ impl Renderer {
             chunks.bind_water_depth(&ctx.device, hdr.depth.view);
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
+            let sky = SkyPass::new(&ctx, hdr.render_pass)?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
@@ -194,6 +202,7 @@ impl Renderer {
                 chunks,
                 entity,
                 outline,
+                sky,
                 ui,
                 command_pool,
                 command_buffers,
@@ -328,6 +337,7 @@ impl Renderer {
                     .clear_values(&clears),
                 vk::SubpassContents::INLINE,
             );
+            let fog = Vec4::from_array(camera.sky_color).truncate().extend(camera.fog_distance);
             self.chunks_drawn = self.chunks.record(
                 device,
                 cmd,
@@ -335,6 +345,7 @@ impl Renderer {
                 camera.position,
                 camera.sun,
                 camera.time,
+                fog,
             );
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
@@ -342,6 +353,15 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
+            // The sky dome shades only pixels no geometry wrote.
+            self.sky.record(
+                device,
+                cmd,
+                camera.view_proj,
+                camera.sun,
+                Vec4::from_array(camera.sky_color),
+                Vec4::from_array(camera.sky_zenith),
+            );
             device.cmd_end_render_pass(cmd);
 
             // Pass 1b: water, blended over the opaques, sampling their
@@ -362,6 +382,7 @@ impl Renderer {
                 camera.sun,
                 Vec4::from_array(camera.sky_color),
                 camera.time,
+                camera.fog_distance,
             );
             device.cmd_end_render_pass(cmd);
 
@@ -484,6 +505,7 @@ impl Drop for Renderer {
             self.chunks.destroy(device, &mut allocator);
             self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);
+            self.sky.destroy(device);
             self.ui.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);

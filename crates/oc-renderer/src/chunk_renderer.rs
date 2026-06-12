@@ -44,6 +44,8 @@ struct ChunkPush {
     sun: Vec4,
     /// xyz: chunk origin mod 256 (caustic phase); w: time in seconds.
     params: Vec4,
+    /// rgb: fog (horizon) color; w: fog saturation distance, blocks.
+    fog: Vec4,
 }
 
 /// Push constants for the water pipeline; must match `water.wgsl`.
@@ -359,6 +361,7 @@ impl ChunkRenderer {
         camera_pos: DVec3,
         sun: Vec4,
         time: f32,
+        fog: Vec4,
     ) -> u32 {
         unsafe {
             if self.chunks.is_empty() {
@@ -404,6 +407,7 @@ impl ChunkRenderer {
                     mvp: view_proj * Mat4::from_translation(rel),
                     sun,
                     params: phase.extend(time),
+                    fog,
                 };
                 device.cmd_push_constants(
                     cmd,
@@ -446,6 +450,7 @@ impl ChunkRenderer {
         sun: Vec4,
         sky: Vec4,
         time: f32,
+        fog_distance: f32,
     ) {
         unsafe {
             if self.chunks.is_empty() {
@@ -491,7 +496,7 @@ impl ChunkRenderer {
                     sun,
                     sky,
                     rel: rel.extend(time),
-                    wave_origin: wave.extend(0.0),
+                    wave_origin: wave.extend(fog_distance),
                 };
                 device.cmd_push_constants(
                     cmd,

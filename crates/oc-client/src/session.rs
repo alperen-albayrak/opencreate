@@ -369,6 +369,7 @@ impl Session {
         size: (f32, f32),
         ui: f32,
         time: f32,
+        fog_distance: f32,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -440,6 +441,8 @@ impl Session {
                 .flatten(),
             sun: sky.sun,
             sky_color: sky.sky_color,
+            sky_zenith: sky.zenith,
+            fog_distance,
             entities: self.entities.draws(registry, Instant::now()),
             hud: if hud_visible {
                 self.hud_text(renderer, registry, frame_time_ema)

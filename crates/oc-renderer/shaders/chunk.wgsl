@@ -10,6 +10,8 @@ struct PushConstants {
     sun: vec4<f32>,
     // xyz: chunk origin mod 256 (caustic phase anchor); w: time, seconds.
     params: vec4<f32>,
+    // rgb: fog (horizon) color; w: distance where fog saturates, blocks.
+    fog: vec4<f32>,
 }
 
 // `immediate` is WGSL/naga's name for Vulkan push constants.
