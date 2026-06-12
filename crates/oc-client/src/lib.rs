@@ -308,6 +308,13 @@ impl App {
                         session.camera.position = session.player.eye();
                     }
                 }
+                if let Ok(look) = std::env::var("OC_LOOK") {
+                    let v: Vec<f32> = look.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if let [yaw, pitch] = v[..] {
+                        session.camera.yaw = yaw;
+                        session.camera.pitch = pitch;
+                    }
+                }
                 self.session = Some(session);
                 self.apply_settings();
                 self.screen = Screen::InGame;

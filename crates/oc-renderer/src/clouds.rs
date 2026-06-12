@@ -107,6 +107,11 @@ fn build_mesh() -> (Vec<CloudVertex>, Vec<u32>) {
 
 pub struct CloudLayer {
     pipeline_layout: vk::PipelineLayout,
+    /// Depth-only pass: nearest cloud face wins each pixel.
+    prepass: vk::Pipeline,
+    /// Color pass at depth EQUAL: exactly one translucent blend per
+    /// pixel, so overlapping faces of the slabs never double-expose —
+    /// only the outermost silhouette of each cloud reads as an edge.
     pipeline: vk::Pipeline,
     vertices: GpuBuffer,
     indices: GpuBuffer,
@@ -145,10 +150,12 @@ impl CloudLayer {
                     .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
-            let pipeline = create_pipeline(&ctx.device, render_pass, pipeline_layout)?;
+            let prepass = create_pipeline(&ctx.device, render_pass, pipeline_layout, true)?;
+            let pipeline = create_pipeline(&ctx.device, render_pass, pipeline_layout, false)?;
 
             Ok(Self {
                 pipeline_layout,
+                prepass,
                 pipeline,
                 vertices,
                 indices,
@@ -169,7 +176,6 @@ impl CloudLayer {
         color: Vec4,
     ) {
         unsafe {
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertices.buffer], &[0]);
             device.cmd_bind_index_buffer(cmd, self.indices.buffer, 0, vk::IndexType::UINT32);
 
@@ -179,26 +185,30 @@ impl CloudLayer {
             let drift_z = (time * WIND.1) as f64;
             let base_x = ((camera_pos.x - drift_x) / TILE as f64).floor() * TILE as f64;
             let base_z = ((camera_pos.z - drift_z) / TILE as f64).floor() * TILE as f64;
-            for tz in -1..=1 {
-                for tx in -1..=1 {
-                    let origin = DVec3::new(
-                        base_x + drift_x + tx as f64 * TILE as f64,
-                        CLOUD_ALTITUDE,
-                        base_z + drift_z + tz as f64 * TILE as f64,
-                    );
-                    let rel = (origin - camera_pos).as_vec3();
-                    let push = CloudPush {
-                        mvp: view_proj * Mat4::from_translation(rel),
-                        color,
-                    };
-                    device.cmd_push_constants(
-                        cmd,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        as_bytes(std::slice::from_ref(&push)),
-                    );
-                    device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
+            // Depth first, then color at EQUAL: one blend per pixel.
+            for pipeline in [self.prepass, self.pipeline] {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                for tz in -1..=1 {
+                    for tx in -1..=1 {
+                        let origin = DVec3::new(
+                            base_x + drift_x + tx as f64 * TILE as f64,
+                            CLOUD_ALTITUDE,
+                            base_z + drift_z + tz as f64 * TILE as f64,
+                        );
+                        let rel = (origin - camera_pos).as_vec3();
+                        let push = CloudPush {
+                            mvp: view_proj * Mat4::from_translation(rel),
+                            color,
+                        };
+                        device.cmd_push_constants(
+                            cmd,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            as_bytes(std::slice::from_ref(&push)),
+                        );
+                        device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
+                    }
                 }
             }
         }
@@ -206,6 +216,7 @@ impl CloudLayer {
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &mut Allocator) {
         unsafe {
+            device.destroy_pipeline(self.prepass, None);
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.vertices.destroy(device, allocator);
@@ -218,6 +229,7 @@ unsafe fn create_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     layout: vk::PipelineLayout,
+    prepass: bool,
 ) -> Result<vk::Pipeline> {
     unsafe {
         let code = ash::util::read_spv(&mut std::io::Cursor::new(CLOUD_SPV))?;
@@ -260,15 +272,25 @@ unsafe fn create_pipeline(
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        // Depth-tested so mountains occlude clouds, but not written:
-        // clouds never hide terrain from later passes.
+        // Two flavors: the prepass writes only depth (nearest cloud face
+        // per pixel; terrain drawn earlier still occludes via LESS), then
+        // the color pass blends exactly the EQUAL fragments — one blend
+        // per pixel, so the slabs' inner faces never show through.
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(true)
-            .depth_write_enable(false)
-            .depth_compare_op(vk::CompareOp::LESS);
+            .depth_write_enable(prepass)
+            .depth_compare_op(if prepass {
+                vk::CompareOp::LESS
+            } else {
+                vk::CompareOp::EQUAL
+            });
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(true)
+            .color_write_mask(if prepass {
+                vk::ColorComponentFlags::empty()
+            } else {
+                vk::ColorComponentFlags::RGBA
+            })
+            .blend_enable(!prepass)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_blend_op(vk::BlendOp::ADD)
