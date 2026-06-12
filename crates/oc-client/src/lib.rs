@@ -144,6 +144,9 @@ struct App {
     level_path: PathBuf,
     seed: u64,
     last_autosave: Instant,
+    hud_visible: bool,
+    /// Exponentially smoothed frame time, for the HUD readout.
+    frame_time_ema: f64,
 }
 
 /// Dirty columns and level metadata are also written on this cadence, so a
@@ -224,7 +227,30 @@ impl App {
             level_path,
             seed,
             last_autosave: Instant::now(),
+            hud_visible: true,
+            frame_time_ema: 1.0 / 60.0,
         })
+    }
+
+    fn hud_text(&self, renderer: &Renderer) -> String {
+        if !self.hud_visible {
+            return String::new();
+        }
+        let stats = renderer.stats();
+        let p = self.player.position;
+        format!(
+            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}\n[f3] hud  [f] {}",
+            (1.0 / self.frame_time_ema).round(),
+            self.frame_time_ema * 1e3,
+            stats.chunks_drawn,
+            stats.chunks_resident,
+            p.x,
+            p.y,
+            p.z,
+            self.day_fraction,
+            if self.player.flying { "flying" } else { "walking" },
+            if self.player.flying { "walk" } else { "fly" },
+        )
     }
 
     /// Persists edited columns and the level metadata.
@@ -308,6 +334,7 @@ impl App {
             KeyCode::Digit2 if pressed => self.selected_block = blocks::DIRT,
             KeyCode::Digit3 if pressed => self.selected_block = blocks::GRASS,
             KeyCode::Digit4 if pressed => self.selected_block = blocks::LAMP,
+            KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
         }
@@ -360,6 +387,7 @@ impl App {
         let frame_start = Instant::now();
         let dt = (frame_start - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = frame_start;
+        self.frame_time_ema = self.frame_time_ema * 0.95 + dt * 0.05;
         self.day_fraction = (self.day_fraction + dt / sky::DAY_LENGTH_SECS).fract();
 
         self.player
@@ -381,6 +409,7 @@ impl App {
             highlight: self.target().map(|hit| hit.block),
             sun: sky.sun,
             sky_color: sky.sky_color,
+            hud: self.hud_text(renderer),
         })?;
         self.perf.frame(frame_start.elapsed(), renderer);
 

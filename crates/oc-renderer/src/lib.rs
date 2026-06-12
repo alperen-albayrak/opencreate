@@ -8,9 +8,11 @@ mod chunk_renderer;
 mod context;
 mod depth;
 mod mesh;
+mod font;
 mod outline;
 mod swapchain;
 mod texture;
+mod ui;
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -24,6 +26,7 @@ use context::VulkanContext;
 use depth::DepthBuffer;
 use outline::OutlineRenderer;
 use swapchain::Swapchain;
+use ui::UiRenderer;
 
 pub use mesh::{ChunkMesh, mesh_section};
 
@@ -41,6 +44,8 @@ pub struct FrameCamera {
     pub sun: Vec4,
     /// Sky clear color for this frame (day/night cycle).
     pub sky_color: [f32; 4],
+    /// Debug HUD text; empty hides the overlay.
+    pub hud: String,
 }
 
 /// Renderer counters for the perf log (§11).
@@ -62,6 +67,7 @@ pub struct Renderer {
     framebuffers: Vec<vk::Framebuffer>,
     chunks: ChunkRenderer,
     outline: OutlineRenderer,
+    ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     /// Signalled when the acquired image is ready to be rendered to. Per frame in flight.
@@ -119,6 +125,8 @@ impl Renderer {
 
             let chunks = ChunkRenderer::new(&ctx, &mut allocator, render_pass, command_pool)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, render_pass)?;
+            let ui =
+                UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
             let image_available = (0..FRAMES_IN_FLIGHT)
                 .map(|_| ctx.device.create_semaphore(&Default::default(), None))
@@ -144,6 +152,7 @@ impl Renderer {
                 framebuffers,
                 chunks,
                 outline,
+                ui,
                 command_pool,
                 command_buffers,
                 image_available,
@@ -254,6 +263,9 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
+            if !camera.hud.is_empty() {
+                self.ui.record(device, cmd, slot, extent, &camera.hud);
+            }
 
             device.cmd_end_render_pass(cmd);
             device.end_command_buffer(cmd)?;
@@ -328,6 +340,7 @@ impl Drop for Renderer {
 
             self.chunks.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);
+            self.ui.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
                 device.destroy_semaphore(sem, None);
             }
