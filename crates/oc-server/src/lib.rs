@@ -69,8 +69,8 @@ impl Inventory {
     }
 }
 
-/// One full day, in real seconds (10 minutes).
-pub const DAY_LENGTH_SECS: f64 = 600.0;
+/// One full day, in real seconds (30 minutes).
+pub const DAY_LENGTH_SECS: f64 = 1800.0;
 /// Ticks between authoritative time broadcasts (1 s).
 const TIME_BROADCAST_TICKS: u64 = TICKS_PER_SECOND as u64;
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);

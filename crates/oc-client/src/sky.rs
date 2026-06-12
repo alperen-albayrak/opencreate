@@ -4,8 +4,9 @@
 
 use glam::{Vec3, Vec4};
 
-/// One full day, in real seconds.
-pub const DAY_LENGTH_SECS: f64 = 600.0;
+/// One full day, in real seconds — the server owns the value; the client
+/// only uses it to advance smoothly between Time broadcasts.
+pub use oc_server::DAY_LENGTH_SECS;
 
 /// What the sky and sun look like at a moment of the day.
 #[derive(Debug, Clone, Copy)]

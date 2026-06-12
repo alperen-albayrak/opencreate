@@ -6,7 +6,7 @@ How the game plays today. Controls live in
 ## The loop
 
 You spawn on the nearest dry land with empty pockets, mid-morning of a
-10-minute day. In survival you punch terrain to gather blocks, craft
+30-minute day. In survival you punch terrain to gather blocks, craft
 through the recipe book (C), build, and manage four stats — while critters
 wander the grass and the sun sets on lamp-lit builds.
 
