@@ -1,6 +1,7 @@
 //! The game client: window, input, and the frame loop (ARCHITECTURE.md §2).
 
 mod camera;
+mod craft_menu;
 mod hotbar;
 mod player;
 mod sky;
@@ -76,6 +77,7 @@ struct App {
     /// Messages queued for the server this frame.
     outbox: Vec<ClientMessage>,
     hud_visible: bool,
+    craft_open: bool,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
@@ -171,6 +173,7 @@ impl App {
             server: Some(server),
             outbox: Vec::new(),
             hud_visible: true,
+            craft_open: false,
             frame_time_ema: 1.0 / 60.0,
             stats: [10.0; 4],
             registry: Registry::load_default()?,
@@ -268,15 +271,16 @@ impl App {
                 self.player.flying = !self.player.flying;
                 info!(flying = self.player.flying, "movement mode toggled");
             }
-            KeyCode::Digit1 if pressed => self.hotbar.select(0),
-            KeyCode::Digit2 if pressed => self.hotbar.select(1),
-            KeyCode::Digit3 if pressed => self.hotbar.select(2),
-            KeyCode::Digit4 if pressed => self.hotbar.select(3),
-            KeyCode::Digit5 if pressed => self.hotbar.select(4),
-            KeyCode::Digit6 if pressed => self.hotbar.select(5),
-            KeyCode::Digit7 if pressed => self.hotbar.select(6),
-            KeyCode::Digit8 if pressed => self.hotbar.select(7),
-            KeyCode::Digit9 if pressed => self.hotbar.select(8),
+            KeyCode::KeyC if pressed => self.craft_open = !self.craft_open,
+            KeyCode::Digit1 if pressed => self.digit(0),
+            KeyCode::Digit2 if pressed => self.digit(1),
+            KeyCode::Digit3 if pressed => self.digit(2),
+            KeyCode::Digit4 if pressed => self.digit(3),
+            KeyCode::Digit5 if pressed => self.digit(4),
+            KeyCode::Digit6 if pressed => self.digit(5),
+            KeyCode::Digit7 if pressed => self.digit(6),
+            KeyCode::Digit8 if pressed => self.digit(7),
+            KeyCode::Digit9 if pressed => self.digit(8),
             KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => self.set_mouse_captured(false),
             _ => {}
@@ -293,6 +297,19 @@ impl App {
 
     fn hotbar_counts(&self) -> [u32; hotbar::ITEMS.len()] {
         std::array::from_fn(|i| self.count_of(hotbar::ITEMS[i]))
+    }
+
+    /// Number keys: hotbar slots normally, recipes while the book is open.
+    fn digit(&mut self, n: usize) {
+        if self.craft_open {
+            if self.registry.craftable(n, |item| {
+                self.inventory.get(&item.0).copied().unwrap_or(0)
+            }) {
+                self.outbox.push(ClientMessage::Craft { recipe: n as u32 });
+            }
+        } else {
+            self.hotbar.select(n);
+        }
     }
 
     fn target(&self) -> Option<RayHit> {
@@ -451,12 +468,25 @@ impl App {
             hud: self.hud_text(renderer),
             ui_texts: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                self.hotbar.count_labels(w, h, &self.hotbar_counts())
+                let mut texts = self.hotbar.count_labels(w, h, &self.hotbar_counts());
+                if self.craft_open {
+                    let lines = craft_menu::lines(&self.registry, |item| {
+                        self.inventory.get(&item.0).copied().unwrap_or(0)
+                    });
+                    texts.extend(craft_menu::panel(&lines, w).1);
+                }
+                texts
             },
             ui_quads: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
                 let counts = self.hotbar_counts();
                 let mut quads = self.hotbar.quads(w, h, &counts);
+                if self.craft_open {
+                    let lines = craft_menu::lines(&self.registry, |item| {
+                        self.inventory.get(&item.0).copied().unwrap_or(0)
+                    });
+                    quads.extend(craft_menu::panel(&lines, w).0);
+                }
                 quads.extend(hotbar::stat_bars(
                     w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
                 ));

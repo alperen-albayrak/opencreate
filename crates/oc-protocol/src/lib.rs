@@ -32,6 +32,9 @@ pub enum ClientMessage {
     SubscribeColumn(ChunkPos),
     /// The column left the client's view; the server may unload it.
     UnsubscribeColumn(ChunkPos),
+    /// Craft a recipe by registry index (client and server share the
+    /// registry; the phase-5 mod handshake syncs it instead).
+    Craft { recipe: u32 },
 }
 
 /// Everything the server may tell a client.

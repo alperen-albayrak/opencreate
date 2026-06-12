@@ -250,6 +250,14 @@ impl Server {
                     self.flying = flying;
                 }
                 ClientMessage::SetBlock { pos, block } => self.handle_set_block(pos, block)?,
+                ClientMessage::Craft { recipe } => {
+                    let mut entry = self.ecs.entity_mut(self.player_entity);
+                    let inventory = entry.get_mut::<Inventory>().expect("inventory");
+                    try_craft(inventory.into_inner(), &self.registry, recipe as usize);
+                    // Always resync: success and rejection both end with the
+                    // client matching the authoritative counts.
+                    self.send_inventory()?;
+                }
                 ClientMessage::SubscribeColumn(chunk) => {
                     self.subscriptions.insert(chunk);
                     // Already loaded: ship it immediately.
@@ -480,6 +488,23 @@ impl Server {
     }
 }
 
+/// Consumes a recipe's ingredients and adds its result. False (and no
+/// change) when ingredients are missing or the index is bogus.
+pub fn try_craft(inventory: &mut Inventory, registry: &Registry, recipe: usize) -> bool {
+    let Some(view) = registry.recipe_view(recipe) else {
+        return false;
+    };
+    if !registry.craftable(recipe, |item| inventory.count(item)) {
+        return false;
+    }
+    for (item, n) in &view.ingredients {
+        let taken = inventory.take(*item, *n);
+        debug_assert!(taken, "craftable() guaranteed availability");
+    }
+    inventory.add(view.result.0, view.result.1 as u32);
+    true
+}
+
 /// Nearest dry land to the origin (outward ring search over the pure
 /// heightmap), standing just above the surface.
 fn find_spawn(world: &World) -> DVec3 {
@@ -540,6 +565,39 @@ fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod craft_tests {
+    use super::*;
+
+    #[test]
+    fn crafting_consumes_and_produces() {
+        let registry = Registry::load_default().unwrap();
+        let log = registry.find("oc:log").unwrap();
+        let planks = registry.find("oc:planks").unwrap();
+        let lamp = registry.find("oc:lamp").unwrap();
+        let to_planks = (0..registry.recipe_count())
+            .find(|&i| registry.recipe_view(i).unwrap().result.0 == planks)
+            .unwrap();
+        let to_lamp = (0..registry.recipe_count())
+            .find(|&i| registry.recipe_view(i).unwrap().result.0 == lamp)
+            .unwrap();
+
+        let mut inv = Inventory::default();
+        assert!(!try_craft(&mut inv, &registry, to_planks), "empty inventory");
+
+        inv.add(log, 1);
+        assert!(try_craft(&mut inv, &registry, to_planks));
+        assert_eq!(inv.count(log), 0);
+        assert_eq!(inv.count(planks), 4);
+
+        assert!(try_craft(&mut inv, &registry, to_lamp), "4 planks -> lamp");
+        assert_eq!(inv.count(planks), 0);
+        assert_eq!(inv.count(lamp), 1);
+        assert!(!try_craft(&mut inv, &registry, to_lamp), "out of planks");
+        assert!(!try_craft(&mut inv, &registry, 9999), "bogus index");
+    }
 }
 
 #[cfg(test)]

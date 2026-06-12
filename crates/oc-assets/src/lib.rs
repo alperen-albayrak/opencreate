@@ -59,6 +59,14 @@ enum Recipe {
     },
 }
 
+/// A recipe's shopping list, independent of arrangement.
+#[derive(Debug, Clone)]
+pub struct RecipeView {
+    pub index: usize,
+    pub result: (ItemId, u8),
+    pub ingredients: Vec<(ItemId, u32)>,
+}
+
 pub struct Registry {
     items: Vec<ItemDef>,
     by_string_id: HashMap<String, ItemId>,
@@ -171,6 +179,37 @@ impl Registry {
     /// The block an item places, if any.
     pub fn block_for_item(&self, id: ItemId) -> Option<BlockId> {
         self.item(id).block.map(BlockId)
+    }
+
+    pub fn recipe_count(&self) -> usize {
+        self.recipes.len()
+    }
+
+    /// Result and aggregated ingredient counts of a recipe, for recipe-book
+    /// UIs and server-side validation.
+    pub fn recipe_view(&self, index: usize) -> Option<RecipeView> {
+        let recipe = self.recipes.get(index)?;
+        let (result, raw): ((ItemId, u8), Vec<ItemId>) = match recipe {
+            Recipe::Shaped { cells, result, .. } => {
+                (*result, cells.iter().flatten().copied().collect())
+            }
+            Recipe::Shapeless { ingredients, result } => (*result, ingredients.clone()),
+        };
+        let mut ingredients: Vec<(ItemId, u32)> = Vec::new();
+        for item in raw {
+            match ingredients.iter_mut().find(|(i, _)| *i == item) {
+                Some((_, n)) => *n += 1,
+                None => ingredients.push((item, 1)),
+            }
+        }
+        ingredients.sort();
+        Some(RecipeView { index, result, ingredients })
+    }
+
+    /// Whether `have` (item -> count) covers a recipe's ingredients.
+    pub fn craftable(&self, index: usize, have: impl Fn(ItemId) -> u32) -> bool {
+        self.recipe_view(index)
+            .is_some_and(|view| view.ingredients.iter().all(|(item, n)| have(*item) >= *n))
     }
 
     /// Matches a 3×3 crafting grid (row-major, None = empty slot) against
@@ -299,6 +338,23 @@ mod tests {
             reg.match_recipe(&grid(&[(0, "oc:stone"), (3, "oc:stone")], &reg))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn recipe_views_aggregate_ingredients() {
+        let reg = registry();
+        let views: Vec<RecipeView> =
+            (0..reg.recipe_count()).map(|i| reg.recipe_view(i).unwrap()).collect();
+        // The 2x2 planks -> lamp recipe aggregates to 4 planks.
+        let lamp = reg.find("oc:lamp").unwrap();
+        let planks = reg.find("oc:planks").unwrap();
+        let view = views.iter().find(|v| v.result.0 == lamp).expect("lamp recipe");
+        assert_eq!(view.ingredients, vec![(planks, 4)]);
+
+        // Craftable checks against counts.
+        assert!(reg.craftable(view.index, |i| if i == planks { 4 } else { 0 }));
+        assert!(!reg.craftable(view.index, |i| if i == planks { 3 } else { 0 }));
+        assert!(reg.recipe_view(999).is_none());
     }
 
     #[test]
