@@ -14,8 +14,8 @@ struct PushConstants {
     sky: vec4<f32>,
     // xyz: chunk origin camera-relative (view vector); w: time in seconds.
     rel: vec4<f32>,
-    // xyz: chunk origin mod 256 (wave phase stays fp32-exact far from
-    // the origin because every wave period divides 256).
+    // xyz: chunk origin mod 256 (reserved for texture-scale surface
+    // animation; keeps the Rust push layout stable).
     wave_origin: vec4<f32>,
 }
 
@@ -78,29 +78,6 @@ fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
 }
 
-// Sum of directional sines; wave vectors are integer cycles over 256
-// blocks, so phase is seamless across the mod-256 chunk origins.
-fn wave_height(p: vec2<f32>, t: f32) -> f32 {
-    let tau = 6.28318530718;
-    var h = 0.0;
-    h += 0.50 * sin(tau * (dot(p, vec2(16.0, 4.0)) / 256.0) + t * 1.3);
-    h += 0.30 * sin(tau * (dot(p, vec2(-6.0, 14.0)) / 256.0) + t * 1.7);
-    h += 0.20 * sin(tau * (dot(p, vec2(9.0, -11.0)) / 256.0) + t * 2.3);
-    // Short chop: breaks the sun glint into sparkle.
-    h += 0.08 * sin(tau * (dot(p, vec2(43.0, 51.0)) / 256.0) + t * 3.1);
-    h += 0.06 * sin(tau * (dot(p, vec2(-57.0, 38.0)) / 256.0) + t * 3.7);
-    return h;
-}
-
-fn wave_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
-    let e = 0.35;
-    let h0 = wave_height(p, t);
-    let hx = wave_height(p + vec2(e, 0.0), t);
-    let hz = wave_height(p + vec2(0.0, e), t);
-    // Height units are visual only; the slope strength sets sparkle.
-    return normalize(vec3((h0 - hx) * 0.55, e, (h0 - hz) * 0.55));
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The opaque scene at this pixel (same resolution as this pass).
@@ -112,30 +89,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // hitting whatever is behind it (sky counts as "very far").
     let water_depth = max(linearize(scene_depth) - linearize(in.clip.z), 0.0);
 
-    let t = pc.rel.w;
-    let wave_pos = pc.wave_origin.xz + in.local.xz;
-
-    // Perturbed normal on horizontal surfaces; flat on the sides.
-    var normal: vec3<f32>;
-    if (in.face == 0u) {
-        normal = wave_normal(wave_pos, t);
-    } else if (in.face == 1u) {
-        normal = vec3(0.0, -1.0, 0.0);
-    } else {
-        var side = array<vec3<f32>, 6>(
-            vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
-            vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
-            vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
-        );
-        normal = side[in.face];
-    }
+    // Flat face normals: vanilla-style calm water (no geometric waves —
+    // surface motion returns later as texture-scale animation).
+    var side = array<vec3<f32>, 6>(
+        vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
+        vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+    );
+    let normal = side[in.face];
 
     // Camera sits at the origin of camera-relative space.
     let to_fragment = normalize(pc.rel.xyz + in.local);
     let cos_view = max(dot(normal, -to_fragment), 0.0);
-    // Schlick fresnel, F0 = 0.02 (water), capped so distant water stays
-    // water-colored instead of a full sky mirror.
-    let fresnel = 0.02 + 0.68 * pow(1.0 - cos_view, 5.0);
+    // Schlick fresnel, F0 = 0.02 (water), capped low: with flat normals
+    // every distant pixel hits grazing angle at once, and vanilla water
+    // should stay blue with a mild sheen, not become a sky mirror.
+    let fresnel = 0.02 + 0.40 * pow(1.0 - cos_view, 5.0);
 
     // Water body color: Beer-Lambert-ish — red dies first, so shallow
     // water reads turquoise and deep water converges to deep blue.
@@ -145,12 +114,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let base = mix(vec3(0.16, 0.46, 0.52), vec3(0.03, 0.13, 0.32), absorb)
         * ripple * in.shade;
 
-    // Reflection: the sky environment, blue-shifted and rippled by the
-    // wave normal (R.y varies per pixel), lit by the same shade so cave
-    // water doesn't mirror a bright sky.
+    // Reflection: the sky, pulled toward blue so a pale dawn sky doesn't
+    // wash the ocean white; lit by the same shade so cave water doesn't
+    // mirror a bright sky. (Stage C's real sky() function replaces this.)
     let reflect_dir = reflect(to_fragment, normal);
-    let sky_reflect = pc.sky.rgb * vec3(0.75, 0.85, 1.0)
-        * (0.30 + 0.70 * max(reflect_dir.y, 0.0)) * in.shade;
+    let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, 0.45);
+    let sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
 
     // Sun glint: tight specular off the perturbed normal. pc.sun.xyz is
     // pre-scaled by daylight, so the glint dies at night.
@@ -158,7 +127,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var glint = 0.0;
     if (daylight > 0.01) {
         let sun_dir = pc.sun.xyz / daylight;
-        glint = pow(max(dot(reflect_dir, sun_dir), 0.0), 600.0) * 1.4 * daylight * in.shade;
+        // Flat normals: the glint is the sun's mirror highlight.
+        let _anim = pc.rel.w + pc.wave_origin.x; // reserved (see push struct)
+        glint = pow(max(dot(reflect_dir, sun_dir), 0.0), 500.0) * 1.2 * daylight * in.shade;
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);
