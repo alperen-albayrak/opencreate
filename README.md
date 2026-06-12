@@ -2,7 +2,27 @@
 
 An open-source, Minecraft-class voxel game written in Rust with its own Vulkan engine.
 
-**Status:** architecture/design phase — no code yet. The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
+**Status:** playable world prototype (roadmap phase 2 of 6 complete). The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Playing the prototype
+
+```sh
+cargo run
+```
+
+Procedural terrain streams in around you: biomes (grassland, desert, snow), rivers, oceans, beaches, trees, caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
+
+| Input | Action |
+|---|---|
+| Click window / Esc | Capture / release the mouse |
+| W A S D + mouse | Move and look |
+| Space | Jump, swim up (or rise while flying) |
+| Left Shift | Descend while flying |
+| Left Ctrl | Sprint |
+| F | Toggle fly/walk |
+| Left / right click | Break / place block |
+| 1 2 3 4 | Select stone / dirt / grass / lamp |
+| F3 | Toggle the debug HUD |
 
 ## Goals
 
