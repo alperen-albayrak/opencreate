@@ -18,3 +18,5 @@ tracing.workspace = true
 oc-protocol.workspace = true
 oc-server.workspace = true
 oc-assets.workspace = true
+serde.workspace = true
+ron.workspace = true

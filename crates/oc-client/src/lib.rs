@@ -9,6 +9,7 @@ mod hotbar;
 mod menu;
 mod player;
 mod session;
+mod settings;
 mod sky;
 mod streaming;
 
@@ -25,11 +26,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
-use menu::{CreateScreen, MenuView, WorldAction, WorldsScreen};
+use menu::{CreateScreen, MenuView, SettingsScreen, WorldAction, WorldsScreen};
 use oc_assets::Registry;
 use oc_protocol::ClientMessage;
 use oc_renderer::{FrameCamera, Renderer};
 use session::Session;
+use settings::Settings;
 
 /// Worlds live in subdirectories of this folder.
 const SAVES_ROOT: &str = "saves";
@@ -52,10 +54,17 @@ enum Screen {
     Title,
     Worlds(WorldsScreen),
     CreateWorld(CreateScreen),
+    /// A world is starting on a worker thread; poll for the session.
+    Loading {
+        rx: std::sync::mpsc::Receiver<Result<Session>>,
+        world: String,
+        since: Instant,
+    },
     InGame,
     Paused,
     /// The game-mode picker, reached from the pause menu.
     Modes,
+    Settings(SettingsScreen),
 }
 
 struct App {
@@ -76,6 +85,9 @@ struct App {
     hud_visible: bool,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
+    settings: Settings,
+    /// Index of the settings slider being dragged, while the button is down.
+    drag_slider: Option<usize>,
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets).
@@ -150,7 +162,52 @@ impl App {
             perf: PerfLog::new(),
             hud_visible: true,
             frame_time_ema: 1.0 / 60.0,
+            settings: Settings::load(),
+            drag_slider: None,
         })
+    }
+
+    /// Effective UI scale: the display's DPI factor times the user's
+    /// UI-scale setting, so 4K monitors and TVs are both tunable.
+    fn ui(&self) -> f32 {
+        let dpi = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
+        dpi * self.settings.ui_scale
+    }
+
+    /// Pushes the current settings into the live session and the camera.
+    fn apply_settings(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.camera.fov_y = self.settings.fov.to_radians();
+            session.camera.sensitivity = self.settings.mouse_sensitivity;
+            session.streamer.set_radius(self.settings.render_distance);
+        }
+    }
+
+    /// Saves + applies the settings screen's values and returns to where
+    /// it was opened from.
+    fn leave_settings(&mut self) {
+        self.drag_slider = None;
+        let back_to_pause = if let Screen::Settings(screen) = &self.screen {
+            screen.apply(&mut self.settings);
+            screen.back_to_pause
+        } else {
+            return;
+        };
+        self.settings.save();
+        self.apply_settings();
+        self.screen = if back_to_pause { Screen::Paused } else { Screen::Title };
+    }
+
+    /// Live-applies slider values while dragging. The UI scale is held
+    /// back until release so the screen doesn't re-lay-out under the
+    /// cursor mid-drag.
+    fn drag_apply(&mut self) {
+        let ui_scale = self.settings.ui_scale;
+        if let Screen::Settings(screen) = &self.screen {
+            screen.apply(&mut self.settings);
+        }
+        self.settings.ui_scale = ui_scale;
+        self.apply_settings();
     }
 
     fn window_size(&self) -> (f32, f32) {
@@ -207,17 +264,37 @@ impl App {
         self.mouse_captured = captured;
     }
 
-    /// Opens a world: starts its embedded server and enters the game.
+    /// Opens a world: the embedded server starts on a worker thread while
+    /// the loading screen animates; the frame loop polls for the result.
     fn start_session(&mut self, name: &str, seed: u64, mode: Option<String>, cheats: Option<bool>) {
         info!(world = name, "loading world");
-        match Session::start(PathBuf::from(SAVES_ROOT).join(name), seed, mode, cheats) {
-            Ok(session) => {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = PathBuf::from(SAVES_ROOT).join(name);
+        std::thread::spawn(move || {
+            let _ = tx.send(Session::start(dir, seed, mode, cheats));
+        });
+        self.screen = Screen::Loading { rx, world: name.to_owned(), since: Instant::now() };
+    }
+
+    /// Polls a pending world start; returns true when handled.
+    fn poll_loading(&mut self) {
+        let Screen::Loading { rx, world, .. } = &self.screen else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(session)) => {
                 self.session = Some(session);
+                self.apply_settings();
                 self.screen = Screen::InGame;
                 self.set_mouse_captured(true);
             }
-            Err(err) => {
-                error!("failed to start world {name:?}: {err:#}");
+            Ok(Err(err)) => {
+                error!("failed to start world {world:?}: {err:#}");
+                self.screen = Screen::Title;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                error!("world startup thread vanished");
                 self.screen = Screen::Title;
             }
         }
@@ -235,15 +312,17 @@ impl App {
         self.screen = Screen::Title;
     }
 
-    /// The menu view for the current screen, if it shows one.
+    /// The menu view for the current screen, if it shows one. (Settings
+    /// and Loading render themselves; see `frame_with`.)
     fn menu_view(&self, w: f32, h: f32) -> Option<MenuView> {
+        let ui = self.ui();
         match &self.screen {
             Screen::Title => self
                 .registry
                 .menu("oc:title")
-                .map(|def| MenuView::from_def(def, &self.registry, w, h, false)),
+                .map(|def| MenuView::from_def(def, &self.registry, w, h, ui, false)),
             Screen::Paused => self.registry.menu("oc:pause").map(|def| {
-                let mut view = MenuView::from_def(def, &self.registry, w, h, true);
+                let mut view = MenuView::from_def(def, &self.registry, w, h, ui, true);
                 // State-dependent labels resolve at render time.
                 if let Some(button) =
                     view.buttons.iter_mut().find(|b| b.action == "oc:toggle_cheats")
@@ -254,14 +333,14 @@ impl App {
                 }
                 view
             }),
-            Screen::Worlds(worlds) => Some(worlds.view(&self.registry, w, h)),
-            Screen::CreateWorld(create) => Some(create.view(&self.registry, w, h)),
+            Screen::Worlds(worlds) => Some(worlds.view(&self.registry, w, h, ui)),
+            Screen::CreateWorld(create) => Some(create.view(&self.registry, w, h, ui)),
             Screen::Modes => {
                 let (current, cheats) =
                     self.session.as_ref().map_or((0, false), |s| (s.mode.0, s.cheats));
-                Some(menu::modes_view(&self.registry, current, cheats, w, h))
+                Some(menu::modes_view(&self.registry, current, cheats, w, h, ui))
             }
-            Screen::InGame => None,
+            Screen::InGame | Screen::Settings(_) | Screen::Loading { .. } => None,
         }
     }
 
@@ -288,6 +367,12 @@ impl App {
                 self.set_mouse_captured(true);
             }
             "oc:open_modes" => self.screen = Screen::Modes,
+            "oc:open_settings" => {
+                let from_pause = matches!(self.screen, Screen::Paused);
+                self.screen =
+                    Screen::Settings(SettingsScreen::from_settings(&self.settings, from_pause));
+            }
+            "settings_back" => self.leave_settings(),
             "oc:toggle_cheats" => {
                 // The server decides (we're the owner in singleplayer);
                 // its Cheats reply updates the label.
@@ -341,8 +426,9 @@ impl App {
             _ if action.starts_with("world:") => {
                 let world = action["world:".len()..].to_owned();
                 let (w, _) = self.window_size();
+                let ui = self.ui();
                 if let Screen::Worlds(worlds) = &mut self.screen {
-                    match worlds.world_click(&world, self.mouse_pos.0, w) {
+                    match worlds.world_click(&world, self.mouse_pos.0, w, ui) {
                         WorldAction::Play => self.start_session(&world, random_seed(), None, None),
                         WorldAction::ArmDelete => {}
                         WorldAction::Delete => {
@@ -386,6 +472,12 @@ impl App {
                     self.screen = Screen::Paused;
                 }
             }
+            Screen::Settings(_) => {
+                if code == KeyCode::Escape && pressed {
+                    self.leave_settings();
+                }
+            }
+            Screen::Loading { .. } => {}
             Screen::Worlds(_) => {
                 if code == KeyCode::Escape && pressed {
                     self.screen = Screen::Title;
@@ -471,7 +563,10 @@ impl App {
         self.last_frame = frame_start;
         self.frame_time_ema = self.frame_time_ema * 0.95 + dt * 0.05;
 
+        self.poll_loading();
+
         let (w, h) = self.window_size();
+        let ui = self.ui();
         let in_game = matches!(self.screen, Screen::InGame);
 
         let mut camera = if let Some(session) = &mut self.session {
@@ -480,6 +575,7 @@ impl App {
                 renderer,
                 &self.registry,
                 (w, h),
+                ui,
                 self.frame_time_ema,
                 self.hud_visible && in_game,
                 in_game,
@@ -495,6 +591,7 @@ impl App {
                 sky_color: sky.sky_color,
                 entities: Vec::new(),
                 hud: String::new(),
+                hud_scale: ui,
                 ui_texts: Vec::new(),
                 ui_quads: Vec::new(),
             }
@@ -503,6 +600,27 @@ impl App {
         if let Some(view) = self.menu_view(w, h) {
             camera.ui_quads.extend(view.quads(w, h, self.mouse_pos));
             camera.ui_texts.extend(view.texts(w, h));
+        }
+        match &self.screen {
+            Screen::Settings(screen) => {
+                camera
+                    .ui_quads
+                    .extend(screen.quads(&self.registry, w, h, ui, self.mouse_pos));
+                camera.ui_texts.extend(screen.texts(&self.registry, w, h, ui));
+            }
+            Screen::Loading { world, since, .. } => {
+                // "Loading <world>" with marching dots.
+                let dots = ".".repeat(1 + (since.elapsed().as_millis() / 350 % 3) as usize);
+                let text = format!("{} {world}{dots}", self.registry.text("menu.loading"));
+                let width = text.len() as f32 * 6.0 * 2.0 * ui;
+                camera.ui_texts.push(oc_renderer::UiText {
+                    text,
+                    x: (w - width) / 2.0,
+                    y: h * 0.45,
+                    scale: 2.0 * ui,
+                });
+            }
+            _ => {}
         }
 
         renderer.draw(&camera)?;
@@ -541,6 +659,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x as f32, position.y as f32);
+                if let Some(index) = self.drag_slider {
+                    let (w, h) = self.window_size();
+                    let ui = self.ui();
+                    let mouse_x = self.mouse_pos.0;
+                    if let Screen::Settings(screen) = &mut self.screen {
+                        screen.drag(index, mouse_x, w, h, ui);
+                    }
+                    self.drag_apply();
+                }
             }
             WindowEvent::MouseWheel { delta, .. } if self.mouse_captured => {
                 if let Some(session) = &mut self.session {
@@ -552,7 +679,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                match (&self.screen, button) {
+                let (w, h) = self.window_size();
+                let ui = self.ui();
+                match (&mut self.screen, button) {
                     (Screen::InGame, _) if !self.mouse_captured => self.set_mouse_captured(true),
                     (Screen::InGame, MouseButton::Left) => {
                         if let Some(session) = &mut self.session {
@@ -564,8 +693,31 @@ impl ApplicationHandler for App {
                             session.place_clicked = true;
                         }
                     }
+                    (Screen::Settings(screen), MouseButton::Left) => {
+                        if let Some(index) = screen.slider_at(self.mouse_pos, w, h, ui) {
+                            screen.drag(index, self.mouse_pos.0, w, h, ui);
+                            self.drag_slider = Some(index);
+                            self.drag_apply();
+                        } else if screen
+                            .back_button(&self.registry, w, h, ui)
+                            .contains(self.mouse_pos)
+                        {
+                            self.leave_settings();
+                        }
+                    }
                     (_, MouseButton::Left) => self.menu_click(event_loop),
                     _ => {}
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                if self.drag_slider.take().is_some() {
+                    // The UI scale applies on release (held back during
+                    // the drag); persist the whole set.
+                    if let Screen::Settings(screen) = &self.screen {
+                        screen.apply(&mut self.settings);
+                    }
+                    self.settings.save();
+                    self.apply_settings();
                 }
             }
             WindowEvent::Focused(false) => {

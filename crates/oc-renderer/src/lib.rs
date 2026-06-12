@@ -51,6 +51,8 @@ pub struct FrameCamera {
     pub sky_color: [f32; 4],
     /// Debug HUD text; empty hides the overlay.
     pub hud: String,
+    /// Glyph scale for the HUD overlay (the client's effective UI scale).
+    pub hud_scale: f32,
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
@@ -288,11 +290,12 @@ impl Renderer {
             {
                 let mut texts = Vec::with_capacity(camera.ui_texts.len() + 1);
                 if !camera.hud.is_empty() {
+                    let scale = camera.hud_scale.max(0.5);
                     texts.push(ui::UiText {
                         text: camera.hud.clone(),
-                        x: 12.0,
-                        y: 12.0,
-                        scale: 2.0,
+                        x: 6.0 * scale,
+                        y: 6.0 * scale,
+                        scale,
                     });
                 }
                 texts.extend(camera.ui_texts.iter().cloned());

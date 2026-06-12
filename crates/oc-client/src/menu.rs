@@ -5,10 +5,11 @@
 use oc_assets::{MenuDef, Registry};
 use oc_renderer::{UiQuad, UiText};
 
-pub const BUTTON_W: f32 = 520.0;
-pub const BUTTON_H: f32 = 56.0;
-const GAP: f32 = 14.0;
-const LABEL_SCALE: f32 = 3.0;
+// Logical units: multiplied by the effective UI scale (DPI x setting).
+pub const BUTTON_W: f32 = 260.0;
+pub const BUTTON_H: f32 = 28.0;
+const GAP: f32 = 7.0;
+const LABEL_SCALE: f32 = 1.5;
 /// The font's glyph advance (font.rs): 6 px per character at scale 1.
 const GLYPH_W: f32 = 6.0;
 const GLYPH_H: f32 = 7.0;
@@ -27,7 +28,7 @@ pub struct Button {
 }
 
 impl Button {
-    fn contains(&self, mouse: (f32, f32)) -> bool {
+    pub fn contains(&self, mouse: (f32, f32)) -> bool {
         mouse.0 >= self.x
             && mouse.0 <= self.x + self.w
             && mouse.1 >= self.y
@@ -43,12 +44,15 @@ pub struct MenuView {
     pub buttons: Vec<Button>,
     /// Translucent dim over the world (pause) instead of opaque sky (title).
     dim_background: bool,
+    /// Effective UI scale the view was laid out with.
+    ui: f32,
 }
 
 impl MenuView {
-    /// Lays out a data-driven menu (menus.ron) for a `w`×`h` framebuffer.
-    pub fn from_def(def: &MenuDef, registry: &Registry, w: f32, h: f32, dim: bool) -> Self {
-        let x = (w - BUTTON_W) / 2.0;
+    /// Lays out a data-driven menu (menus.ron) for a `w`×`h` framebuffer
+    /// at the given UI scale.
+    pub fn from_def(def: &MenuDef, registry: &Registry, w: f32, h: f32, ui: f32, dim: bool) -> Self {
+        let x = (w - BUTTON_W * ui) / 2.0;
         let mut y = h * 0.38;
         let buttons = def
             .entries
@@ -57,21 +61,22 @@ impl MenuView {
                 let button = Button {
                     x,
                     y,
-                    w: BUTTON_W,
-                    h: BUTTON_H,
+                    w: BUTTON_W * ui,
+                    h: BUTTON_H * ui,
                     label: registry.text(&entry.label).to_owned(),
                     action: entry.action.clone(),
                     highlighted: false,
                 };
-                y += BUTTON_H + GAP;
+                y += (BUTTON_H + GAP) * ui;
                 button
             })
             .collect();
         Self {
             title: registry.text(&def.title).to_owned(),
-            title_scale: if dim { 5.0 } else { 9.0 },
+            title_scale: (if dim { 2.5 } else { 4.5 }) * ui,
             buttons,
             dim_background: dim,
+            ui,
         }
     }
 
@@ -115,7 +120,7 @@ impl MenuView {
                 b.label.clone(),
                 b.x + b.w / 2.0,
                 b.y + b.h / 2.0,
-                LABEL_SCALE,
+                LABEL_SCALE * self.ui,
             ));
         }
         texts
@@ -165,28 +170,29 @@ struct Column {
     buttons: Vec<Button>,
     x: f32,
     y: f32,
+    ui: f32,
 }
 
 impl Column {
-    fn new(w: f32, h: f32, top: f32) -> Self {
-        Self { buttons: Vec::new(), x: (w - BUTTON_W) / 2.0, y: h * top }
+    fn new(w: f32, h: f32, top: f32, ui: f32) -> Self {
+        Self { buttons: Vec::new(), x: (w - BUTTON_W * ui) / 2.0, y: h * top, ui }
     }
 
     fn row(&mut self, label: String, action: String, highlighted: bool) {
         self.buttons.push(Button {
             x: self.x,
             y: self.y,
-            w: BUTTON_W,
-            h: BUTTON_H,
+            w: BUTTON_W * self.ui,
+            h: BUTTON_H * self.ui,
             label,
             action,
             highlighted,
         });
-        self.y += BUTTON_H + GAP;
+        self.y += (BUTTON_H + GAP) * self.ui;
     }
 
     fn space(&mut self) {
-        self.y += GAP * 2.0;
+        self.y += GAP * 2.0 * self.ui;
     }
 }
 
@@ -213,8 +219,8 @@ impl WorldsScreen {
     }
 
     /// Lays the screen out as a [`MenuView`] (every row is a button).
-    pub fn view(&self, registry: &Registry, w: f32, h: f32) -> MenuView {
-        let mut column = Column::new(w, h, 0.30);
+    pub fn view(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> MenuView {
+        let mut column = Column::new(w, h, 0.30, ui);
         if self.worlds.is_empty() {
             column.row(registry.text("worlds.empty").to_owned(), String::new(), false);
         }
@@ -232,16 +238,17 @@ impl WorldsScreen {
 
         MenuView {
             title: registry.text("menu.worlds").to_owned(),
-            title_scale: 6.0,
+            title_scale: 3.0 * ui,
             buttons: column.buttons,
             dim_background: false,
+            ui,
         }
     }
 
     /// Splits a world-row click into play vs delete: clicking the right
     /// fifth of the row (the delete tag) arms/fires deletion.
-    pub fn world_click(&mut self, world: &str, mouse_x: f32, w: f32) -> WorldAction {
-        let delete_zone = mouse_x > (w - BUTTON_W) / 2.0 + BUTTON_W * 0.72;
+    pub fn world_click(&mut self, world: &str, mouse_x: f32, w: f32, ui: f32) -> WorldAction {
+        let delete_zone = mouse_x > (w - BUTTON_W * ui) / 2.0 + BUTTON_W * ui * 0.72;
         if delete_zone {
             if self.pending_delete.as_deref() == Some(world) {
                 self.pending_delete = None;
@@ -306,8 +313,8 @@ impl CreateScreen {
         self.mode = (self.mode + 1) % registry.mode_count();
     }
 
-    pub fn view(&self, registry: &Registry, w: f32, h: f32) -> MenuView {
-        let mut column = Column::new(w, h, 0.32);
+    pub fn view(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> MenuView {
+        let mut column = Column::new(w, h, 0.32, ui);
         column.row(field_label(&self.name, registry, "worlds.name"), "focus:name".into(), self.name.focused);
         column.row(field_label(&self.seed, registry, "worlds.seed"), "focus:seed".into(), self.seed.focused);
         let mode = registry.mode(oc_assets::ModeId(self.mode as u16));
@@ -328,9 +335,10 @@ impl CreateScreen {
 
         MenuView {
             title: registry.text("worlds.new").to_owned(),
-            title_scale: 6.0,
+            title_scale: 3.0 * ui,
             buttons: column.buttons,
             dim_background: false,
+            ui,
         }
     }
 }
@@ -338,8 +346,8 @@ impl CreateScreen {
 /// The in-game mode picker (reached from the pause menu): one row per
 /// registered game mode, so modded modes appear automatically. Without
 /// cheat permission the list is replaced by an explanation.
-pub fn modes_view(registry: &Registry, current: u16, cheats: bool, w: f32, h: f32) -> MenuView {
-    let mut column = Column::new(w, h, 0.34);
+pub fn modes_view(registry: &Registry, current: u16, cheats: bool, w: f32, h: f32, ui: f32) -> MenuView {
+    let mut column = Column::new(w, h, 0.34, ui);
     if cheats {
         for index in 0..registry.mode_count() {
             let mode = registry.mode(oc_assets::ModeId(index as u16));
@@ -353,9 +361,240 @@ pub fn modes_view(registry: &Registry, current: u16, cheats: bool, w: f32, h: f3
     column.row(registry.text("menu.back").to_owned(), "back_pause".into(), false);
     MenuView {
         title: registry.text("menu.select_mode").to_owned(),
-        title_scale: 5.0,
+        title_scale: 2.5 * ui,
         buttons: column.buttons,
         dim_background: true,
+        ui,
+    }
+}
+
+// --- settings ---------------------------------------------------------------
+
+/// One slider: a labeled range with a step, value shown on the right.
+pub struct Slider {
+    /// Which setting this drives (`render_distance`, `fov`, ...).
+    pub id: &'static str,
+    /// Language key for the label.
+    label: &'static str,
+    min: f32,
+    max: f32,
+    step: f32,
+    pub value: f32,
+}
+
+impl Slider {
+    fn set_fraction(&mut self, t: f32) {
+        let raw = self.min + t.clamp(0.0, 1.0) * (self.max - self.min);
+        self.value = ((raw / self.step).round() * self.step).clamp(self.min, self.max);
+    }
+
+    fn fraction(&self) -> f32 {
+        ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+    }
+
+    fn display(&self) -> String {
+        if self.step >= 1.0 {
+            format!("{}", self.value.round() as i64)
+        } else {
+            format!("{:.2}", self.value)
+        }
+    }
+}
+
+// Settings layout, logical units.
+const ROW_W: f32 = 340.0;
+const ROW_H: f32 = 24.0;
+const ROW_GAP: f32 = 10.0;
+const LABEL_W: f32 = 150.0;
+const SLIDER_W: f32 = 130.0;
+
+/// The settings screen: sliders + Back. Pure geometry, testable.
+pub struct SettingsScreen {
+    pub sliders: Vec<Slider>,
+    /// Return to the pause menu (true) or the title screen (false).
+    pub back_to_pause: bool,
+}
+
+impl SettingsScreen {
+    pub fn from_settings(settings: &crate::settings::Settings, back_to_pause: bool) -> Self {
+        use crate::settings::*;
+        let slider = |id, label, (min, max): (f32, f32), step, value| Slider {
+            id,
+            label,
+            min,
+            max,
+            step,
+            value,
+        };
+        Self {
+            sliders: vec![
+                slider(
+                    "render_distance",
+                    "settings.render_distance",
+                    RENDER_DISTANCE_RANGE,
+                    1.0,
+                    settings.render_distance as f32,
+                ),
+                slider("fov", "settings.fov", FOV_RANGE, 1.0, settings.fov),
+                slider(
+                    "sensitivity",
+                    "settings.sensitivity",
+                    SENSITIVITY_RANGE,
+                    0.05,
+                    settings.mouse_sensitivity,
+                ),
+                slider("ui_scale", "settings.ui_scale", UI_SCALE_RANGE, 0.05, settings.ui_scale),
+            ],
+            back_to_pause,
+        }
+    }
+
+    /// Writes the slider values back into a settings struct.
+    pub fn apply(&self, settings: &mut crate::settings::Settings) {
+        for slider in &self.sliders {
+            match slider.id {
+                "render_distance" => settings.render_distance = slider.value.round() as i32,
+                "fov" => settings.fov = slider.value,
+                "sensitivity" => settings.mouse_sensitivity = slider.value,
+                "ui_scale" => settings.ui_scale = slider.value,
+                _ => {}
+            }
+        }
+        *settings = settings.clamped();
+    }
+
+    fn row_origin(&self, w: f32, h: f32, ui: f32) -> (f32, f32) {
+        ((w - ROW_W * ui) / 2.0, h * 0.32)
+    }
+
+    /// The slider bar rectangle for row `index`.
+    fn bar_rect(&self, index: usize, w: f32, h: f32, ui: f32) -> (f32, f32, f32, f32) {
+        let (x0, y0) = self.row_origin(w, h, ui);
+        let y = y0 + index as f32 * (ROW_H + ROW_GAP) * ui;
+        (x0 + LABEL_W * ui, y + (ROW_H - 6.0) / 2.0 * ui, SLIDER_W * ui, 6.0 * ui)
+    }
+
+    /// Which slider a press at `mouse` grabs (generous row-height band).
+    pub fn slider_at(&self, mouse: (f32, f32), w: f32, h: f32, ui: f32) -> Option<usize> {
+        for index in 0..self.sliders.len() {
+            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+            let pad = ui * 8.0;
+            if mouse.0 >= bx - pad
+                && mouse.0 <= bx + bw + pad
+                && mouse.1 >= by - (ROW_H / 2.0) * ui
+                && mouse.1 <= by + bh + (ROW_H / 2.0) * ui
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// Sets slider `index` from a mouse x position (click or drag).
+    pub fn drag(&mut self, index: usize, mouse_x: f32, w: f32, h: f32, ui: f32) {
+        let (bx, _, bw, _) = self.bar_rect(index, w, h, ui);
+        let t = (mouse_x - bx) / bw;
+        self.sliders[index].set_fraction(t);
+    }
+
+    pub fn back_button(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> Button {
+        let (_, y0) = self.row_origin(w, h, ui);
+        Button {
+            x: (w - BUTTON_W * ui) / 2.0,
+            y: y0 + (self.sliders.len() as f32 + 0.8) * (ROW_H + ROW_GAP) * ui,
+            w: BUTTON_W * ui,
+            h: BUTTON_H * ui,
+            label: registry.text("menu.back").to_owned(),
+            action: "settings_back".into(),
+            highlighted: false,
+        }
+    }
+
+    pub fn quads(
+        &self,
+        registry: &Registry,
+        w: f32,
+        h: f32,
+        ui: f32,
+        mouse: (f32, f32),
+    ) -> Vec<UiQuad> {
+        let mut quads = Vec::new();
+        if self.back_to_pause {
+            quads.push(UiQuad { x: 0.0, y: 0.0, w, h, color: [0.02, 0.02, 0.04, 0.65] });
+        }
+        for index in 0..self.sliders.len() {
+            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+            quads.push(UiQuad {
+                x: bx,
+                y: by,
+                w: bw,
+                h: bh,
+                color: [0.05, 0.05, 0.06, 0.8],
+            });
+            let t = self.sliders[index].fraction();
+            quads.push(UiQuad {
+                x: bx + 1.0 * ui,
+                y: by + 1.0 * ui,
+                w: (bw - 2.0 * ui) * t,
+                h: bh - 2.0 * ui,
+                color: [0.45, 0.62, 0.45, 0.95],
+            });
+            // Knob, brighter when grabbed-able.
+            let knob_x = bx + (bw - 3.0 * ui) * t;
+            let hot = self.slider_at(mouse, w, h, ui) == Some(index);
+            quads.push(UiQuad {
+                x: knob_x,
+                y: by - 2.0 * ui,
+                w: 3.0 * ui,
+                h: bh + 4.0 * ui,
+                color: if hot { [1.0, 1.0, 1.0, 1.0] } else { [0.8, 0.8, 0.85, 0.95] },
+            });
+        }
+        let back = self.back_button(registry, w, h, ui);
+        let hovered = back.contains(mouse);
+        quads.push(UiQuad {
+            x: back.x,
+            y: back.y,
+            w: back.w,
+            h: back.h,
+            color: if hovered { [0.34, 0.36, 0.42, 0.95] } else { [0.15, 0.16, 0.20, 0.88] },
+        });
+        quads
+    }
+
+    pub fn texts(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> Vec<UiText> {
+        let (x0, _) = self.row_origin(w, h, ui);
+        let mut texts = vec![centered(
+            registry.text("menu.settings").to_owned(),
+            w / 2.0,
+            h * 0.18,
+            3.0 * ui,
+        )];
+        for (index, slider) in self.sliders.iter().enumerate() {
+            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+            let text_y = by + bh / 2.0 - GLYPH_H * 1.25 * ui / 2.0;
+            texts.push(UiText {
+                text: registry.text(slider.label).to_owned(),
+                x: x0,
+                y: text_y,
+                scale: 1.25 * ui,
+            });
+            // The value, printed to the right of the bar.
+            texts.push(UiText {
+                text: slider.display(),
+                x: bx + bw + 8.0 * ui,
+                y: text_y,
+                scale: 1.25 * ui,
+            });
+        }
+        let back = self.back_button(registry, w, h, ui);
+        texts.push(centered(
+            back.label.clone(),
+            back.x + back.w / 2.0,
+            back.y + back.h / 2.0,
+            LABEL_SCALE * ui,
+        ));
+        texts
     }
 }
 
@@ -401,7 +640,7 @@ mod tests {
     fn menus_lay_out_and_hit_test() {
         let registry = registry();
         let def = registry.menu("oc:pause").expect("pause menu defined");
-        let view = MenuView::from_def(def, &registry, 1280.0, 720.0, true);
+        let view = MenuView::from_def(def, &registry, 1280.0, 720.0, 1.0, true);
         assert_eq!(view.buttons.len(), def.entries.len());
         assert_eq!(view.title, "Paused", "lang key resolved");
 
@@ -425,7 +664,7 @@ mod tests {
     fn title_menu_resolves_from_data() {
         let registry = registry();
         let def = registry.menu("oc:title").expect("title menu defined");
-        let view = MenuView::from_def(def, &registry, 1280.0, 720.0, false);
+        let view = MenuView::from_def(def, &registry, 1280.0, 720.0, 1.0, false);
         assert!(view.buttons.iter().any(|b| b.action == "oc:open_worlds"));
         assert!(view.buttons.iter().any(|b| b.action == "oc:quit_app"));
     }
@@ -434,16 +673,19 @@ mod tests {
     fn worlds_screen_lists_and_deletes_with_confirmation() {
         let registry = registry();
         let mut screen = WorldsScreen::new(vec!["alpha".into(), "beta".into()]);
-        let view = screen.view(&registry, 1280.0, 720.0);
+        let view = screen.view(&registry, 1280.0, 720.0, 1.0);
         assert!(view.buttons.iter().any(|b| b.action == "world:alpha"));
         assert!(view.buttons.iter().any(|b| b.action == "create_screen"));
 
         // Delete needs an arming click then a confirming click.
         let delete_x = 1280.0 / 2.0 + BUTTON_W * 0.4;
-        assert_eq!(screen.world_click("alpha", delete_x, 1280.0), WorldAction::ArmDelete);
-        assert_eq!(screen.world_click("alpha", delete_x, 1280.0), WorldAction::Delete);
+        assert_eq!(screen.world_click("alpha", delete_x, 1280.0, 1.0), WorldAction::ArmDelete);
+        assert_eq!(screen.world_click("alpha", delete_x, 1280.0, 1.0), WorldAction::Delete);
         // A click on the left side just plays.
-        assert_eq!(screen.world_click("beta", 1280.0 / 2.0 - 200.0, 1280.0), WorldAction::Play);
+        assert_eq!(
+            screen.world_click("beta", 1280.0 / 2.0 - 200.0, 1280.0, 1.0),
+            WorldAction::Play
+        );
     }
 
     #[test]
@@ -471,7 +713,7 @@ mod tests {
         screen.cycle_mode(&registry);
         assert_ne!(screen.mode_id(&registry), "oc:survival");
 
-        let view = screen.view(&registry, 1280.0, 720.0);
+        let view = screen.view(&registry, 1280.0, 720.0, 1.0);
         assert!(view.buttons.iter().any(|b| b.action == "create"));
         assert!(view.buttons.iter().any(|b| b.action == "cycle_create_mode"));
 
@@ -479,7 +721,7 @@ mod tests {
         assert!(!screen.cheats);
         assert!(view.buttons.iter().any(|b| b.action == "toggle_create_cheats"));
         screen.cheats = !screen.cheats;
-        let view = screen.view(&registry, 1280.0, 720.0);
+        let view = screen.view(&registry, 1280.0, 720.0, 1.0);
         let row = view.buttons.iter().find(|b| b.action == "toggle_create_cheats").unwrap();
         assert!(row.label.contains("On"), "toggled label: {}", row.label);
     }
@@ -487,7 +729,7 @@ mod tests {
     #[test]
     fn modes_view_lists_every_registered_mode() {
         let registry = registry();
-        let view = modes_view(&registry, 1, true, 1280.0, 720.0);
+        let view = modes_view(&registry, 1, true, 1280.0, 720.0, 1.0);
         // One row per mode plus Back.
         assert_eq!(view.buttons.len(), registry.mode_count() + 1);
         assert!(view.buttons.iter().any(|b| b.action == "mode:0"));
@@ -496,7 +738,7 @@ mod tests {
         assert!(current.label.contains("[x]"), "current mode marked: {}", current.label);
 
         // Without cheats no mode is selectable, only Back.
-        let locked = modes_view(&registry, 1, false, 1280.0, 720.0);
+        let locked = modes_view(&registry, 1, false, 1280.0, 720.0, 1.0);
         assert!(locked.buttons.iter().all(|b| !b.action.starts_with("mode:")));
         assert!(locked.buttons.iter().any(|b| b.action == "back_pause"));
     }
@@ -517,5 +759,44 @@ mod tests {
         assert_eq!(sanitize_name("My Cool World"), "My-Cool-World");
         assert_eq!(sanitize_name("  ../evil  "), "evil");
         assert_eq!(sanitize_name("!!!"), "world");
+    }
+
+    #[test]
+    fn settings_sliders_drag_and_apply() {
+        use crate::settings::Settings;
+        let registry = registry();
+        let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
+        assert_eq!(screen.sliders.len(), 4);
+
+        let (w, h, ui) = (1280.0, 720.0, 1.0);
+        // Grab the FOV slider (row 1) at its bar and drag fully right.
+        let (bx, by, bw, bh) = screen.bar_rect(1, w, h, ui);
+        let grabbed = screen.slider_at((bx + bw / 2.0, by + bh / 2.0), w, h, ui);
+        assert_eq!(grabbed, Some(1));
+        screen.drag(1, bx + bw + 50.0, w, h, ui);
+        assert_eq!(screen.sliders[1].value, 110.0, "clamped to max");
+        screen.drag(1, bx - 50.0, w, h, ui);
+        assert_eq!(screen.sliders[1].value, 50.0, "clamped to min");
+        screen.drag(1, bx + bw / 2.0, w, h, ui);
+        assert_eq!(screen.sliders[1].value, 80.0, "midpoint, step-rounded");
+
+        // Step rounding on the UI scale slider (0.05 steps).
+        screen.drag(3, bx + bw * 0.4321, w, h, ui);
+        let v = screen.sliders[3].value;
+        assert!((v / 0.05 - (v / 0.05).round()).abs() < 1e-4, "stepped: {v}");
+
+        // Values write back, clamped.
+        let mut settings = Settings::default();
+        screen.apply(&mut settings);
+        assert_eq!(settings.fov, 80.0);
+        assert_eq!(settings.ui_scale, v);
+
+        // The value is rendered to the right of its bar.
+        let texts = screen.texts(&registry, w, h, ui);
+        assert!(texts.iter().any(|t| t.text == "80" && t.x > bx + bw));
+        // Geometry scales linearly with ui.
+        let (bx2, _, bw2, _) = screen.bar_rect(1, w, h, 2.0);
+        assert!((bw2 - bw * 2.0).abs() < 1e-4);
+        let _ = bx2;
     }
 }

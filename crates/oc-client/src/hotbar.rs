@@ -67,38 +67,45 @@ impl Hotbar {
         }
     }
 
-    /// Lays the hotbar out for a framebuffer of `width`×`height` pixels.
-    /// `counts[i]` is how many of slot i's block the player carries; empty
-    /// slots render dimmed.
-    pub fn quads(&self, width: f32, height: f32, counts: &[u32; ITEMS.len()]) -> Vec<UiQuad> {
-        let (x0, y) = Self::origin(width, height);
+    /// Lays the hotbar out for a framebuffer of `width`×`height` pixels
+    /// at the given UI scale. `counts[i]` is how many of slot i's block
+    /// the player carries; empty slots render dimmed.
+    pub fn quads(
+        &self,
+        width: f32,
+        height: f32,
+        ui: f32,
+        counts: &[u32; ITEMS.len()],
+    ) -> Vec<UiQuad> {
+        let (slot, gap, inset) = (SLOT * ui, GAP * ui, INSET * ui);
+        let (x0, y) = Self::origin(width, height, ui);
         let mut quads = Vec::with_capacity(ITEMS.len() * 2 + 1);
         for (i, &block) in ITEMS.iter().enumerate() {
-            let x = x0 + i as f32 * (SLOT + GAP);
+            let x = x0 + i as f32 * (slot + gap);
             if i == self.selected {
                 // Selection ring: a slightly larger bright quad behind.
                 quads.push(UiQuad {
-                    x: x - 3.0,
-                    y: y - 3.0,
-                    w: SLOT + 6.0,
-                    h: SLOT + 6.0,
+                    x: x - 1.5 * ui,
+                    y: y - 1.5 * ui,
+                    w: slot + 3.0 * ui,
+                    h: slot + 3.0 * ui,
                     color: [1.0, 1.0, 1.0, 0.9],
                 });
             }
             quads.push(UiQuad {
                 x,
                 y,
-                w: SLOT,
-                h: SLOT,
+                w: slot,
+                h: slot,
                 color: [0.08, 0.08, 0.1, 0.75],
             });
             let mut swatch = block_swatch(block);
             swatch[3] = if counts[i] > 0 { 1.0 } else { 0.25 };
             quads.push(UiQuad {
-                x: x + INSET,
-                y: y + INSET,
-                w: SLOT - 2.0 * INSET,
-                h: SLOT - 2.0 * INSET,
+                x: x + inset,
+                y: y + inset,
+                w: slot - 2.0 * inset,
+                h: slot - 2.0 * inset,
                 color: swatch,
             });
         }
@@ -110,65 +117,70 @@ impl Hotbar {
         &self,
         width: f32,
         height: f32,
+        ui: f32,
         counts: &[u32; ITEMS.len()],
     ) -> Vec<UiText> {
-        let (x0, y) = Self::origin(width, height);
-        const SCALE: f32 = 2.0;
+        let (slot, gap) = (SLOT * ui, GAP * ui);
+        let (x0, y) = Self::origin(width, height, ui);
+        let scale = ui;
         counts
             .iter()
             .enumerate()
             .filter(|(_, n)| **n > 0)
             .map(|(i, n)| {
                 let text = n.to_string();
-                let w = text.len() as f32 * 6.0 * SCALE;
+                let w = text.len() as f32 * 6.0 * scale;
                 UiText {
                     text,
-                    x: x0 + i as f32 * (SLOT + GAP) + SLOT - w - 4.0,
-                    y: y + SLOT - 7.0 * SCALE - 4.0,
-                    scale: SCALE,
+                    x: x0 + i as f32 * (slot + gap) + slot - w - 2.0 * ui,
+                    y: y + slot - 7.0 * scale - 2.0 * ui,
+                    scale,
                 }
             })
             .collect()
     }
 
-    fn origin(width: f32, height: f32) -> (f32, f32) {
-        let total = ITEMS.len() as f32 * SLOT + (ITEMS.len() as f32 - 1.0) * GAP;
-        ((width - total) / 2.0, height - MARGIN_BOTTOM - SLOT)
+    fn origin(width: f32, height: f32, ui: f32) -> (f32, f32) {
+        let (slot, gap) = (SLOT * ui, GAP * ui);
+        let total = ITEMS.len() as f32 * slot + (ITEMS.len() as f32 - 1.0) * gap;
+        ((width - total) / 2.0, height - MARGIN_BOTTOM * ui - slot)
     }
 }
 
-const SLOT: f32 = 64.0;
-const GAP: f32 = 6.0;
-const INSET: f32 = 8.0;
-const MARGIN_BOTTOM: f32 = 24.0;
+// Logical units: multiplied by the effective UI scale (DPI x setting).
+const SLOT: f32 = 32.0;
+const GAP: f32 = 3.0;
+const INSET: f32 = 4.0;
+const MARGIN_BOTTOM: f32 = 12.0;
 
 /// Survival stat bars drawn above the hotbar: health, hunger, stamina,
 /// and (only while not full) oxygen. Values are 0..=10.
 pub fn stat_bars(
     width: f32,
     height: f32,
+    ui: f32,
     health: f32,
     hunger: f32,
     stamina: f32,
     oxygen: f32,
 ) -> Vec<UiQuad> {
-    const BAR_W: f32 = 220.0;
-    const BAR_H: f32 = 12.0;
-    const GAP: f32 = 6.0;
-    const ABOVE_HOTBAR: f32 = 110.0;
+    let bar_w = 110.0 * ui;
+    let bar_h = 6.0 * ui;
+    let gap = 3.0 * ui;
+    let above_hotbar = 55.0 * ui;
 
     let mut quads = Vec::new();
     let mut bar = |index: i32, value: f32, color: [f32; 4]| {
-        let x = width / 2.0 - BAR_W - GAP / 2.0 + (index % 2) as f32 * (BAR_W + GAP);
-        let y = height - ABOVE_HOTBAR - (index / 2) as f32 * (BAR_H + GAP);
-        quads.push(UiQuad { x, y, w: BAR_W, h: BAR_H, color: [0.05, 0.05, 0.06, 0.7] });
+        let x = width / 2.0 - bar_w - gap / 2.0 + (index % 2) as f32 * (bar_w + gap);
+        let y = height - above_hotbar - (index / 2) as f32 * (bar_h + gap);
+        quads.push(UiQuad { x, y, w: bar_w, h: bar_h, color: [0.05, 0.05, 0.06, 0.7] });
         let fill = (value / 10.0).clamp(0.0, 1.0);
         if fill > 0.0 {
             quads.push(UiQuad {
-                x: x + 2.0,
-                y: y + 2.0,
-                w: (BAR_W - 4.0) * fill,
-                h: BAR_H - 4.0,
+                x: x + 1.0 * ui,
+                y: y + 1.0 * ui,
+                w: (bar_w - 2.0 * ui) * fill,
+                h: bar_h - 2.0 * ui,
                 color,
             });
         }
@@ -213,7 +225,7 @@ mod tests {
     fn layout_is_centered_and_on_screen() {
         let hotbar = Hotbar::new();
         let (w, h) = (2560.0, 1600.0);
-        let quads = hotbar.quads(w, h, &[1; ITEMS.len()]);
+        let quads = hotbar.quads(w, h, 2.0, &[1; ITEMS.len()]);
         // 8 slots x (bg + swatch) + 1 selection ring.
         assert_eq!(quads.len(), ITEMS.len() * 2 + 1);
         for q in &quads {
@@ -231,16 +243,16 @@ mod tests {
     #[test]
     fn stat_bars_reflect_values() {
         // Full oxygen hides its bar: 3 bars x (bg + fill).
-        let full = stat_bars(2560.0, 1600.0, 10.0, 10.0, 10.0, 10.0);
+        let full = stat_bars(2560.0, 1600.0, 2.0, 10.0, 10.0, 10.0, 10.0);
         assert_eq!(full.len(), 6);
         // Low oxygen shows a fourth bar.
-        let low = stat_bars(2560.0, 1600.0, 5.0, 10.0, 10.0, 3.0);
+        let low = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 3.0);
         assert_eq!(low.len(), 8);
         // Zero health: background only, no fill quad.
-        let dead = stat_bars(2560.0, 1600.0, 0.0, 10.0, 10.0, 10.0);
+        let dead = stat_bars(2560.0, 1600.0, 2.0, 0.0, 10.0, 10.0, 10.0);
         assert_eq!(dead.len(), 5);
         // Fill width scales with the value.
-        let half = stat_bars(2560.0, 1600.0, 5.0, 10.0, 10.0, 10.0);
+        let half = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 10.0);
         let full_fill = full[1].w;
         let half_fill = half[1].w;
         assert!((half_fill / full_fill - 0.5).abs() < 0.01);
@@ -252,7 +264,7 @@ mod tests {
         let mut counts = [0; ITEMS.len()];
         counts[0] = 64;
         counts[3] = 7;
-        let labels = hotbar.count_labels(2560.0, 1600.0, &counts);
+        let labels = hotbar.count_labels(2560.0, 1600.0, 2.0, &counts);
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[0].text, "64");
         assert_eq!(labels[1].text, "7");

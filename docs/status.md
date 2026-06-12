@@ -54,6 +54,10 @@ rendering (floating origin); textured chunk; fly camera.
 - **Cheats/permissions, MC-style**: mode changes require the world's
   cheats flag (singleplayer) — one mechanism with multiplayer ops/admins
   (phase 4); see [game-modes.md](gameplay/game-modes.md)
+- **Settings** (`settings.ron`): render distance, FOV, mouse sensitivity
+  and UI size as sliders (value shown right, live apply); all UI is
+  DPI-aware (display scale × UI-size setting) for 4K monitors/TVs.
+  Worlds start behind an async loading screen
 
 ## Known issues
 

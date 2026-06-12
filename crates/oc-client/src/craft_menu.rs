@@ -41,14 +41,14 @@ pub fn lines(registry: &Registry, count_of: impl Fn(oc_assets::ItemId) -> u32) -
 }
 
 /// Panel geometry + text for the open recipe book.
-pub fn panel(lines: &[CraftLine], width: f32) -> (Vec<UiQuad>, Vec<UiText>) {
-    const SCALE: f32 = 2.0;
-    const LINE_H: f32 = 8.0 * SCALE + 6.0;
-    const PAD: f32 = 16.0;
-    let panel_w = 560.0;
-    let panel_h = (lines.len() as f32 + 1.5) * LINE_H + PAD * 2.0;
+pub fn panel(lines: &[CraftLine], width: f32, ui: f32) -> (Vec<UiQuad>, Vec<UiText>) {
+    let scale = ui;
+    let line_h = 8.0 * scale + 3.0 * ui;
+    let pad = 8.0 * ui;
+    let panel_w = 280.0 * ui;
+    let panel_h = (lines.len() as f32 + 1.5) * line_h + pad * 2.0;
     let x = (width - panel_w) / 2.0;
-    let y = 120.0;
+    let y = 60.0 * ui;
 
     let quads = vec![UiQuad {
         x,
@@ -59,16 +59,16 @@ pub fn panel(lines: &[CraftLine], width: f32) -> (Vec<UiQuad>, Vec<UiText>) {
     }];
     let mut texts = vec![UiText {
         text: "crafting  [c] close".into(),
-        x: x + PAD,
-        y: y + PAD,
-        scale: SCALE,
+        x: x + pad,
+        y: y + pad,
+        scale: scale,
     }];
     for (row, line) in lines.iter().enumerate() {
         texts.push(UiText {
             text: line.label.clone(),
-            x: x + PAD,
-            y: y + PAD + (row as f32 + 1.5) * LINE_H,
-            scale: SCALE,
+            x: x + pad,
+            y: y + pad + (row as f32 + 1.5) * line_h,
+            scale: scale,
         });
     }
     (quads, texts)
@@ -97,7 +97,7 @@ mod tests {
     fn panel_fits_all_lines() {
         let registry = Registry::load_default().unwrap();
         let lines = lines(&registry, |_| 0);
-        let (quads, texts) = panel(&lines, 2560.0);
+        let (quads, texts) = panel(&lines, 2560.0, 2.0);
         assert_eq!(quads.len(), 1);
         assert_eq!(texts.len(), lines.len() + 1, "title + one line each");
         let bg = quads[0];

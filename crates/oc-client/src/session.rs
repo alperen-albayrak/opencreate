@@ -360,12 +360,14 @@ impl Session {
         )
     }
 
-    /// Builds the world frame: camera, entities, and in-game UI.
+    /// Builds the world frame: camera, entities, and in-game UI at the
+    /// effective UI scale.
     pub fn frame_camera(
         &self,
         renderer: &Renderer,
         registry: &Registry,
         size: (f32, f32),
+        ui: f32,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -376,7 +378,7 @@ impl Session {
         let caps = self.caps(registry);
 
         let mut texts = if caps.uses_inventory {
-            self.hotbar.count_labels(w, h, &self.hotbar_counts(registry))
+            self.hotbar.count_labels(w, h, ui, &self.hotbar_counts(registry))
         } else {
             Vec::new()
         };
@@ -388,13 +390,13 @@ impl Session {
             } else {
                 [1; hotbar::ITEMS.len()] // creative: everything available
             };
-            self.hotbar.quads(w, h, &counts)
+            self.hotbar.quads(w, h, ui, &counts)
         };
         if self.craft_open {
             let lines = craft_menu::lines(registry, |item| {
                 self.inventory.get(&item.0).copied().unwrap_or(0)
             });
-            let (panel_quads, panel_texts) = craft_menu::panel(&lines, w);
+            let (panel_quads, panel_texts) = craft_menu::panel(&lines, w, ui);
             quads.extend(panel_quads);
             texts.extend(panel_texts);
         }
@@ -407,25 +409,25 @@ impl Session {
                 let plural = if apples == 1 { "" } else { "s" };
                 texts.push(oc_renderer::UiText {
                     text: format!("{apples} apple{plural} - E to eat"),
-                    x: w / 2.0 - 220.0,
-                    y: h - 150.0,
-                    scale: 2.0,
+                    x: w / 2.0 - 110.0 * ui,
+                    y: h - 75.0 * ui,
+                    scale: ui,
                 });
             }
         }
         if caps.has_stats {
             quads.extend(hotbar::stat_bars(
-                w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
+                w, h, ui, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
             ));
         }
         if active {
             // Crosshair: a small plus at screen center.
             let cross = [0.95, 0.95, 0.95, 0.8];
             quads.push(oc_renderer::UiQuad {
-                x: w / 2.0 - 12.0, y: h / 2.0 - 2.0, w: 24.0, h: 4.0, color: cross,
+                x: w / 2.0 - 6.0 * ui, y: h / 2.0 - 1.0 * ui, w: 12.0 * ui, h: 2.0 * ui, color: cross,
             });
             quads.push(oc_renderer::UiQuad {
-                x: w / 2.0 - 2.0, y: h / 2.0 - 12.0, w: 4.0, h: 24.0, color: cross,
+                x: w / 2.0 - 1.0 * ui, y: h / 2.0 - 6.0 * ui, w: 2.0 * ui, h: 12.0 * ui, color: cross,
             });
         }
 
@@ -443,6 +445,7 @@ impl Session {
             } else {
                 String::new()
             },
+            hud_scale: ui,
             ui_texts: texts,
             ui_quads: quads,
         }

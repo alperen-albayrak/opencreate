@@ -31,6 +31,15 @@ off the game mode can't be changed in play, but the world owner can flip
 cheats from the pause menu). Menus, labels and languages are data:
 `data/menus.ron` + `data/lang/*.ron`.
 
+**Settings** (title or pause menu) holds sliders for render distance
+(4–24 chunks), field of view (50–110°), mouse sensitivity, and **UI
+size** — drag or click the bar, the value prints on the right. They
+apply live and persist to `./settings.ron` (per install, not per world).
+All UI is laid out in DPI-aware units: the effective scale is the
+display's scale factor × your UI-size setting, so 4K monitors and 4K TVs
+are both readable and tunable. Worlds open through a loading screen
+(server startup runs off the main thread).
+
 | Input | Action |
 |---|---|
 | Esc | Pause menu (freezes the singleplayer simulation; multiplayer servers will keep running). In menus: back |

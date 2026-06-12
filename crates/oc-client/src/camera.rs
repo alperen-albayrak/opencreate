@@ -10,6 +10,8 @@ pub struct Camera {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_y: f32,
+    /// User multiplier on the base mouse feel (settings).
+    pub sensitivity: f32,
 }
 
 const MOUSE_SENSITIVITY: f32 = 0.0022;
@@ -22,13 +24,15 @@ impl Camera {
             yaw: 0.0,
             pitch: -0.4,
             fov_y: 70f32.to_radians(),
+            sensitivity: 1.0,
         }
     }
 
     pub fn look(&mut self, delta_x: f64, delta_y: f64) {
-        self.yaw -= delta_x as f32 * MOUSE_SENSITIVITY;
-        self.pitch = (self.pitch - delta_y as f32 * MOUSE_SENSITIVITY)
-            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let feel = MOUSE_SENSITIVITY * self.sensitivity;
+        self.yaw -= delta_x as f32 * feel;
+        self.pitch =
+            (self.pitch - delta_y as f32 * feel).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
     pub fn forward(&self) -> Vec3 {

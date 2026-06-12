@@ -22,8 +22,8 @@ use oc_world::terrain::BOTTOM_SECTION_Y;
 use oc_world::world::GeneratedColumn;
 use oc_world::{BlockId, Section, World};
 
-/// Columns of meshed terrain kept around the camera (view distance).
-const VIEW_RADIUS: i32 = 12;
+/// Default view radius (chunks); settings override per session.
+const DEFAULT_VIEW_RADIUS: i32 = 12;
 /// Extra generated ring so view-edge chunks cull faces against real
 /// neighbors instead of assumed air.
 const GEN_MARGIN: i32 = 1;
@@ -51,6 +51,8 @@ pub struct ChunkStreamer {
     mesh_rx: Receiver<MeshJobResult>,
     /// Mesh results that arrived but exceeded the frame's upload budget.
     upload_queue: Vec<MeshJobResult>,
+    /// View radius in chunks (settings-driven).
+    radius: i32,
 }
 
 impl ChunkStreamer {
@@ -64,7 +66,14 @@ impl ChunkStreamer {
             mesh_tx,
             mesh_rx,
             upload_queue: Vec::new(),
+            radius: DEFAULT_VIEW_RADIUS,
         }
+    }
+
+    /// Applies the settings' render distance; streaming adapts on the
+    /// next update (new subscriptions or unloads as needed).
+    pub fn set_radius(&mut self, radius: i32) {
+        self.radius = radius.max(2);
     }
 
     /// Terrain arrived from the server.
@@ -121,7 +130,7 @@ impl ChunkStreamer {
         while budget > 0
             && let Some(result) = self.upload_queue.pop()
         {
-            if chebyshev(result.chunk, center) > VIEW_RADIUS + UNLOAD_MARGIN
+            if chebyshev(result.chunk, center) > self.radius + UNLOAD_MARGIN
                 || !self.world.is_generated(result.chunk)
             {
                 continue; // stale: out of range or column unloaded meanwhile
@@ -143,7 +152,7 @@ impl ChunkStreamer {
         center: ChunkPos,
         outbox: &mut Vec<ClientMessage>,
     ) {
-        let limit = VIEW_RADIUS + GEN_MARGIN + UNLOAD_MARGIN;
+        let limit = self.radius + GEN_MARGIN + UNLOAD_MARGIN;
         let far: Vec<ChunkPos> = self
             .world
             .loaded_columns()
@@ -167,7 +176,7 @@ impl ChunkStreamer {
 
     /// Asks the server for every in-range column we don't have yet.
     fn subscribe_near(&mut self, center: ChunkPos, outbox: &mut Vec<ClientMessage>) {
-        let mut wanted: Vec<ChunkPos> = ring(center, VIEW_RADIUS + GEN_MARGIN)
+        let mut wanted: Vec<ChunkPos> = ring(center, self.radius + GEN_MARGIN)
             .filter(|c| !self.subscribed.contains(c))
             .collect();
         wanted.sort_by_key(|&c| dist2(c, center));
@@ -182,7 +191,7 @@ impl ChunkStreamer {
         if slots == 0 {
             return;
         }
-        let mut ready: Vec<ChunkPos> = ring(center, VIEW_RADIUS)
+        let mut ready: Vec<ChunkPos> = ring(center, self.radius)
             .filter(|c| !self.meshed.contains_key(c) && !self.mesh_inflight.contains(c))
             // Mesh only once every neighbor exists, so border faces cull
             // against real blocks and never need a remesh.
