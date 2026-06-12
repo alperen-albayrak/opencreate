@@ -189,9 +189,7 @@ mod tests {
         'search: for x in (-2000..2000).step_by(16) {
             for z in (-2000..2000).step_by(16) {
                 let h = world.surface_height(x, z);
-                if h > 1
-                    && world.generator().biome(x, z) == oc_world::terrain::Biome::Grassland
-                {
+                if h > 1 && world.generator().biome(x, z).has_grass_surface() {
                     (ax, az) = (x, z);
                     break 'search;
                 }

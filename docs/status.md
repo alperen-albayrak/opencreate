@@ -1,10 +1,10 @@
 # Status
 
-*Last updated: 2026-06-12 (commit `6e5786c`).*
+*Last updated: 2026-06-12 (worldgen v3).*
 
 **Roadmap position:** phase 1 (engine bring-up) and phase 2 (world
 prototype) are complete; phase 3 (survival core) is well underway. The
-workspace holds 7 crates, ~86 tests, all green; the M1 dev machine runs
+workspace holds 7 crates, ~90 tests, all green; the M1 dev machine runs
 60 fps at a 12-column (192-block) view distance.
 
 ## Done
@@ -16,8 +16,6 @@ rendering (floating origin); textured chunk; fly camera.
 ### Phase 2 — World prototype
 - Async chunk pipeline: rayon generation/meshing jobs, budgeted uploads
 - Greedy meshing (coverage-equivalence tested), CPU frustum culling
-- Worldgen: value-noise heightmap, three biomes, sea-level rivers, cheese
-  caves, trees, beaches, oceans
 - Flood-fill lighting (sky + block, baked per-vertex), lamps, day/night
 - Walking/swimming/collision, block place/break with target outline
 - Save/load behind `WorldStore` (zstd, atomic, dirty-columns-only),
@@ -27,6 +25,12 @@ rendering (floating origin); textured chunk; fly camera.
 ### Phase 3 — Survival core (in progress)
 - **The §1 client/server split is live**: `oc-protocol` + `oc-server`
   (30 TPS authoritative thread) + client as a predicted mirror
+- **Worldgen v3, MC 1.18-style multi-noise**: five warped climate
+  channels, peaks&valleys fold, nested-spline terrain shaper (deep
+  oceans → coasts → plains → jagged peaks), self-carving connected
+  rivers, 13 biomes with altitude zoning and steep-slope surface rules,
+  cheese + spaghetti caves, biome-driven tree density, offline `mapgen`
+  visualizer — see [world-generation.md](server/world-generation.md)
 - Survival stats on `bevy_ecs` (drowning, stamina, hunger, regen, respawn),
   fall damage, stat bars
 - Items/recipes/game-modes/creatures all data-driven (RON registry)
@@ -37,10 +41,9 @@ rendering (floating origin); textured chunk; fly camera.
 
 ## Known issues
 
-- Cosmetic: 1-block-wide sand "needles" at river-carve threshold edges on
-  beaches (worldgen smoothing fix tracked separately)
 - Worldgen changes between commits regenerate unedited terrain differently
-  (only player edits persist — by design during development)
+  (only player edits persist — by design during development); saves made
+  before worldgen v3 will not match their regenerated surroundings
 
 ## Not started yet
 

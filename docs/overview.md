@@ -32,8 +32,9 @@ years of development.
 
 ## What it looks like today
 
-A playable survival prototype: procedurally generated islands with biomes,
-rivers, caves and trees; flood-fill lighting with a day/night cycle;
+A playable survival prototype: Minecraft-1.18-style multi-noise worldgen
+(continents, 13 biomes, connected rivers, jagged peaks, cavern-and-tunnel
+caves); flood-fill lighting with a day/night cycle;
 gather-craft-build survival with stats, fall damage and swimming; passive
 creatures wandering the grass; four data-driven game modes; autosaving
 worlds. See [status.md](status.md).

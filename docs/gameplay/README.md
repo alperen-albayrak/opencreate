@@ -10,9 +10,10 @@ You spawn on the nearest dry land with empty pockets, mid-morning of a
 through the recipe book (C), build, and manage four stats — while critters
 wander the grass and the sun sets on lamp-lit builds.
 
-- **World**: infinite procedural terrain — grassland, desert and snowy
-  biomes, rivers, oceans, beaches, caves (dark inside — bring lamps),
-  trees. Everything streams in around you and autosaves.
+- **World**: infinite procedural terrain — 13 biomes from plains and
+  forests to deserts, snowfields and jagged peaks; connected rivers,
+  deep oceans, beaches, cavern-and-tunnel caves (dark inside — bring
+  lamps), trees. Everything streams in around you and autosaves.
 - **Building**: break and place any of the 9 hotbar blocks; the wireframe
   outline shows your target (reach: 6 blocks). In survival, blocks are
   finite: what you place comes from what you gathered.

@@ -10,7 +10,7 @@ An open-source, Minecraft-class voxel game written in Rust with its own Vulkan e
 cargo run
 ```
 
-Procedural terrain streams in around you: biomes (grassland, desert, snow), rivers, oceans, beaches, trees, caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
+Procedural terrain streams in around you: Minecraft-1.18-style multi-noise worldgen with 13 biomes (plains, forests, taiga, deserts, snowfields, stony and snowy peaks…), connected rivers, deep oceans, beaches, cavern-and-tunnel caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
 
 | Input | Action |
 |---|---|
