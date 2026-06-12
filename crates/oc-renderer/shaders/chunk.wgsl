@@ -86,14 +86,14 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 fn caustic(p_raw: vec2<f32>, t_raw: f32) -> f32 {
     let tau = 6.28318530718;
     let p = floor(p_raw * 16.0) / 16.0;
-    let t = floor(t_raw * 10.0) / 10.0;
-    let a = sin(tau * dot(p, vec2(64.0, 24.0)) / 256.0 + t * 1.6);
-    let b = sin(tau * dot(p, vec2(-32.0, 72.0)) / 256.0 + t * 2.1);
-    let c = sin(tau * dot(p, vec2(48.0, -56.0)) / 256.0 + t * 1.2);
+    let t = floor(t_raw * 5.0) / 5.0;
+    let a = sin(tau * dot(p, vec2(64.0, 24.0)) / 256.0 + t * 0.5);
+    let b = sin(tau * dot(p, vec2(-32.0, 72.0)) / 256.0 + t * 0.7);
+    let c = sin(tau * dot(p, vec2(48.0, -56.0)) / 256.0 + t * 0.4);
     let web = pow(1.0 - abs((a + b + c) / 3.0), 5.0);
     // Fine grain (~1-block wavelength) that rides on the web.
-    let d = sin(tau * dot(p, vec2(168.0, 200.0)) / 256.0 + t * 2.6);
-    let e = sin(tau * dot(p, vec2(-216.0, 144.0)) / 256.0 + t * 3.4);
+    let d = sin(tau * dot(p, vec2(168.0, 200.0)) / 256.0 + t * 0.8);
+    let e = sin(tau * dot(p, vec2(-216.0, 144.0)) / 256.0 + t * 1.1);
     let fine = pow(1.0 - abs((d + e) / 2.0), 3.0);
     return web * (0.55 + 0.45 * fine) + 0.25 * fine * web;
 }

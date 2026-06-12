@@ -85,29 +85,28 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 @group(0) @binding(1) var block_sampler: sampler;
 @group(1) @binding(0) var opaque_depth: texture_depth_2d;
 
-// Surface ripple: wavelengths of a block or two — texture-scale motion
-// on each block's surface, never multi-block swells. Integer cycles
-// over 256 blocks keep it seamless across chunk origins (mod 256).
+// Lite surface ripple: two slow components at block-or-two wavelengths
+// (integer cycles over 256 blocks, seamless across chunk origins). It
+// exists only to sparkle the sun glint — calm, unhurried water.
 fn ripple_height(p: vec2<f32>, t: f32) -> f32 {
     let tau = 6.28318530718;
     var h = 0.0;
-    h += 0.5 * sin(tau * dot(p, vec2(160.0, 40.0)) / 256.0 + t * 2.0);
-    h += 0.3 * sin(tau * dot(p, vec2(-88.0, 132.0)) / 256.0 + t * 2.6);
-    h += 0.2 * sin(tau * dot(p, vec2(208.0, -160.0)) / 256.0 + t * 3.3);
+    h += 0.6 * sin(tau * dot(p, vec2(144.0, 48.0)) / 256.0 + t * 0.55);
+    h += 0.4 * sin(tau * dot(p, vec2(-80.0, 120.0)) / 256.0 + t * 0.85);
     return h;
 }
 
-// Pixel-art shimmer: positions snap to the 16x16 texel grid and time
-// steps at 10 fps, so the glint is crisp texel-sized sparkles (visible
-// mostly in the light reflection), not smooth gradients.
+// Pixel-art twinkle: positions snap to the 16x16 texel grid and time
+// steps gently (5 fps), so sparse texel-sized sparkles drift slowly
+// through the light reflection.
 fn ripple_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
     let cell = floor(p * 16.0) / 16.0;
-    let stepped = floor(t * 10.0) / 10.0;
+    let stepped = floor(t * 5.0) / 5.0;
     let e = 1.0 / 16.0;
     let h0 = ripple_height(cell, stepped);
     let hx = ripple_height(cell + vec2(e, 0.0), stepped);
     let hz = ripple_height(cell + vec2(0.0, e), stepped);
-    return normalize(vec3((h0 - hx) * 0.9, e * 2.0, (h0 - hz) * 0.9));
+    return normalize(vec3((h0 - hx) * 0.35, e * 2.0, (h0 - hz) * 0.35));
 }
 
 // Must match the projection in camera.rs.
@@ -177,7 +176,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let glint_normal = normalize(mix(normal, rippled, ripple_fade));
         let glint_dir = reflect(to_fragment, glint_normal);
         let sun_dir = pc.sun.xyz / daylight;
-        glint = pow(max(dot(glint_dir, sun_dir), 0.0), 500.0) * 1.3 * daylight * in.shade;
+        glint = pow(max(dot(glint_dir, sun_dir), 0.0), 500.0) * 0.95 * daylight * in.shade;
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);
