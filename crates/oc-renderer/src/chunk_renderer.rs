@@ -12,11 +12,12 @@ use gpu_allocator::vulkan::{
 use oc_core::{SECTION_SIZE, SectionPos};
 
 use crate::context::VulkanContext;
-use crate::mesh::{ChunkMesh, PackedVertex};
+use crate::mesh::{ChunkMesh, PackedVertex, SectionMeshes};
 use crate::texture;
 use crate::FRAMES_IN_FLIGHT;
 
 const CHUNK_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chunk.spv"));
+const WATER_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/water.spv"));
 
 pub struct GpuBuffer {
     pub buffer: vk::Buffer,
@@ -43,10 +44,29 @@ struct ChunkPush {
     sun: Vec4,
 }
 
-struct ChunkMeshGpu {
+/// Push constants for the water pipeline; must match `water.wgsl`.
+/// Exactly 128 bytes — the guaranteed push-constant minimum.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WaterPush {
+    mvp: Mat4,
+    sun: Vec4,
+    sky: Vec4,
+    /// xyz: chunk origin camera-relative; w: time (seconds).
+    rel: Vec4,
+    /// xyz: chunk origin mod 256 (wave-phase anchor).
+    wave_origin: Vec4,
+}
+
+struct DrawBuf {
     vertex: GpuBuffer,
     index: GpuBuffer,
     index_count: u32,
+}
+
+struct ChunkMeshGpu {
+    solid: Option<DrawBuf>,
+    water: Option<DrawBuf>,
     origin: DVec3,
 }
 
@@ -57,6 +77,8 @@ pub struct ChunkRenderer {
     descriptor_set: vk::DescriptorSet,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    water_pipeline_layout: vk::PipelineLayout,
+    water_pipeline: vk::Pipeline,
     texture_image: vk::Image,
     texture_allocation: Option<Allocation>,
     texture_view: vk::ImageView,
@@ -161,12 +183,26 @@ impl ChunkRenderer {
             )?;
             let pipeline = create_pipeline(device, render_pass, pipeline_layout)?;
 
+            let water_push = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .size(size_of::<WaterPush>() as u32);
+            let water_pipeline_layout = device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                    .push_constant_ranges(std::slice::from_ref(&water_push)),
+                None,
+            )?;
+            let water_pipeline =
+                create_water_pipeline(device, render_pass, water_pipeline_layout)?;
+
             Ok(Self {
                 descriptor_set_layout,
                 descriptor_pool,
                 descriptor_set,
                 pipeline_layout,
                 pipeline,
+                water_pipeline_layout,
+                water_pipeline,
                 texture_image,
                 texture_allocation: Some(texture_allocation),
                 texture_view,
@@ -177,59 +213,82 @@ impl ChunkRenderer {
         }
     }
 
-    /// Uploads a section mesh, replacing any previous mesh at `pos`. An empty
-    /// mesh just removes the old one.
-    pub unsafe fn set_chunk(
-        &mut self,
+    /// Uploads one part of a section mesh (or None when it has no faces).
+    unsafe fn upload_part(
         ctx: &VulkanContext,
         allocator: &mut Allocator,
-        pos: SectionPos,
         mesh: &ChunkMesh,
-        frame: u64,
-    ) -> Result<()> {
+        name: &str,
+    ) -> Result<Option<DrawBuf>> {
         unsafe {
-            self.remove_chunk(pos, frame);
             if mesh.indices.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
-
             let vertex = create_filled_buffer(
                 ctx,
                 allocator,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 as_bytes(&mesh.vertices),
-                "chunk vertices",
+                name,
             )?;
             let index = create_filled_buffer(
                 ctx,
                 allocator,
                 vk::BufferUsageFlags::INDEX_BUFFER,
                 as_bytes(&mesh.indices),
-                "chunk indices",
+                name,
             )?;
+            Ok(Some(DrawBuf { vertex, index, index_count: mesh.indices.len() as u32 }))
+        }
+    }
+
+    /// Uploads a section's meshes, replacing any previous ones at `pos`.
+    /// Empty meshes just remove the old ones.
+    pub unsafe fn set_chunk(
+        &mut self,
+        ctx: &VulkanContext,
+        allocator: &mut Allocator,
+        pos: SectionPos,
+        meshes: &SectionMeshes,
+        frame: u64,
+    ) -> Result<()> {
+        unsafe {
+            self.remove_chunk(pos, frame);
+            if meshes.is_empty() {
+                return Ok(());
+            }
+            let solid = Self::upload_part(ctx, allocator, &meshes.solid, "chunk solid")?;
+            let water = Self::upload_part(ctx, allocator, &meshes.water, "chunk water")?;
             self.chunks.insert(pos, ChunkMeshGpu {
-                vertex,
-                index,
-                index_count: mesh.indices.len() as u32,
+                solid,
+                water,
                 origin: (pos * SECTION_SIZE).as_dvec3(),
             });
             Ok(())
         }
     }
 
+    fn retire(&mut self, frame: u64, part: Option<DrawBuf>) {
+        if let Some(buf) = part {
+            self.retired.push((frame, buf.vertex));
+            self.retired.push((frame, buf.index));
+        }
+    }
+
     /// Drops the mesh at `pos`; its buffers are freed once the GPU is done.
     pub fn remove_chunk(&mut self, pos: SectionPos, frame: u64) {
         if let Some(old) = self.chunks.remove(&pos) {
-            self.retired.push((frame, old.vertex));
-            self.retired.push((frame, old.index));
+            self.retire(frame, old.solid);
+            self.retire(frame, old.water);
         }
     }
 
     /// Drops every chunk mesh (leaving a world); buffers retire as usual.
     pub fn clear_chunks(&mut self, frame: u64) {
-        for (_, old) in self.chunks.drain() {
-            self.retired.push((frame, old.vertex));
-            self.retired.push((frame, old.index));
+        let drained: Vec<_> = self.chunks.drain().map(|(_, old)| old).collect();
+        for old in drained {
+            self.retire(frame, old.solid);
+            self.retire(frame, old.water);
         }
     }
 
@@ -286,6 +345,7 @@ impl ChunkRenderer {
             // TODO: pooled buffers with multi-draw-indirect (§4); per-chunk
             // binds are fine at current chunk counts.
             for chunk in self.chunks.values() {
+                let Some(solid) = &chunk.solid else { continue };
                 // CPU frustum culling at section granularity (§4), in
                 // camera-relative space.
                 let rel = (chunk.origin - camera_pos).as_vec3();
@@ -293,12 +353,11 @@ impl ChunkRenderer {
                 {
                     continue;
                 }
-                device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex.buffer], &[0]);
-                device.cmd_bind_index_buffer(cmd, chunk.index.buffer, 0, vk::IndexType::UINT32);
+                device.cmd_bind_vertex_buffers(cmd, 0, &[solid.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, solid.index.buffer, 0, vk::IndexType::UINT32);
 
                 // Camera-relative rendering (§3): translation happens in f64
                 // on the CPU; the GPU only ever sees camera-relative f32.
-                let rel = (chunk.origin - camera_pos).as_vec3();
                 let push = ChunkPush {
                     mvp: view_proj * Mat4::from_translation(rel),
                     sun,
@@ -310,10 +369,80 @@ impl ChunkRenderer {
                     0,
                     as_bytes(std::slice::from_ref(&push)),
                 );
-                device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+                device.cmd_draw_indexed(cmd, solid.index_count, 1, 0, 0, 0);
                 drawn += 1;
             }
             drawn
+        }
+    }
+
+    /// Records the blended water draws (after opaques and entities).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn record_water(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        view_proj: Mat4,
+        camera_pos: DVec3,
+        sun: Vec4,
+        sky: Vec4,
+        time: f32,
+    ) {
+        unsafe {
+            if self.chunks.is_empty() {
+                return;
+            }
+            let mut bound = false;
+            let frustum = frustum_planes(view_proj);
+            for chunk in self.chunks.values() {
+                let Some(water) = &chunk.water else { continue };
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                if !aabb_intersects_frustum(&frustum, rel, rel + Vec3::splat(SECTION_SIZE as f32))
+                {
+                    continue;
+                }
+                if !bound {
+                    device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.water_pipeline,
+                    );
+                    device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.water_pipeline_layout,
+                        0,
+                        &[self.descriptor_set],
+                        &[],
+                    );
+                    bound = true;
+                }
+                device.cmd_bind_vertex_buffers(cmd, 0, &[water.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, water.index.buffer, 0, vk::IndexType::UINT32);
+                // Wave phase anchors to origin mod 256 so it stays exact
+                // in f32 anywhere in the world (periods divide 256).
+                let origin = chunk.origin;
+                let wave = Vec3::new(
+                    origin.x.rem_euclid(256.0) as f32,
+                    origin.y.rem_euclid(256.0) as f32,
+                    origin.z.rem_euclid(256.0) as f32,
+                );
+                let push = WaterPush {
+                    mvp: view_proj * Mat4::from_translation(rel),
+                    sun,
+                    sky,
+                    rel: rel.extend(time),
+                    wave_origin: wave.extend(0.0),
+                };
+                device.cmd_push_constants(
+                    cmd,
+                    self.water_pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    as_bytes(std::slice::from_ref(&push)),
+                );
+                device.cmd_draw_indexed(cmd, water.index_count, 1, 0, 0, 0);
+            }
         }
     }
 
@@ -325,15 +454,20 @@ impl ChunkRenderer {
         unsafe {
             // Caller has already waited for device idle; everything is safe
             // to free immediately.
-            for (_, mut chunk) in self.chunks.drain() {
-                chunk.vertex.destroy(device, allocator);
-                chunk.index.destroy(device, allocator);
+            for (_, chunk) in self.chunks.drain() {
+                for part in [chunk.solid, chunk.water].into_iter().flatten() {
+                    let mut part = part;
+                    part.vertex.destroy(device, allocator);
+                    part.index.destroy(device, allocator);
+                }
             }
             for (_, mut buffer) in self.retired.drain(..) {
                 buffer.destroy(device, allocator);
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
+            device.destroy_pipeline(self.water_pipeline, None);
+            device.destroy_pipeline_layout(self.water_pipeline_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             device.destroy_sampler(self.sampler, None);
@@ -619,6 +753,89 @@ unsafe fn create_pipeline(
             .layout(layout)
             .render_pass(render_pass);
 
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+            .map_err(|(_, e)| e)?[0];
+        device.destroy_shader_module(module, None);
+        Ok(pipeline)
+    }
+}
+
+/// The water pipeline: same packed vertices, but alpha-blended with the
+/// depth test on and depth *writes* off (water never occludes terrain in
+/// the depth buffer; later passes read opaque-only depth).
+unsafe fn create_water_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline> {
+    unsafe {
+        let code = ash::util::read_spv(&mut std::io::Cursor::new(WATER_SPV))?;
+        let module = device
+            .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(module)
+                .name(c"vs_main"),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(module)
+                .name(c"fs_main"),
+        ];
+        let binding = vk::VertexInputBindingDescription::default()
+            .stride(size_of::<PackedVertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX);
+        let attribute = vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .format(vk::Format::R32G32_UINT);
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(std::slice::from_ref(&binding))
+            .vertex_attribute_descriptions(std::slice::from_ref(&attribute));
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        // BACK culling: the mesher emits water double-sided, so exactly
+        // one winding survives from either side of the surface.
+        let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::LESS);
+        let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD);
+        let blend = vk::PipelineColorBlendStateCreateInfo::default()
+            .attachments(std::slice::from_ref(&blend_attachment));
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth_stencil)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .render_pass(render_pass);
         let pipeline = device
             .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
             .map_err(|(_, e)| e)?[0];

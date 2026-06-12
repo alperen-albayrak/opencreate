@@ -16,7 +16,7 @@ use glam::{DVec3, IVec3};
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_protocol::ClientMessage;
-use oc_renderer::{ChunkMesh, Renderer, mesh_section};
+use oc_renderer::{Renderer, SectionMeshes, mesh_section};
 use oc_world::light::{LightField, compute_light};
 use oc_world::terrain::BOTTOM_SECTION_Y;
 use oc_world::world::GeneratedColumn;
@@ -37,7 +37,7 @@ const UPLOAD_BUDGET: usize = 32;
 
 struct MeshJobResult {
     chunk: ChunkPos,
-    meshes: Vec<(SectionPos, ChunkMesh)>,
+    meshes: Vec<(SectionPos, SectionMeshes)>,
 }
 
 pub struct ChunkStreamer {

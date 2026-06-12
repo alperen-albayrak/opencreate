@@ -32,7 +32,7 @@ use outline::OutlineRenderer;
 use swapchain::Swapchain;
 use ui::UiRenderer;
 
-pub use mesh::{ChunkMesh, mesh_section};
+pub use mesh::{ChunkMesh, SectionMeshes, mesh_section};
 pub use texture::block_swatch;
 pub use entity::EntityDraw;
 pub use ui::{UiQuad, UiText};
@@ -55,6 +55,8 @@ pub struct FrameCamera {
     pub hud: String,
     /// Glyph scale for the HUD overlay (the client's effective UI scale).
     pub hud_scale: f32,
+    /// Seconds since the client started (wave animation phase).
+    pub time: f32,
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
@@ -222,10 +224,10 @@ impl Renderer {
 
     /// Uploads a section mesh at `pos`, replacing any previous one there.
     /// An empty mesh removes the chunk.
-    pub fn set_chunk(&mut self, pos: SectionPos, mesh: &ChunkMesh) -> Result<()> {
+    pub fn set_chunk(&mut self, pos: SectionPos, meshes: &SectionMeshes) -> Result<()> {
         unsafe {
             let allocator = self.allocator.as_mut().expect("allocator alive");
-            self.chunks.set_chunk(&self.ctx, allocator, pos, mesh, self.frame)
+            self.chunks.set_chunk(&self.ctx, allocator, pos, meshes, self.frame)
         }
     }
 
@@ -324,6 +326,16 @@ impl Renderer {
                     .record(device, cmd, camera.view_proj, camera.position, camera.sun);
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
+            // Water draws blended after everything opaque.
+            self.chunks.record_water(
+                device,
+                cmd,
+                camera.view_proj,
+                camera.position,
+                camera.sun,
+                Vec4::from_array(camera.sky_color),
+                camera.time,
+            );
             if let Some(block) = camera.highlight {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);

@@ -16,9 +16,35 @@ use oc_world::{BlockId, blocks};
 #[repr(C)]
 pub struct PackedVertex(pub u32, pub u32);
 
+impl Default for ChunkMesh {
+    fn default() -> Self {
+        Self { vertices: Vec::new(), indices: Vec::new() }
+    }
+}
+
+impl ChunkMesh {
+    pub fn is_empty_mesh(&self) -> bool {
+        self.indices.is_empty()
+    }
+}
+
 pub struct ChunkMesh {
     pub vertices: Vec<PackedVertex>,
     pub indices: Vec<u32>,
+}
+
+/// One section's geometry, split by pipeline: solid faces draw opaque,
+/// water draws later in the blended water pass (stage B).
+#[derive(Default)]
+pub struct SectionMeshes {
+    pub solid: ChunkMesh,
+    pub water: ChunkMesh,
+}
+
+impl SectionMeshes {
+    pub fn is_empty(&self) -> bool {
+        self.solid.indices.is_empty() && self.water.indices.is_empty()
+    }
 }
 
 /// Face order matches `FACE_SHADE` in the shader: +Y, -Y, +Z, -Z, +X, -X.
@@ -149,9 +175,8 @@ fn face_visible(block: BlockId, neighbor: BlockId) -> bool {
 pub fn mesh_section(
     sample: impl Fn(IVec3) -> BlockId,
     light: impl Fn(IVec3) -> u8,
-) -> ChunkMesh {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+) -> SectionMeshes {
+    let mut meshes = SectionMeshes::default();
     let n = SECTION_SIZE as usize;
 
     for (face, normal) in FACE_NORMALS.iter().enumerate() {
@@ -203,9 +228,11 @@ pub fn mesh_section(
                         }
                     }
 
+                    let target =
+                        if key.opaque { &mut meshes.solid } else { &mut meshes.water };
                     emit_quad(
-                        &mut vertices,
-                        &mut indices,
+                        &mut target.vertices,
+                        &mut target.indices,
                         face,
                         Quad {
                             axis,
@@ -224,7 +251,7 @@ pub fn mesh_section(
         }
     }
 
-    ChunkMesh { vertices, indices }
+    meshes
 }
 
 struct Quad {
@@ -278,9 +305,14 @@ mod tests {
 
     /// Reconstructs per-cell faces from the greedy quads: maps
     /// (face, block cell) -> (layer, light). Every 4 vertices = one quad.
-    fn coverage(mesh: &ChunkMesh) -> HashMap<(usize, IVec3), (u32, u8)> {
+    fn coverage(meshes: &SectionMeshes) -> HashMap<(usize, IVec3), (u32, u8)> {
         let mut map = HashMap::new();
-        for quad in mesh.vertices.chunks(4) {
+        for quad in meshes
+            .solid
+            .vertices
+            .chunks(4)
+            .chain(meshes.water.vertices.chunks(4))
+        {
             let w0 = quad[0].0;
             let face = ((w0 >> 15) & 7) as usize;
             let su = ((w0 >> 20) & 15) as i32 + 1;
@@ -355,8 +387,9 @@ mod tests {
             if pos == IVec3::new(8, 8, 8) { blocks::STONE } else { BlockId::AIR }
         };
         let mesh = mesh_section(sample, |_| 0xF0);
-        assert_eq!(mesh.vertices.len(), 6 * 4);
-        assert_eq!(mesh.indices.len(), 6 * 6);
+        assert_eq!(mesh.solid.vertices.len(), 6 * 4);
+        assert_eq!(mesh.solid.indices.len(), 6 * 6);
+        assert!(mesh.water.is_empty_mesh(), "stone is not water");
     }
 
     #[test]
@@ -367,7 +400,7 @@ mod tests {
         };
         let mesh = mesh_section(solid, |_| 0xF0);
         // 8x8x8 cube with uniform light: exactly one quad per side.
-        assert_eq!(mesh.vertices.len() / 4, 6, "cube sides should merge fully");
+        assert_eq!(mesh.solid.vertices.len() / 4, 6, "cube sides should merge fully");
         // Coverage still matches the per-cell reference.
         assert_eq!(coverage(&mesh), reference(solid, |_| 0xF0));
     }
@@ -410,6 +443,7 @@ mod tests {
         };
         let mesh = mesh_section(floor, |_| 0xF0);
         let tops = mesh
+            .solid
             .vertices
             .chunks(4)
             .filter(|q| (q[0].0 >> 15) & 7 == 0)

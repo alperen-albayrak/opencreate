@@ -88,6 +88,8 @@ struct App {
     settings: Settings,
     /// Index of the settings slider being dragged, while the button is down.
     drag_slider: Option<usize>,
+    /// App epoch for shader animation time (waves).
+    started: Instant,
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets).
@@ -164,6 +166,7 @@ impl App {
             frame_time_ema: 1.0 / 60.0,
             settings: Settings::load(),
             drag_slider: None,
+            started: Instant::now(),
         })
     }
 
@@ -241,6 +244,15 @@ impl App {
         self.window = Some(window);
         self.renderer = Some(renderer);
         self.apply_settings(); // resolution scale etc. from settings.ron
+        // Dev hook: OC_WORLD=<name> skips the menus into a world (used by
+        // graphics verification; harmless in normal play).
+        if let Ok(name) = std::env::var("OC_WORLD") {
+            let seed = std::env::var("OC_SEED")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(random_seed);
+            self.start_session(&menu::sanitize_name(&name), seed, None, Some(true));
+        }
         self.last_frame = Instant::now();
         Ok(())
     }
@@ -572,6 +584,9 @@ impl App {
         let (w, h) = self.window_size();
         let ui = self.ui();
         let in_game = matches!(self.screen, Screen::InGame);
+        // Wraps hourly: keeps f32 wave phase precise on long sessions
+        // (every wave speed is periodic well within 3600 s).
+        let time = (self.started.elapsed().as_secs_f64() % 3600.0) as f32;
 
         let mut camera = if let Some(session) = &mut self.session {
             session.update(renderer, &self.registry, dt, in_game)?;
@@ -580,6 +595,7 @@ impl App {
                 &self.registry,
                 (w, h),
                 ui,
+                time,
                 self.frame_time_ema,
                 self.hud_visible && in_game,
                 in_game,
@@ -596,6 +612,7 @@ impl App {
                 entities: Vec::new(),
                 hud: String::new(),
                 hud_scale: ui,
+                time,
                 ui_texts: Vec::new(),
                 ui_quads: Vec::new(),
             }

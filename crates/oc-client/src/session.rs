@@ -368,6 +368,7 @@ impl Session {
         registry: &Registry,
         size: (f32, f32),
         ui: f32,
+        time: f32,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -446,6 +447,7 @@ impl Session {
                 String::new()
             },
             hud_scale: ui,
+            time,
             ui_texts: texts,
             ui_quads: quads,
         }
