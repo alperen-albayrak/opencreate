@@ -386,18 +386,20 @@ impl Renderer {
                 camera.position,
                 camera.shadows,
             );
-            for cascade in 0..3 {
-                self.shadow.begin(device, cmd, cascade);
-                if self.shadow.active() {
-                    self.chunks.record_shadow(
-                        device,
-                        cmd,
-                        self.shadow.pipeline_layout,
-                        self.shadow.cascade(cascade),
-                        camera.position,
-                    );
+            if self.shadow.needs_pass() {
+                for cascade in 0..3 {
+                    self.shadow.begin(device, cmd, cascade);
+                    if self.shadow.active() {
+                        self.chunks.record_shadow(
+                            device,
+                            cmd,
+                            self.shadow.pipeline_layout,
+                            self.shadow.cascade(cascade),
+                            camera.position,
+                        );
+                    }
+                    device.cmd_end_render_pass(cmd);
                 }
-                device.cmd_end_render_pass(cmd);
             }
 
             // Pass 1: the world, into the HDR target at the render scale.

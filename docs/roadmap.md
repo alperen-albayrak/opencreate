@@ -85,12 +85,14 @@ Per-vertex ambient occlusion (corner darkening; AO joins the greedy
 merge key, diagonal flip against anisotropy) — the look that makes
 blocks read as solid. *Shipped:* classic side1/side2/corner AO baked
 per vertex (2 bits in word 0), merges only along AO-constant axes,
-brighter-diagonal split; cascaded sun shadows — 3×2048 cascades
-(24/72/200 blocks), texel-snapped, 3×3 PCF over a comparison sampler,
-normal-offset + slope bias, twilight fade, shadowing only the
-sun-diffuse term so ambient and lamps fill naturally; Shadows on/off
-in graphics settings. *Later:* off/normal/high quality tiers, water
-receiving shadows.
+brighter-diagonal split. *Shelved:* cascaded sun shadows — built
+(3×2048 texel-snapped cascades, comparison sampling, per-cascade bias,
+cascade cross-fade, twilight fade, diffuse-only darkening) but the
+look never convinced in playtests (smudgy at distance, seams while
+moving); the code sits dormant (forced off, passes skipped, no
+settings entry) awaiting a better design — likely crisper voxel-aware
+shadows (per-block sun visibility baked like AO, or ray-stepped voxel
+shadows) instead of shadow maps.
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,

@@ -395,7 +395,6 @@ impl Session {
         time: f32,
         fog_distance: f32,
         clouds: bool,
-        shadows: bool,
         water_reflections: bool,
         far_terrain: bool,
         frame_time_ema: f64,
@@ -488,7 +487,9 @@ impl Session {
                 fog_distance
             },
             clouds: clouds && !underwater,
-            shadows,
+            // Cascaded shadows are shelved (the implementation never
+            // looked right); the renderer keeps the plumbing dormant.
+            shadows: false,
             water_reflections,
             far_terrain: far_terrain && !underwater,
             far_cut: {

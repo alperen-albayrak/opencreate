@@ -33,8 +33,6 @@ pub struct Settings {
     pub max_fps: i32,
     /// Draw the cloud layer.
     pub clouds: bool,
-    /// Cascaded sun shadows.
-    pub shadows: bool,
     /// Water reflects the scene (screen-space reflections).
     pub water_reflections: bool,
     /// Coarse far-terrain ring beyond the loaded chunks.
@@ -51,7 +49,6 @@ impl Default for Settings {
             resolution_scale: 1.0,
             max_fps: 0,
             clouds: true,
-            shadows: true,
             water_reflections: true,
             far_terrain: true,
         }
@@ -124,7 +121,6 @@ mod tests {
             resolution_scale: 9.0,
             max_fps: 100000,
             clouds: true,
-            shadows: true,
             water_reflections: true,
             far_terrain: true,
         }
@@ -147,7 +143,6 @@ mod tests {
             resolution_scale: 0.75,
             max_fps: 60,
             clouds: false,
-            shadows: false,
             water_reflections: false,
             far_terrain: false,
         };

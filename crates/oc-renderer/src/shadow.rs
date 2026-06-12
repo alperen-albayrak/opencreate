@@ -57,6 +57,9 @@ pub struct ShadowPass {
     /// The matrices computed by the latest `update`, for recording.
     cascades: [Mat4; 3],
     strength: f32,
+    /// The map has been cleared at least once (its layout is valid), so
+    /// inactive frames can skip the cascade passes entirely.
+    primed: bool,
 }
 
 impl ShadowPass {
@@ -272,6 +275,7 @@ impl ShadowPass {
                 uniforms,
                 cascades: [Mat4::IDENTITY; 3],
                 strength: 0.0,
+                primed: false,
             })
         }
     }
@@ -341,6 +345,14 @@ impl ShadowPass {
     /// Whether the cascade passes should draw anything this frame.
     pub fn active(&self) -> bool {
         self.strength > 0.0
+    }
+
+    /// Whether the passes must run at all this frame: when active, or
+    /// once at startup so the sampled image leaves UNDEFINED layout.
+    pub fn needs_pass(&mut self) -> bool {
+        let needs = self.strength > 0.0 || !self.primed;
+        self.primed = true;
+        needs
     }
 
     /// The cascade matrix for recording chunk draws (camera-relative).

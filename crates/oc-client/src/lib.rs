@@ -619,7 +619,6 @@ impl App {
                     (self.settings.render_distance as f32) * 16.0
                 },
                 self.settings.clouds,
-                self.settings.shadows,
                 self.settings.water_reflections,
                 self.settings.far_terrain,
                 self.frame_time_ema,
