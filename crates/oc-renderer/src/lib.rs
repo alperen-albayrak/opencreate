@@ -328,9 +328,14 @@ impl Renderer {
                     .clear_values(&clears),
                 vk::SubpassContents::INLINE,
             );
-            self.chunks_drawn =
-                self.chunks
-                    .record(device, cmd, camera.view_proj, camera.position, camera.sun);
+            self.chunks_drawn = self.chunks.record(
+                device,
+                cmd,
+                camera.view_proj,
+                camera.position,
+                camera.sun,
+                camera.time,
+            );
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
             if let Some(block) = camera.highlight {

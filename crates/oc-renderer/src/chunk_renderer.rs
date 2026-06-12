@@ -42,6 +42,8 @@ struct ChunkPush {
     mvp: Mat4,
     /// xyz: direction toward the sun; w: ambient light level.
     sun: Vec4,
+    /// xyz: chunk origin mod 256 (caustic phase); w: time in seconds.
+    params: Vec4,
 }
 
 /// Push constants for the water pipeline; must match `water.wgsl`.
@@ -177,7 +179,7 @@ impl ChunkRenderer {
 
             // Pipeline.
             let push_range = vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<ChunkPush>() as u32);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
@@ -356,6 +358,7 @@ impl ChunkRenderer {
         view_proj: Mat4,
         camera_pos: DVec3,
         sun: Vec4,
+        time: f32,
     ) -> u32 {
         unsafe {
             if self.chunks.is_empty() {
@@ -391,14 +394,21 @@ impl ChunkRenderer {
 
                 // Camera-relative rendering (§3): translation happens in f64
                 // on the CPU; the GPU only ever sees camera-relative f32.
+                let origin = chunk.origin;
+                let phase = Vec3::new(
+                    origin.x.rem_euclid(256.0) as f32,
+                    origin.y.rem_euclid(256.0) as f32,
+                    origin.z.rem_euclid(256.0) as f32,
+                );
                 let push = ChunkPush {
                     mvp: view_proj * Mat4::from_translation(rel),
                     sun,
+                    params: phase.extend(time),
                 };
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     as_bytes(std::slice::from_ref(&push)),
                 );

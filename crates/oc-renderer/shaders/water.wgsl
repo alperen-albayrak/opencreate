@@ -70,6 +70,26 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 @group(0) @binding(1) var block_sampler: sampler;
 @group(1) @binding(0) var opaque_depth: texture_depth_2d;
 
+// Surface ripple: wavelengths of a block or two — texture-scale motion
+// on each block's surface, never multi-block swells. Integer cycles
+// over 256 blocks keep it seamless across chunk origins (mod 256).
+fn ripple_height(p: vec2<f32>, t: f32) -> f32 {
+    let tau = 6.28318530718;
+    var h = 0.0;
+    h += 0.5 * sin(tau * dot(p, vec2(160.0, 40.0)) / 256.0 + t * 2.0);
+    h += 0.3 * sin(tau * dot(p, vec2(-88.0, 132.0)) / 256.0 + t * 2.6);
+    h += 0.2 * sin(tau * dot(p, vec2(208.0, -160.0)) / 256.0 + t * 3.3);
+    return h;
+}
+
+fn ripple_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
+    let e = 0.15;
+    let h0 = ripple_height(p, t);
+    let hx = ripple_height(p + vec2(e, 0.0), t);
+    let hz = ripple_height(p + vec2(0.0, e), t);
+    return normalize(vec3((h0 - hx) * 0.5, e, (h0 - hz) * 0.5));
+}
+
 // Must match the projection in camera.rs.
 const NEAR: f32 = 0.05;
 const FAR: f32 = 4096.0;
@@ -89,14 +109,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // hitting whatever is behind it (sky counts as "very far").
     let water_depth = max(linearize(scene_depth) - linearize(in.clip.z), 0.0);
 
-    // Flat face normals: vanilla-style calm water (no geometric waves —
-    // surface motion returns later as texture-scale animation).
-    var side = array<vec3<f32>, 6>(
-        vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
-        vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
-        vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
-    );
-    let normal = side[in.face];
+    // Geometry stays flat; only a texture-scale ripple perturbs the top
+    // normal (the sparkling sun path), never multi-block swells.
+    let t = pc.rel.w;
+    var normal: vec3<f32>;
+    if (in.face == 0u) {
+        normal = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
+    } else {
+        var side = array<vec3<f32>, 6>(
+            vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+            vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
+            vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+        );
+        normal = side[in.face];
+    }
 
     // Camera sits at the origin of camera-relative space.
     let to_fragment = normalize(pc.rel.xyz + in.local);
@@ -127,9 +153,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var glint = 0.0;
     if (daylight > 0.01) {
         let sun_dir = pc.sun.xyz / daylight;
-        // Flat normals: the glint is the sun's mirror highlight.
-        let _anim = pc.rel.w + pc.wave_origin.x; // reserved (see push struct)
-        glint = pow(max(dot(reflect_dir, sun_dir), 0.0), 500.0) * 1.2 * daylight * in.shade;
+        // The ripple breaks the glint into the sparkling sun path.
+        glint = pow(max(dot(reflect_dir, sun_dir), 0.0), 500.0) * 1.3 * daylight * in.shade;
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);

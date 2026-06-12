@@ -8,6 +8,8 @@ struct PushConstants {
     mvp: mat4x4<f32>,
     // xyz: direction toward the sun (normalized); w: ambient light level.
     sun: vec4<f32>,
+    // xyz: chunk origin mod 256 (caustic phase anchor); w: time, seconds.
+    params: vec4<f32>,
 }
 
 // `immediate` is WGSL/naga's name for Vulkan push constants.
@@ -18,6 +20,8 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
     @location(2) shade: f32,
+    @location(3) local: vec3<f32>,
+    @location(4) @interpolate(flat) underwater: u32,
 }
 
 @vertex
@@ -70,7 +74,21 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
     out.shade = max(sky_term, block_term);
+    out.local = pos;
+    out.underwater = (packed.y >> 24u) & 1u;
     return out;
+}
+
+// Caustic dapples: bright cell-like lines where a sum of waves crosses
+// zero (the classic cheap caustic). Wave vectors are integer cycles over
+// 256 blocks, so the pattern is seamless across chunks.
+fn caustic(p: vec2<f32>, t: f32) -> f32 {
+    let tau = 6.28318530718;
+    let a = sin(tau * dot(p, vec2(64.0, 24.0)) / 256.0 + t * 1.6);
+    let b = sin(tau * dot(p, vec2(-32.0, 72.0)) / 256.0 + t * 2.1);
+    let c = sin(tau * dot(p, vec2(48.0, -56.0)) / 256.0 + t * 1.2);
+    let h = (a + b + c) / 3.0;
+    return pow(1.0 - abs(h), 5.0);
 }
 
 @group(0) @binding(0) var block_textures: texture_2d_array<f32>;
@@ -79,5 +97,13 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
-    return vec4<f32>(texel.rgb * in.shade, 1.0);
+    var shade = in.shade;
+    if (in.underwater == 1u) {
+        // Sun dapples on submerged surfaces; daylight-gated (pc.sun.xyz
+        // is pre-scaled by daylight) and scene-lit so caves stay dark.
+        let daylight = length(pc.sun.xyz);
+        let p = pc.params.xz + in.local.xz;
+        shade *= 1.0 + 1.3 * caustic(p, pc.params.w) * daylight;
+    }
+    return vec4<f32>(texel.rgb * shade, 1.0);
 }
