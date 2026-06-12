@@ -4,6 +4,7 @@
 //! the in-proc transport; the phase-4 dedicated binary runs the same crate
 //! headless over QUIC.
 
+pub mod falling;
 pub mod stats;
 
 use std::collections::HashSet;
@@ -24,6 +25,7 @@ use oc_world::store::{FolderStore, WorldStore};
 use oc_world::world::{GeneratedColumn, generate_column_data};
 use tracing::{info, warn};
 
+use falling::FallTracker;
 use stats::{Outcome, StatInputs, Stats};
 
 /// One full day, in real seconds (10 minutes).
@@ -90,6 +92,8 @@ struct Server {
     /// Where dying players come back (the world spawn).
     spawn: DVec3,
     sprinting: bool,
+    flying: bool,
+    fall: FallTracker,
     last_sent_stats: Option<Stats>,
     store: Arc<FolderStore>,
     level_path: PathBuf,
@@ -145,6 +149,8 @@ impl Server {
             player_entity,
             spawn: world_spawn,
             sprinting: false,
+            flying: false,
+            fall: FallTracker::default(),
             last_sent_stats: None,
             store,
             level_path,
@@ -194,11 +200,12 @@ impl Server {
     fn drain_client_messages(&mut self) -> Result<(), Disconnected> {
         while let Some(msg) = self.transport.try_recv()? {
             match msg {
-                ClientMessage::PlayerState { position, yaw, pitch, sprinting } => {
+                ClientMessage::PlayerState { position, yaw, pitch, sprinting, flying } => {
                     self.player_position = position;
                     self.player_yaw = yaw;
                     self.player_pitch = pitch;
                     self.sprinting = sprinting;
+                    self.flying = flying;
                 }
                 ClientMessage::SetBlock { pos, block } => {
                     // Validation beyond "column is loaded" (reach, rates)
@@ -299,10 +306,19 @@ impl Server {
         let eye = self.player_position + DVec3::new(0.0, EYE_HEIGHT, 0.0);
         let submerged =
             self.world.block(eye.floor().as_ivec3()) == oc_world::blocks::WATER;
+        let feet_in_water = self.world.block(self.player_position.floor().as_ivec3())
+            == oc_world::blocks::WATER;
         let inputs = StatInputs { submerged, sprinting: self.sprinting };
+        let fall_damage = self
+            .fall
+            .tick(self.player_position.y, self.flying || feet_in_water);
 
         let mut entry = self.ecs.entity_mut(self.player_entity);
         let mut stats = entry.get_mut::<Stats>().expect("player has stats");
+        if fall_damage > 0.0 {
+            stats.health -= fall_damage;
+            info!(damage = fall_damage, "fall damage");
+        }
         let outcome = stats::tick(&mut stats, inputs, dt);
         let mut current = *stats;
 
@@ -529,6 +545,7 @@ mod tests {
                 yaw: 1.0,
                 pitch: -0.2,
                 sprinting: false,
+                flying: false,
             })
             .unwrap();
         std::thread::sleep(Duration::from_millis(100)); // let a tick process it

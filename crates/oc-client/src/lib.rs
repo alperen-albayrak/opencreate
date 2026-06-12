@@ -392,6 +392,7 @@ impl App {
             yaw: self.camera.yaw,
             pitch: self.camera.pitch,
             sprinting,
+            flying: self.player.flying,
         });
         if let Some(transport) = &mut self.transport {
             for msg in self.outbox.drain(..) {
@@ -420,6 +421,14 @@ impl App {
                 quads.extend(hotbar::stat_bars(
                     w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
                 ));
+                // Crosshair: a small plus at screen center.
+                let cross = [0.95, 0.95, 0.95, 0.8];
+                quads.push(oc_renderer::UiQuad {
+                    x: w / 2.0 - 12.0, y: h / 2.0 - 2.0, w: 24.0, h: 4.0, color: cross,
+                });
+                quads.push(oc_renderer::UiQuad {
+                    x: w / 2.0 - 2.0, y: h / 2.0 - 12.0, w: 4.0, h: 24.0, color: cross,
+                });
                 quads
             },
         })?;

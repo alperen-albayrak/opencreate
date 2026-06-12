@@ -23,6 +23,8 @@ pub enum ClientMessage {
         pitch: f32,
         /// Sprinting and actually moving (drains stamina/hunger).
         sprinting: bool,
+        /// Fly mode (no fall damage).
+        flying: bool,
     },
     /// Place or break (AIR) a block.
     SetBlock { pos: BlockPos, block: BlockId },
