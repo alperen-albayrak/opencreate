@@ -20,7 +20,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World as EcsWorld;
 use glam::DVec3;
 use oc_assets::{ItemId, Registry};
-use oc_core::{ChunkPos, TICKS_PER_SECOND};
+use oc_core::{ChunkPos, GameMode, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, ServerMessage, Transport};
 use oc_world::World;
 use oc_world::store::{FolderStore, WorldStore};
@@ -121,6 +121,7 @@ struct LevelMeta {
     position: DVec3,
     yaw: f32,
     pitch: f32,
+    mode: GameMode,
 }
 
 struct Server {
@@ -134,6 +135,7 @@ struct Server {
     spawn: DVec3,
     sprinting: bool,
     flying: bool,
+    mode: GameMode,
     fall: FallTracker,
     last_sent_stats: Option<Stats>,
     store: Arc<FolderStore>,
@@ -162,6 +164,7 @@ impl Server {
 
         let seed = level.as_ref().map_or(config.seed, |l| l.seed);
         let world = World::new(seed);
+        let mode = level.as_ref().map_or(GameMode::default(), |l| l.mode);
         let (position, yaw, pitch, day_fraction) = match &level {
             Some(l) => {
                 info!("resumed world from {}", level_path.display());
@@ -172,7 +175,7 @@ impl Server {
         };
 
         transport
-            .send(ServerMessage::Welcome { seed, spawn: position, day_fraction })
+            .send(ServerMessage::Welcome { seed, spawn: position, day_fraction, mode })
             .map_err(|_| anyhow::anyhow!("client disconnected before welcome"))?;
 
         let world_spawn = match &level {
@@ -192,6 +195,7 @@ impl Server {
             spawn: world_spawn,
             sprinting: false,
             flying: false,
+            mode,
             fall: FallTracker::default(),
             last_sent_stats: None,
             store,
@@ -250,6 +254,13 @@ impl Server {
                     self.flying = flying;
                 }
                 ClientMessage::SetBlock { pos, block } => self.handle_set_block(pos, block)?,
+                ClientMessage::SetGameMode(mode) => {
+                    // Singleplayer: always granted. Permissions come with
+                    // real multiplayer.
+                    self.mode = mode;
+                    info!(mode = mode.name(), "game mode changed");
+                    self.transport.send(ServerMessage::GameMode(mode))?;
+                }
                 ClientMessage::Craft { recipe } => {
                     let mut entry = self.ecs.entity_mut(self.player_entity);
                     let inventory = entry.get_mut::<Inventory>().expect("inventory");
@@ -286,25 +297,37 @@ impl Server {
         let existing = self.world.block(pos);
         let mut inventory_changed = false;
 
+        if !self.mode.can_edit_blocks() {
+            // Adventure/spectator: re-assert the authoritative state.
+            self.transport
+                .send(ServerMessage::BlockChanged { pos, block: existing })?;
+            return Ok(());
+        }
+
         if block.is_air() {
-            // Breaking: always allowed (no tools yet); gather the drop.
+            // Breaking: always allowed (no tools yet); survival gathers.
             if !self.world.set_block(pos, block) {
                 return Ok(());
             }
-            if let Some(item) = self.registry.item_for_block(existing) {
+            if self.mode.uses_inventory()
+                && let Some(item) = self.registry.item_for_block(existing)
+            {
                 let mut entry = self.ecs.entity_mut(self.player_entity);
                 entry.get_mut::<Inventory>().expect("inventory").add(item, 1);
                 inventory_changed = true;
             }
             self.transport.send(ServerMessage::BlockChanged { pos, block })?;
         } else {
-            // Placing: requires the matching item in the inventory.
-            let allowed = self.registry.item_for_block(block).is_some_and(|item| {
-                let mut entry = self.ecs.entity_mut(self.player_entity);
-                entry.get_mut::<Inventory>().expect("inventory").take(item, 1)
-            });
+            // Placing: survival requires (and consumes) the matching item;
+            // creative places freely.
+            let allowed = !self.mode.uses_inventory()
+                || self.registry.item_for_block(block).is_some_and(|item| {
+                    let mut entry = self.ecs.entity_mut(self.player_entity);
+                    let took = entry.get_mut::<Inventory>().expect("inventory").take(item, 1);
+                    inventory_changed |= took;
+                    took
+                });
             if allowed && self.world.set_block(pos, block) {
-                inventory_changed = true;
                 self.transport.send(ServerMessage::BlockChanged { pos, block })?;
             } else {
                 // Rejected: re-assert the authoritative state.
@@ -401,6 +424,9 @@ impl Server {
 
     /// Runs the survival systems on the player entity (§6).
     fn tick_stats(&mut self, dt: f32) -> Result<(), Disconnected> {
+        if !self.mode.has_stats() {
+            return Ok(());
+        }
         let eye = self.player_position + DVec3::new(0.0, EYE_HEIGHT, 0.0);
         let submerged =
             self.world.block(eye.floor().as_ivec3()) == oc_world::blocks::WATER;
@@ -410,6 +436,7 @@ impl Server {
         let fall_damage = self
             .fall
             .tick(self.player_position.y, self.flying || feet_in_water);
+        // (mode without stats never reaches here: early return above)
 
         let mut entry = self.ecs.entity_mut(self.player_entity);
         let mut stats = entry.get_mut::<Stats>().expect("player has stats");
@@ -479,6 +506,7 @@ impl Server {
             position: self.player_position,
             yaw: self.player_yaw,
             pitch: self.player_pitch,
+            mode: self.mode,
         };
         if let Err(e) = save_level(&self.level_path, &meta) {
             warn!("saving level metadata: {e:#}");
@@ -547,12 +575,14 @@ fn load_level(path: &Path) -> Option<LevelMeta> {
         ),
         yaw: get("yaw")?.parse().ok()?,
         pitch: get("pitch")?.parse().ok()?,
+        // Older saves predate modes: default survival.
+        mode: get("mode").and_then(|m| GameMode::from_name(m)).unwrap_or_default(),
     })
 }
 
 fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
     let text = format!(
-        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\n",
+        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\n",
         meta.seed,
         meta.day_fraction,
         meta.position.x,
@@ -560,6 +590,7 @@ fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
         meta.position.z,
         meta.yaw,
         meta.pitch,
+        meta.mode.name(),
     );
     let tmp = path.with_extension("txt.tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
@@ -728,6 +759,36 @@ mod tests {
             _ => None,
         });
         assert!(echoed.is_air(), "rejected placement re-asserts air");
+
+        // Creative mode places without items.
+        client.send(ClientMessage::SetGameMode(GameMode::Creative)).unwrap();
+        let mode = wait_for(&mut client, |m| match m {
+            ServerMessage::GameMode(m) => Some(m),
+            _ => None,
+        });
+        assert_eq!(mode, GameMode::Creative);
+        let free = IVec3::new(spawn_chunk.x * 16 + 6, 200, spawn_chunk.z * 16 + 6);
+        client
+            .send(ClientMessage::SetBlock { pos: free, block: mined_block })
+            .unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == free => Some(block),
+            _ => None,
+        });
+        assert_eq!(echoed, mined_block, "creative placement is free");
+
+        // Adventure mode cannot edit at all.
+        client.send(ClientMessage::SetGameMode(GameMode::Adventure)).unwrap();
+        client
+            .send(ClientMessage::SetBlock { pos: free, block: oc_world::BlockId::AIR })
+            .unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == free => Some(block),
+            _ => None,
+        });
+        assert_eq!(echoed, mined_block, "adventure break rejected, block re-asserted");
+        // Back to survival so persistence assertions below stay as before.
+        client.send(ClientMessage::SetGameMode(GameMode::Survival)).unwrap();
 
         // Time advances.
         let t1 = wait_for(&mut client, |m| match m {

@@ -64,8 +64,8 @@ impl Player {
     }
 
     /// Advances one frame. `yaw` is the camera yaw (radians, 0 = -Z) that
-    /// steers horizontal movement.
-    pub fn update(&mut self, world: &World, input: &MoveInput, yaw: f32, dt: f64) {
+    /// steers horizontal movement. `noclip` (spectator) ignores collision.
+    pub fn update(&mut self, world: &World, input: &MoveInput, yaw: f32, dt: f64, noclip: bool) {
         let (sin_yaw, cos_yaw) = (yaw.sin() as f64, yaw.cos() as f64);
         let forward = DVec3::new(-sin_yaw, 0.0, -cos_yaw);
         let right = DVec3::new(cos_yaw, 0.0, -sin_yaw);
@@ -117,6 +117,11 @@ impl Player {
             }
         }
 
+        if noclip {
+            self.position += self.velocity * dt;
+            self.on_ground = false;
+            return;
+        }
         let result = move_aabb(world, self.aabb(), self.velocity * dt);
         self.position += result.delta;
         self.on_ground = result.on_ground;

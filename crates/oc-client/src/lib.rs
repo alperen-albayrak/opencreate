@@ -26,6 +26,7 @@ use oc_renderer::{FrameCamera, Renderer};
 use oc_server::{ServerConfig, ServerHandle};
 use oc_assets::Registry;
 use oc_world::raycast::{RayHit, raycast};
+use oc_core::GameMode;
 use oc_world::BlockId;
 use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
@@ -78,6 +79,7 @@ struct App {
     outbox: Vec<ClientMessage>,
     hud_visible: bool,
     craft_open: bool,
+    mode: GameMode,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
@@ -136,13 +138,13 @@ impl App {
 
         // The Welcome carries the seed, spawn and time of day.
         let deadline = Instant::now() + Duration::from_secs(5);
-        let (seed, spawn, day_fraction) = loop {
+        let (seed, spawn, day_fraction, mode) = loop {
             match transport
                 .try_recv()
                 .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
             {
-                Some(ServerMessage::Welcome { seed, spawn, day_fraction }) => {
-                    break (seed, spawn, day_fraction);
+                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode }) => {
+                    break (seed, spawn, day_fraction, mode);
                 }
                 Some(_) => {}
                 None if Instant::now() > deadline => {
@@ -174,6 +176,7 @@ impl App {
             outbox: Vec::new(),
             hud_visible: true,
             craft_open: false,
+            mode,
             frame_time_ema: 1.0 / 60.0,
             stats: [10.0; 4],
             registry: Registry::load_default()?,
@@ -196,7 +199,7 @@ impl App {
         let stats = renderer.stats();
         let p = self.player.position;
         format!(
-            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n[f3] hud  [f] {}",
+            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [g] mode  [c] craft  [f3] hud  [f] {}",
             (1.0 / self.frame_time_ema).round(),
             self.frame_time_ema * 1e3,
             stats.chunks_drawn,
@@ -207,6 +210,7 @@ impl App {
             self.day_fraction,
             if self.player.flying { "flying" } else { "walking" },
             hotbar::block_name(self.hotbar.block()),
+            self.mode.name(),
             if self.player.flying { "walk" } else { "fly" },
         )
     }
@@ -268,8 +272,13 @@ impl App {
             KeyCode::ShiftLeft => self.input.down = pressed,
             KeyCode::ControlLeft => self.input.fast = pressed,
             KeyCode::KeyF if pressed => {
-                self.player.flying = !self.player.flying;
-                info!(flying = self.player.flying, "movement mode toggled");
+                if self.mode.can_fly() && !self.mode.is_noclip() {
+                    self.player.flying = !self.player.flying;
+                    info!(flying = self.player.flying, "movement mode toggled");
+                }
+            }
+            KeyCode::KeyG if pressed => {
+                self.outbox.push(ClientMessage::SetGameMode(self.mode.next()));
             }
             KeyCode::KeyC if pressed => self.craft_open = !self.craft_open,
             KeyCode::Digit1 if pressed => self.digit(0),
@@ -324,6 +333,11 @@ impl App {
     /// Applies an edit locally (prediction) and tells the server. The
     /// server's BlockChanged echo is a no-op when it matches.
     fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
+        if !self.mode.can_edit_blocks() {
+            self.break_clicked = false;
+            self.place_clicked = false;
+            return Ok(());
+        }
         if std::mem::take(&mut self.break_clicked)
             && let Some(hit) = self.target()
         {
@@ -333,7 +347,9 @@ impl App {
                 self.outbox
                     .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
                 // Predict the pickup; the server's Inventory message confirms.
-                if let Some(item) = self.registry.item_for_block(broken) {
+                if self.mode.uses_inventory()
+                    && let Some(item) = self.registry.item_for_block(broken)
+                {
                     *self.inventory.entry(item.0).or_insert(0) += 1;
                 }
             }
@@ -347,12 +363,14 @@ impl App {
             // Water is replaceable, like Minecraft.
             let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos)
-                && self.count_of(self.hotbar.block()) > 0;
+                && (!self.mode.uses_inventory() || self.count_of(self.hotbar.block()) > 0);
             if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox
                     .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
-                if let Some(item) = self.registry.item_for_block(self.hotbar.block()) {
+                if self.mode.uses_inventory()
+                    && let Some(item) = self.registry.item_for_block(self.hotbar.block())
+                {
                     self.inventory
                         .entry(item.0)
                         .and_modify(|n| *n = n.saturating_sub(1));
@@ -379,6 +397,15 @@ impl App {
                 Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
                 Some(ServerMessage::Stats { health, hunger, stamina, oxygen }) => {
                     self.stats = [health, hunger, stamina, oxygen];
+                }
+                Some(ServerMessage::GameMode(mode)) => {
+                    info!(mode = mode.name(), "game mode changed");
+                    self.mode = mode;
+                    if mode.is_noclip() {
+                        self.player.flying = true;
+                    } else if !mode.can_fly() {
+                        self.player.flying = false;
+                    }
                 }
                 Some(ServerMessage::Inventory { counts }) => {
                     self.inventory = counts.into_iter().collect();
@@ -428,7 +455,7 @@ impl App {
             oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
         if self.streamer.world().is_generated(feet_chunk) {
             self.player
-                .update(self.streamer.world(), &input, self.camera.yaw, dt);
+                .update(self.streamer.world(), &input, self.camera.yaw, dt, self.mode.is_noclip());
         }
         self.camera.position = self.player.eye();
 
@@ -462,13 +489,21 @@ impl App {
         renderer.draw(&FrameCamera {
             view_proj: self.camera.view_proj(aspect),
             position: self.camera.position,
-            highlight: self.target().map(|hit| hit.block),
+            highlight: self
+                .mode
+                .can_edit_blocks()
+                .then(|| self.target().map(|hit| hit.block))
+                .flatten(),
             sun: sky.sun,
             sky_color: sky.sky_color,
             hud: self.hud_text(renderer),
             ui_texts: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let mut texts = self.hotbar.count_labels(w, h, &self.hotbar_counts());
+                let mut texts = if self.mode.uses_inventory() {
+                    self.hotbar.count_labels(w, h, &self.hotbar_counts())
+                } else {
+                    Vec::new()
+                };
                 if self.craft_open {
                     let lines = craft_menu::lines(&self.registry, |item| {
                         self.inventory.get(&item.0).copied().unwrap_or(0)
@@ -479,17 +514,27 @@ impl App {
             },
             ui_quads: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let counts = self.hotbar_counts();
-                let mut quads = self.hotbar.quads(w, h, &counts);
+                let counts = if self.mode.uses_inventory() {
+                    self.hotbar_counts()
+                } else {
+                    [1; hotbar::ITEMS.len()] // creative: everything available
+                };
+                let mut quads = if self.mode.is_noclip() {
+                    Vec::new() // spectators carry nothing
+                } else {
+                    self.hotbar.quads(w, h, &counts)
+                };
                 if self.craft_open {
                     let lines = craft_menu::lines(&self.registry, |item| {
                         self.inventory.get(&item.0).copied().unwrap_or(0)
                     });
                     quads.extend(craft_menu::panel(&lines, w).0);
                 }
-                quads.extend(hotbar::stat_bars(
-                    w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
-                ));
+                if self.mode.has_stats() {
+                    quads.extend(hotbar::stat_bars(
+                        w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
+                    ));
+                }
                 // Crosshair: a small plus at screen center.
                 let cross = [0.95, 0.95, 0.95, 0.8];
                 quads.push(oc_renderer::UiQuad {

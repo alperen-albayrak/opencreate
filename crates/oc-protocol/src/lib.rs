@@ -9,7 +9,7 @@
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use glam::DVec3;
-use oc_core::{BlockPos, ChunkPos};
+use oc_core::{BlockPos, ChunkPos, GameMode};
 use oc_world::BlockId;
 use oc_world::world::GeneratedColumn;
 
@@ -35,6 +35,9 @@ pub enum ClientMessage {
     /// Craft a recipe by registry index (client and server share the
     /// registry; the phase-5 mod handshake syncs it instead).
     Craft { recipe: u32 },
+    /// Ask to switch game mode (granted freely in singleplayer; permission
+    /// checks arrive with multiplayer).
+    SetGameMode(GameMode),
 }
 
 /// Everything the server may tell a client.
@@ -44,6 +47,7 @@ pub enum ServerMessage {
         seed: u64,
         spawn: DVec3,
         day_fraction: f64,
+        mode: GameMode,
     },
     /// Terrain for a subscribed column.
     Column(GeneratedColumn),
@@ -60,6 +64,8 @@ pub enum ServerMessage {
     },
     /// The player died and respawns here with full stats.
     Respawn { position: DVec3 },
+    /// The player's game mode changed.
+    GameMode(GameMode),
     /// Authoritative inventory contents: (per-load item id, count) pairs.
     /// Client and server share the registry, so numeric ids agree; the
     /// phase-5 mod handshake replaces this with a synced mapping.
