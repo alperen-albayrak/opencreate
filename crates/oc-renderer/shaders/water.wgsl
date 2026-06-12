@@ -158,9 +158,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     let color = mix(base, sky_reflect, fresnel) + vec3(glint);
-    // Coverage: transparent over shallow bottoms, near-solid when deep
-    // or seen at grazing angles; fades out entirely at the waterline.
-    let shore = clamp(water_depth / 0.7, 0.0, 1.0);
-    let alpha = shore * max(mix(0.30, 0.95, absorb), fresnel * 0.95);
+    // Coverage: transparent over shallow bottoms, near-solid when deep or
+    // at grazing angles. The waterline itself stays crisp — water meets
+    // terrain at block boundaries, so the mesh edge IS the shoreline; a
+    // hair of fade only suppresses shimmer where thickness reaches zero.
+    let shore = clamp(water_depth / 0.05, 0.0, 1.0);
+    let alpha = shore * max(mix(0.35, 0.95, absorb), fresnel * 0.95);
     return vec4<f32>(color, alpha);
 }
