@@ -123,7 +123,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dapple = caustic(p, pc.params.w) * daylight * dist_fade;
         // Slightly green-cyan dapples, like sunlight through water.
         return vec4<f32>(
-            texel.rgb * shade * (vec3(1.0) + vec3(1.05, 1.45, 1.30) * dapple),
+            texel.rgb * shade * (vec3(1.0) + vec3(0.55, 0.80, 0.70) * dapple),
             1.0,
         );
     }

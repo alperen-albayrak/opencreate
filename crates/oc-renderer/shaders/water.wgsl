@@ -54,7 +54,13 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let light = (packed.y >> 16u) & 0xFFu;
     let sky_level = f32(light >> 4u) / 15.0;
     let block_level = f32(light & 15u) / 15.0;
-    let shade = max(sky_level * (pc.sun.w + (1.0 - pc.sun.w) * 0.6), block_level * 0.95);
+    // The diffuse term follows actual sun strength (pc.sun.xyz is
+    // pre-scaled by daylight), so water goes dark at night like land.
+    let daylight = length(pc.sun.xyz);
+    let shade = max(
+        sky_level * (pc.sun.w + (1.0 - pc.sun.w) * 0.6 * daylight),
+        block_level * 0.95,
+    );
 
     // Open water surfaces sit at 14/16 block height (the inset rim
     // against shores): drop the whole top face, and the top corners of
@@ -149,14 +155,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Schlick fresnel, F0 = 0.02 (water), capped low: with flat normals
     // every distant pixel hits grazing angle at once, and vanilla water
     // should stay blue with a mild sheen, not become a sky mirror.
-    let fresnel = 0.02 + 0.40 * pow(1.0 - cos_view, 5.0);
+    let fresnel = 0.02 + 0.58 * pow(1.0 - cos_view, 4.0);
 
     // Water body color: Beer-Lambert-ish — red dies first, so shallow
     // water reads turquoise and deep water converges to deep blue.
-    let absorb = 1.0 - exp(-water_depth * 0.22);
+    let absorb = 1.0 - exp(-water_depth * 0.11);
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
     let ripple = 0.85 + 0.30 * texel.b;
-    let base = mix(vec3(0.16, 0.46, 0.52), vec3(0.03, 0.13, 0.32), absorb)
+    let base = mix(vec3(0.15, 0.40, 0.48), vec3(0.05, 0.17, 0.35), absorb)
         * ripple * in.shade;
 
     // Reflection: blue water head-on, but at grazing angles (where the
