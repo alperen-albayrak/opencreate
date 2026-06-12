@@ -11,7 +11,7 @@ use oc_world::{BlockId, blocks};
 /// One packed vertex, 8 bytes (decoded in `chunk.wgsl`):
 ///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4
 ///     (corner positions 0..=16; su/sv = quad extent along the UV axes)
-///   word 1: texture layer:16 | light:8 | underwater:1
+///   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct PackedVertex(pub u32, pub u32);
@@ -158,6 +158,9 @@ struct FaceKey {
     /// Solid face submerged in water: the chunk shader plays caustics
     /// (sun dapples) over it.
     underwater: bool,
+    /// Water face whose top edge is the open surface (no water above):
+    /// the water shader drops those vertices to 14/16 block height.
+    surface_top: bool,
 }
 
 /// True when a face of `block` against `neighbor` is visible.
@@ -199,13 +202,21 @@ pub fn mesh_section(
                     if block.is_air() || !face_visible(block, sample(pos + *normal)) {
                         continue;
                     }
+                    let block_ref = &block;
                     let neighbor = sample(pos + *normal);
+                    let is_water = !block.is_opaque();
                     mask[v as usize][u as usize] = Some(FaceKey {
                         layer: face_texture(block, face),
                         // Faces are lit by the voxel they face into.
                         light: light(pos + *normal),
                         opaque: block.is_opaque(),
                         underwater: block.is_opaque() && neighbor == blocks::WATER,
+                        // Top faces are always the open surface (no
+                        // internal water faces exist); side faces only
+                        // when nothing watery sits above this block.
+                        surface_top: is_water
+                            && (face == 0
+                                || (face >= 2 && sample(pos + IVec3::Y) != *block_ref)),
                     });
                 }
             }
@@ -292,7 +303,10 @@ fn emit_quad(
             | (corner as u32) << 18
             | (q.su as u32 - 1) << 20
             | (q.sv as u32 - 1) << 24;
-        let w1 = key.layer | (key.light as u32) << 16 | (key.underwater as u32) << 24;
+        let w1 = key.layer
+            | (key.light as u32) << 16
+            | (key.underwater as u32) << 24
+            | (key.surface_top as u32) << 25;
         vertices.push(PackedVertex(w0, w1));
     }
     indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);

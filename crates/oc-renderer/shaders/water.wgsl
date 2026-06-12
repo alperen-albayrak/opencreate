@@ -56,12 +56,21 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let block_level = f32(light & 15u) / 15.0;
     let shade = max(sky_level * (pc.sun.w + (1.0 - pc.sun.w) * 0.6), block_level * 0.95);
 
+    // Open water surfaces sit at 14/16 block height (the inset rim
+    // against shores): drop the whole top face, and the top corners of
+    // side faces whose top edge is the surface (corners 2 and 3).
+    var lowered = pos;
+    let surface_top = (packed.y >> 25u) & 1u;
+    if (surface_top == 1u && (face == 0u || corner >= 2u)) {
+        lowered.y -= 0.125;
+    }
+
     var out: VsOut;
-    out.clip = pc.mvp * vec4<f32>(pos, 1.0);
+    out.clip = pc.mvp * vec4<f32>(lowered, 1.0);
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
     out.shade = shade;
-    out.local = pos;
+    out.local = lowered;
     out.face = face;
     return out;
 }
@@ -82,12 +91,17 @@ fn ripple_height(p: vec2<f32>, t: f32) -> f32 {
     return h;
 }
 
+// Pixel-art shimmer: positions snap to the 16x16 texel grid and time
+// steps at 10 fps, so the glint is crisp texel-sized sparkles (visible
+// mostly in the light reflection), not smooth gradients.
 fn ripple_normal(p: vec2<f32>, t: f32) -> vec3<f32> {
-    let e = 0.15;
-    let h0 = ripple_height(p, t);
-    let hx = ripple_height(p + vec2(e, 0.0), t);
-    let hz = ripple_height(p + vec2(0.0, e), t);
-    return normalize(vec3((h0 - hx) * 0.5, e, (h0 - hz) * 0.5));
+    let cell = floor(p * 16.0) / 16.0;
+    let stepped = floor(t * 10.0) / 10.0;
+    let e = 1.0 / 16.0;
+    let h0 = ripple_height(cell, stepped);
+    let hx = ripple_height(cell + vec2(e, 0.0), stepped);
+    let hz = ripple_height(cell + vec2(0.0, e), stepped);
+    return normalize(vec3((h0 - hx) * 0.9, e * 2.0, (h0 - hz) * 0.9));
 }
 
 // Must match the projection in camera.rs.
