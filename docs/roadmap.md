@@ -21,7 +21,11 @@ houses with lit interiors), food & eating (apples from leaves, data-driven
 Remaining:
 - **Inventory screen** — drag-and-drop grid UI + real crafting grid
 - **Ocean creatures** — fish with water movement AI
-- Local skin + texture pack selection (overlay stack)
+- Local skin + texture pack selection (overlay stack). *Started:* blocky
+  six-part player body with walk swing, visible in the F5 third-person
+  views (back/front, wall-aware camera); color-set skins in
+  data/skins.ron. Image skins + a settings picker arrive with texture
+  packs.
 
 ## Graphics roadmap — "vibrant visuals" (runs alongside phases 3–5)
 

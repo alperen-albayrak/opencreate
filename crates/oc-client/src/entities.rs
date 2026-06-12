@@ -74,6 +74,8 @@ impl EntityMirror {
                 EntityDraw {
                     position: entity.position(now),
                     yaw: entity.yaw,
+                    pitch: 0.0,
+                    pivot: 0.0,
                     size: [def.size.0, def.size.1, def.size.0],
                     color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
                 }

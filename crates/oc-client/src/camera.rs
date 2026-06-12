@@ -36,18 +36,29 @@ impl Camera {
     }
 
     pub fn forward(&self) -> Vec3 {
-        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
-        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        Self::forward_of(self.yaw, self.pitch)
+    }
+
+    /// Look direction for an arbitrary orientation (third-person views).
+    pub fn forward_of(yaw: f32, pitch: f32) -> Vec3 {
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = pitch.sin_cos();
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
     }
 
     /// Camera-relative view-projection: rotation and projection only, no
     /// translation. The renderer translates per-object in f64.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
+        self.view_proj_oriented(self.yaw, self.pitch, aspect)
+    }
+
+    /// Same projection with an explicit orientation — the third-person
+    /// camera looks along a different ray than the player.
+    pub fn view_proj_oriented(&self, yaw: f32, pitch: f32, aspect: f32) -> Mat4 {
         let mut proj = Mat4::perspective_rh(self.fov_y, aspect, 0.05, 4096.0);
         // Vulkan clip space Y points down; glam's projection is GL-style up.
         proj.y_axis.y *= -1.0;
-        let view = Mat4::look_to_rh(Vec3::ZERO, self.forward(), Vec3::Y);
+        let view = Mat4::look_to_rh(Vec3::ZERO, Self::forward_of(yaw, pitch), Vec3::Y);
         proj * view
     }
 }

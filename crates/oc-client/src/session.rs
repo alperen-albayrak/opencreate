@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use tracing::info;
 
+use crate::avatar::{self, Skin};
 use crate::camera::Camera;
 use crate::entities::EntityMirror;
 use crate::far_terrain::FarTerrain;
@@ -26,11 +27,28 @@ use oc_world::raycast::{RayHit, raycast};
 /// How far the player can reach to break/place blocks.
 const REACH: f64 = 6.0;
 
+/// Third-person camera orbit distance, blocks (pulled in by walls).
+const CAMERA_DISTANCE: f64 = 4.0;
+
+/// F5 cycles these like Minecraft: eyes, behind, facing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraMode {
+    FirstPerson,
+    ThirdBack,
+    ThirdFront,
+}
+
 type ClientEnd = InProcEnd<ClientMessage, ServerMessage>;
 
 pub struct Session {
     pub streamer: ChunkStreamer,
     far: FarTerrain,
+    pub camera_mode: CameraMode,
+    /// The player's skin colors (data/skins.ron).
+    skin: Skin,
+    /// Walk-cycle state for the visible body.
+    walk_phase: f32,
+    swing_amp: f32,
     pub camera: Camera,
     pub player: Player,
     pub input: MoveInput,
@@ -95,6 +113,10 @@ impl Session {
         Ok(Self {
             streamer: ChunkStreamer::new(seed),
             far: FarTerrain::new(seed),
+            camera_mode: CameraMode::FirstPerson,
+            skin: avatar::load_skin(),
+            walk_phase: 0.0,
+            swing_amp: 0.0,
             camera: Camera::new(player.eye()),
             player,
             input: MoveInput::default(),
@@ -321,6 +343,15 @@ impl Session {
                     .update(self.streamer.world(), &input, self.camera.yaw, dt, noclip);
             }
             self.camera.position = self.player.eye();
+
+            // Walk-cycle state for the visible body: swing speed follows
+            // ground speed, amplitude eases in and out.
+            let speed = self.player.velocity.truncate().length() as f32;
+            let target = if self.player.flying { 0.0 } else { (speed / 4.0).clamp(0.0, 1.0) };
+            let ease = (dt as f32 * 8.0).min(1.0);
+            self.swing_amp += (target - self.swing_amp) * ease;
+            self.walk_phase += speed * dt as f32 * 2.4;
+
             self.apply_block_edits(renderer, registry)?;
 
             // The player state the server persists (and reconciles in
@@ -369,10 +400,55 @@ impl Session {
         )
     }
 
+    /// F5: eyes -> behind -> facing -> eyes.
+    pub fn cycle_camera(&mut self) {
+        self.camera_mode = match self.camera_mode {
+            CameraMode::FirstPerson => CameraMode::ThirdBack,
+            CameraMode::ThirdBack => CameraMode::ThirdFront,
+            CameraMode::ThirdFront => CameraMode::FirstPerson,
+        };
+    }
+
+    /// How far the third-person camera can pull back from the eye along
+    /// `dir` before hitting a wall (sampled; keeps a small margin).
+    fn camera_clearance(&self, dir: glam::DVec3) -> f64 {
+        let world = self.streamer.world();
+        let mut t = 0.2;
+        while t < CAMERA_DISTANCE {
+            let p = self.camera.position + dir * t;
+            if world.block(p.floor().as_ivec3()).is_solid() {
+                return (t - 0.3).max(0.5);
+            }
+            t += 0.2;
+        }
+        CAMERA_DISTANCE
+    }
+
+    /// The rendering viewpoint for the current camera mode: position,
+    /// yaw, pitch. The logic camera (eye) stays player-bound.
+    fn render_view(&self) -> (glam::DVec3, f32, f32) {
+        let eye = self.camera.position;
+        let (yaw, pitch) = (self.camera.yaw, self.camera.pitch);
+        match self.camera_mode {
+            CameraMode::FirstPerson => (eye, yaw, pitch),
+            CameraMode::ThirdBack => {
+                let back = -Camera::forward_of(yaw, pitch).as_dvec3();
+                (eye + back * self.camera_clearance(back), yaw, pitch)
+            }
+            CameraMode::ThirdFront => {
+                let front = Camera::forward_of(yaw, pitch).as_dvec3();
+                (
+                    eye + front * self.camera_clearance(front),
+                    yaw + std::f32::consts::PI,
+                    -pitch,
+                )
+            }
+        }
+    }
+
     /// True when the camera eye is inside water — below the 14/16 surface
     /// of the topmost water block, or anywhere in a submerged one.
-    fn camera_underwater(&self) -> bool {
-        let p = self.camera.position;
+    fn camera_underwater(&self, p: glam::DVec3) -> bool {
         let bp = p.floor().as_ivec3();
         let world = self.streamer.world();
         if world.block(bp) != oc_world::blocks::WATER {
@@ -404,7 +480,8 @@ impl Session {
         let (w, h) = size;
         let aspect = w.max(1.0) / h.max(1.0);
         let mut sky = sky::sky_at(self.day_fraction);
-        let underwater = self.camera_underwater();
+        let (render_pos, render_yaw, render_pitch) = self.render_view();
+        let underwater = self.camera_underwater(render_pos);
         if underwater {
             sky = sky::underwater(&sky);
         }
@@ -453,8 +530,9 @@ impl Session {
                 w, h, ui, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
             ));
         }
-        if active {
-            // Crosshair: a small plus at screen center.
+        if active && self.camera_mode != CameraMode::ThirdFront {
+            // Crosshair: a small plus at screen center (pointless when the
+            // camera faces the player).
             let cross = [0.95, 0.95, 0.95, 0.8];
             quads.push(oc_renderer::UiQuad {
                 x: w / 2.0 - 6.0 * ui, y: h / 2.0 - 1.0 * ui, w: 12.0 * ui, h: 2.0 * ui, color: cross,
@@ -465,8 +543,8 @@ impl Session {
         }
 
         FrameCamera {
-            view_proj: self.camera.view_proj(aspect),
-            position: self.camera.position,
+            view_proj: self.camera.view_proj_oriented(render_yaw, render_pitch, aspect),
+            position: render_pos,
             highlight: (active && caps.can_edit_blocks)
                 .then(|| self.target().map(|hit| hit.block))
                 .flatten(),
@@ -506,7 +584,21 @@ impl Session {
                 ]
             },
             cloud_color: sky.clouds,
-            entities: self.entities.draws(registry, Instant::now()),
+            entities: {
+                let mut draws = self.entities.draws(registry, Instant::now());
+                if self.camera_mode != CameraMode::FirstPerson {
+                    // The walk swing; arms/legs hinge from their joints.
+                    let swing = self.walk_phase.sin() * self.swing_amp * 0.7;
+                    draws.extend(avatar::body_draws(
+                        self.player.position,
+                        self.camera.yaw,
+                        self.camera.pitch,
+                        swing,
+                        &self.skin,
+                    ));
+                }
+                draws
+            },
             hud: if hud_visible {
                 self.hud_text(renderer, registry, frame_time_ema)
             } else {

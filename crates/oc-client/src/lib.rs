@@ -2,6 +2,7 @@
 //! (ARCHITECTURE.md §2). Per-world state lives in [`session::Session`];
 //! this shell owns the window, renderer, registry and menu navigation.
 
+mod avatar;
 mod camera;
 mod craft_menu;
 mod entities;
@@ -309,6 +310,13 @@ impl App {
                         session.camera.position = session.player.eye();
                     }
                 }
+                if let Ok(cam) = std::env::var("OC_CAM") {
+                    session.camera_mode = match cam.as_str() {
+                        "back" => session::CameraMode::ThirdBack,
+                        "front" => session::CameraMode::ThirdFront,
+                        _ => session::CameraMode::FirstPerson,
+                    };
+                }
                 if let Ok(look) = std::env::var("OC_LOOK") {
                     let v: Vec<f32> = look.split(',').filter_map(|s| s.trim().parse().ok()).collect();
                     if let [yaw, pitch] = v[..] {
@@ -555,6 +563,7 @@ impl App {
                     info!(flying = session.player.flying, "movement mode toggled");
                 }
             }
+            KeyCode::F5 if pressed => session.cycle_camera(),
             KeyCode::KeyC if pressed => session.craft_open = !session.craft_open,
             KeyCode::KeyE if pressed => session.eat(&self.registry),
             KeyCode::Digit1 if pressed => session.digit(&self.registry, 0),

@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use ash::vk;
-use glam::{DVec3, Mat4, Quat, Vec3};
+use glam::{DVec3, Mat4, Vec3};
 use gpu_allocator::vulkan::Allocator;
 
 use crate::chunk_renderer::{GpuBuffer, as_bytes, create_filled_buffer};
@@ -11,13 +11,18 @@ use crate::context::VulkanContext;
 
 const ENTITY_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/entity.spv"));
 
-/// One entity to draw this frame.
+/// One entity (or body part) to draw this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct EntityDraw {
     /// Feet position (bottom-center), world space.
     pub position: DVec3,
     /// Facing, radians (0 = -Z).
     pub yaw: f32,
+    /// Rotation around the box's local x axis (limb swing, head tilt).
+    pub pitch: f32,
+    /// Height of the pitch pivot above the box's feet, blocks (limbs
+    /// hang from their top, heads nod from their base).
+    pub pivot: f32,
     /// Box size: width (x), height (y), depth (z).
     pub size: [f32; 3],
     pub color: [f32; 4],
@@ -98,11 +103,13 @@ impl EntityRenderer {
             for draw in draws {
                 // Camera-relative translation (§3), then facing, then size.
                 let rel = (draw.position - camera_pos).as_vec3();
-                let model = Mat4::from_scale_rotation_translation(
-                    Vec3::from(draw.size),
-                    Quat::from_rotation_y(draw.yaw),
-                    rel,
-                );
+                let pivot = Vec3::new(0.0, draw.pivot, 0.0);
+                let model = Mat4::from_translation(rel)
+                    * Mat4::from_rotation_y(draw.yaw)
+                    * Mat4::from_translation(pivot)
+                    * Mat4::from_rotation_x(draw.pitch)
+                    * Mat4::from_translation(-pivot)
+                    * Mat4::from_scale(Vec3::from(draw.size));
                 let push = EntityPush { mvp: view_proj * model, color: draw.color };
                 device.cmd_push_constants(
                     cmd,
