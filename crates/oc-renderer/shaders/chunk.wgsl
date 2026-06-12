@@ -2,7 +2,8 @@
 //   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
 //     (corner positions 0..=16; su/sv = greedy quad extent, tiles the UVs;
 //      ao = per-vertex ambient occlusion, 0 darkest .. 3 open)
-//   word 1: texture layer:16 | light:8
+//   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1 |
+//           underwater_surface:1
 
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
@@ -45,6 +46,8 @@ struct VsOut {
     // onto the face's plane, so dapples wrap around vertical faces
     // instead of smearing down them.
     @location(3) cpos: vec2<f32>,
+    // Bit 0: face is underwater (caustics); bit 2: the adjacent water
+    // is the open surface, so caustics stop at the 14/16 waterline.
     @location(4) @interpolate(flat) underwater: u32,
     // Camera-relative world position + flat face normal (shadows).
     @location(5) world_rel: vec3<f32>,
@@ -118,7 +121,7 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     } else {
         out.cpos = world.zy;
     }
-    out.underwater = (packed.y >> 24u) & 1u;
+    out.underwater = (packed.y >> 24u) & 5u;
     out.world_rel = pc.rel.xyz + pos;
     out.normal = face_normal[face];
     return out;
@@ -248,7 +251,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Shadow only steals the sun's diffuse; ambient and lamps remain.
     let shade = max(in.light_terms.x + in.light_terms.y * visibility, in.light_terms.z);
     var color = texel.rgb * shade;
-    if (in.underwater == 1u) {
+    // Water sits at 14/16: side faces against surface water keep their
+    // top sliver dry (cpos.y carries world y on side faces).
+    let dry = (in.underwater & 4u) != 0u && fract(in.cpos.y) > 0.875;
+    if ((in.underwater & 1u) == 1u && !dry) {
         // Sun dapples on submerged surfaces; daylight-gated (pc.sun.xyz
         // is pre-scaled by daylight) and scene-lit so caves stay dark.
         let daylight = length(pc.sun.xyz);

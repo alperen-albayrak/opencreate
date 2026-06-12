@@ -12,7 +12,8 @@ use oc_world::{BlockId, blocks};
 ///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
 ///     (corner positions 0..=16; su/sv = quad extent along the UV axes;
 ///      ao = 0 darkest .. 3 open, per vertex)
-///   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1
+///   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1 |
+///           underwater_surface:1
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct PackedVertex(pub u32, pub u32);
@@ -162,6 +163,10 @@ struct FaceKey {
     /// Water face whose top edge is the open surface (no water above):
     /// the water shader drops those vertices to 14/16 block height.
     surface_top: bool,
+    /// Underwater side face whose adjacent water is the open surface:
+    /// caustics stop at the 14/16 waterline instead of covering the
+    /// sliver of face that pokes above the water.
+    underwater_surface: bool,
     /// Per-corner ambient occlusion (0 darkest .. 3 open), indexed by
     /// `(offv << 1) | offu` in the face's UV plane. Cells merge only on
     /// identical AO, and only along an axis the AO is constant over, so
@@ -230,6 +235,7 @@ pub fn mesh_section(
                     let block_ref = &block;
                     let neighbor = sample(pos + *normal);
                     let is_water = !block.is_opaque();
+                    let underwater = block.is_opaque() && neighbor == blocks::WATER;
                     // AO only shades solid faces; water stays uniform.
                     let ao = if is_water {
                         [3; 4]
@@ -254,13 +260,18 @@ pub fn mesh_section(
                         // Faces are lit by the voxel they face into.
                         light: light(pos + *normal),
                         opaque: block.is_opaque(),
-                        underwater: block.is_opaque() && neighbor == blocks::WATER,
+                        underwater,
                         // Top faces are always the open surface (no
                         // internal water faces exist); side faces only
                         // when nothing watery sits above this block.
                         surface_top: is_water
                             && (face == 0
                                 || (face >= 2 && sample(pos + IVec3::Y) != *block_ref)),
+                        // Side faces against surface water (nothing watery
+                        // above the neighbor): the wet part ends at 14/16.
+                        underwater_surface: underwater
+                            && face >= 2
+                            && sample(pos + *normal + IVec3::Y) != blocks::WATER,
                         ao,
                     });
                 }
@@ -361,7 +372,8 @@ fn emit_quad(
         let w1 = key.layer
             | (key.light as u32) << 16
             | (key.underwater as u32) << 24
-            | (key.surface_top as u32) << 25;
+            | (key.surface_top as u32) << 25
+            | (key.underwater_surface as u32) << 26;
         vertices.push(PackedVertex(w0, w1));
     }
     // Corners 0/3 and 1/2 are the quad's diagonals (corner1 flips U,
@@ -610,6 +622,43 @@ mod tests {
         );
         // Coverage is unchanged by AO-driven merge splits.
         assert_eq!(coverage(&mesh), reference(world, |_| 0xF0));
+    }
+
+    #[test]
+    fn caustics_stop_at_the_surface_waterline() {
+        // A stone column at x=8 with water beside it: one surface water
+        // block at y=8, deep water below it at y=7.
+        let world = |pos: IVec3| {
+            if pos.x == 8 && (0..=8).contains(&pos.y) && pos.z == 8 {
+                blocks::STONE
+            } else if pos.x == 9 && (7..=8).contains(&pos.y) && pos.z == 8 {
+                blocks::WATER
+            } else {
+                BlockId::AIR
+            }
+        };
+        let mesh = mesh_section(world, |_| 0xF0);
+        // +X faces of the stone column at y=8 (against surface water) and
+        // y=7 (water above it): only the surface one is waterline-cut.
+        let flags_at = |y: i32| -> u32 {
+            mesh.solid
+                .vertices
+                .chunks(4)
+                .find(|q| {
+                    let w0 = q[0].0;
+                    let face = (w0 >> 15) & 7;
+                    let min_y = q.iter().map(|v| (v.0 >> 5) & 31).min().unwrap();
+                    face == 4 && min_y == y as u32
+                })
+                .map(|q| q[0].1 >> 24)
+                .expect("side face exists")
+        };
+        let surface = flags_at(8);
+        let deep = flags_at(7);
+        assert_eq!(surface & 1, 1, "surface-level face is underwater");
+        assert_eq!(surface >> 2 & 1, 1, "surface-level face is waterline-cut");
+        assert_eq!(deep & 1, 1, "deep face is underwater");
+        assert_eq!(deep >> 2 & 1, 0, "deep face must not cut");
     }
 
     /// Floor at y=0 with a roof slab at y=8: the floor's +Y faces under the
