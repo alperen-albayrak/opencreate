@@ -11,6 +11,8 @@ pub const RENDER_DISTANCE_RANGE: (f32, f32) = (4.0, 24.0);
 pub const FOV_RANGE: (f32, f32) = (50.0, 110.0);
 pub const SENSITIVITY_RANGE: (f32, f32) = (0.2, 3.0);
 pub const UI_SCALE_RANGE: (f32, f32) = (0.5, 3.0);
+pub const RESOLUTION_SCALE_RANGE: (f32, f32) = (0.5, 2.0);
+pub const MAX_FPS_RANGE: (f32, f32) = (0.0, 240.0);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
@@ -24,6 +26,11 @@ pub struct Settings {
     /// UI size multiplier on top of the display's DPI factor, so 4K
     /// monitors and 4K TVs can be tuned independently of resolution.
     pub ui_scale: f32,
+    /// World render resolution as a fraction of the window (UI stays
+    /// native). Takes effect with the HDR pipeline (stage A2).
+    pub resolution_scale: f32,
+    /// Frame-rate cap; 0 = uncapped.
+    pub max_fps: i32,
 }
 
 impl Default for Settings {
@@ -33,6 +40,8 @@ impl Default for Settings {
             fov: 70.0,
             mouse_sensitivity: 1.0,
             ui_scale: 1.0,
+            resolution_scale: 1.0,
+            max_fps: 0,
         }
     }
 }
@@ -46,6 +55,11 @@ impl Settings {
             .mouse_sensitivity
             .clamp(SENSITIVITY_RANGE.0, SENSITIVITY_RANGE.1);
         self.ui_scale = self.ui_scale.clamp(UI_SCALE_RANGE.0, UI_SCALE_RANGE.1);
+        self.resolution_scale = self
+            .resolution_scale
+            .clamp(RESOLUTION_SCALE_RANGE.0, RESOLUTION_SCALE_RANGE.1);
+        self.max_fps =
+            (self.max_fps as f32).clamp(MAX_FPS_RANGE.0, MAX_FPS_RANGE.1) as i32;
         self
     }
 
@@ -95,12 +109,16 @@ mod tests {
             fov: 1.0,
             mouse_sensitivity: -5.0,
             ui_scale: 100.0,
+            resolution_scale: 9.0,
+            max_fps: 100000,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
         assert_eq!(wild.fov, 50.0);
         assert_eq!(wild.mouse_sensitivity, 0.2);
         assert_eq!(wild.ui_scale, 3.0);
+        assert_eq!(wild.resolution_scale, 2.0);
+        assert_eq!(wild.max_fps, 240);
     }
 
     #[test]
@@ -110,6 +128,8 @@ mod tests {
             fov: 90.0,
             mouse_sensitivity: 1.5,
             ui_scale: 2.0,
+            resolution_scale: 0.75,
+            max_fps: 60,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();

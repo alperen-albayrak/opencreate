@@ -625,6 +625,15 @@ impl App {
 
         renderer.draw(&camera)?;
         self.perf.frame(frame_start.elapsed(), renderer);
+
+        // Frame limiter: sleep off the remainder of the frame budget.
+        if self.settings.max_fps > 0 {
+            let budget = Duration::from_secs_f64(1.0 / self.settings.max_fps as f64);
+            let spent = frame_start.elapsed();
+            if spent < budget {
+                std::thread::sleep(budget - spent);
+            }
+        }
         Ok(())
     }
 }
@@ -698,11 +707,16 @@ impl ApplicationHandler for App {
                             screen.drag(index, self.mouse_pos.0, w, h, ui);
                             self.drag_slider = Some(index);
                             self.drag_apply();
-                        } else if screen
-                            .back_button(&self.registry, w, h, ui)
-                            .contains(self.mouse_pos)
+                        } else if let Some(action) =
+                            screen.button_hit(&self.registry, self.mouse_pos, w, h, ui)
                         {
-                            self.leave_settings();
+                            if let Some(tab) = action.strip_prefix("tab:") {
+                                if let Ok(tab) = tab.parse() {
+                                    screen.tab = tab;
+                                }
+                            } else {
+                                self.leave_settings();
+                            }
                         }
                     }
                     (_, MouseButton::Left) => self.menu_click(event_loop),

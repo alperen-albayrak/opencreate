@@ -376,6 +376,8 @@ pub struct Slider {
     pub id: &'static str,
     /// Language key for the label.
     label: &'static str,
+    /// Which settings tab shows this slider.
+    tab: usize,
     min: f32,
     max: f32,
     step: f32,
@@ -409,8 +411,12 @@ const LABEL_W: f32 = 150.0;
 const SLIDER_W: f32 = 130.0;
 
 /// The settings screen: sliders + Back. Pure geometry, testable.
+pub const SETTINGS_TABS: [&str; 2] = ["settings.tab_game", "settings.tab_graphics"];
+
 pub struct SettingsScreen {
     pub sliders: Vec<Slider>,
+    /// Active tab index into [`SETTINGS_TABS`].
+    pub tab: usize,
     /// Return to the pause menu (true) or the title screen (false).
     pub back_to_pause: bool,
 }
@@ -418,9 +424,10 @@ pub struct SettingsScreen {
 impl SettingsScreen {
     pub fn from_settings(settings: &crate::settings::Settings, back_to_pause: bool) -> Self {
         use crate::settings::*;
-        let slider = |id, label, (min, max): (f32, f32), step, value| Slider {
+        let slider = |id, label, tab, (min, max): (f32, f32), step, value| Slider {
             id,
             label,
+            tab,
             min,
             max,
             step,
@@ -428,25 +435,65 @@ impl SettingsScreen {
         };
         Self {
             sliders: vec![
-                slider(
-                    "render_distance",
-                    "settings.render_distance",
-                    RENDER_DISTANCE_RANGE,
-                    1.0,
-                    settings.render_distance as f32,
-                ),
-                slider("fov", "settings.fov", FOV_RANGE, 1.0, settings.fov),
+                // Game tab.
                 slider(
                     "sensitivity",
                     "settings.sensitivity",
+                    0,
                     SENSITIVITY_RANGE,
                     0.05,
                     settings.mouse_sensitivity,
                 ),
-                slider("ui_scale", "settings.ui_scale", UI_SCALE_RANGE, 0.05, settings.ui_scale),
+                slider("ui_scale", "settings.ui_scale", 0, UI_SCALE_RANGE, 0.05, settings.ui_scale),
+                // Graphics tab.
+                slider(
+                    "render_distance",
+                    "settings.render_distance",
+                    1,
+                    RENDER_DISTANCE_RANGE,
+                    1.0,
+                    settings.render_distance as f32,
+                ),
+                slider("fov", "settings.fov", 1, FOV_RANGE, 1.0, settings.fov),
+                slider(
+                    "resolution_scale",
+                    "settings.resolution_scale",
+                    1,
+                    RESOLUTION_SCALE_RANGE,
+                    0.05,
+                    settings.resolution_scale,
+                ),
+                slider("max_fps", "settings.max_fps", 1, MAX_FPS_RANGE, 10.0, settings.max_fps as f32),
             ],
+            tab: 0,
             back_to_pause,
         }
+    }
+
+    /// Indices of the sliders on the active tab, in display order.
+    fn visible(&self) -> Vec<usize> {
+        (0..self.sliders.len()).filter(|&i| self.sliders[i].tab == self.tab).collect()
+    }
+
+    /// The tab-switch buttons along the top.
+    pub fn tab_buttons(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> Vec<Button> {
+        let total = SETTINGS_TABS.len() as f32;
+        let tab_w = (BUTTON_W - GAP * (total - 1.0)) / total * ui;
+        let x0 = (w - BUTTON_W * ui) / 2.0;
+        let y = h * 0.32 - (BUTTON_H + GAP * 2.0) * ui;
+        SETTINGS_TABS
+            .iter()
+            .enumerate()
+            .map(|(index, key)| Button {
+                x: x0 + index as f32 * (tab_w + GAP * ui),
+                y,
+                w: tab_w,
+                h: BUTTON_H * ui,
+                label: registry.text(key).to_owned(),
+                action: format!("tab:{index}"),
+                highlighted: index == self.tab,
+            })
+            .collect()
     }
 
     /// Writes the slider values back into a settings struct.
@@ -457,6 +504,8 @@ impl SettingsScreen {
                 "fov" => settings.fov = slider.value,
                 "sensitivity" => settings.mouse_sensitivity = slider.value,
                 "ui_scale" => settings.ui_scale = slider.value,
+                "resolution_scale" => settings.resolution_scale = slider.value,
+                "max_fps" => settings.max_fps = slider.value.round() as i32,
                 _ => {}
             }
         }
@@ -467,17 +516,18 @@ impl SettingsScreen {
         ((w - ROW_W * ui) / 2.0, h * 0.32)
     }
 
-    /// The slider bar rectangle for row `index`.
-    fn bar_rect(&self, index: usize, w: f32, h: f32, ui: f32) -> (f32, f32, f32, f32) {
+    /// The slider bar rectangle for visible row `row`.
+    fn bar_rect(&self, row: usize, w: f32, h: f32, ui: f32) -> (f32, f32, f32, f32) {
         let (x0, y0) = self.row_origin(w, h, ui);
-        let y = y0 + index as f32 * (ROW_H + ROW_GAP) * ui;
+        let y = y0 + row as f32 * (ROW_H + ROW_GAP) * ui;
         (x0 + LABEL_W * ui, y + (ROW_H - 6.0) / 2.0 * ui, SLIDER_W * ui, 6.0 * ui)
     }
 
-    /// Which slider a press at `mouse` grabs (generous row-height band).
+    /// Which slider a press at `mouse` grabs (returns the slider's index
+    /// into `sliders`, not the row).
     pub fn slider_at(&self, mouse: (f32, f32), w: f32, h: f32, ui: f32) -> Option<usize> {
-        for index in 0..self.sliders.len() {
-            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+        for (row, &index) in self.visible().iter().enumerate() {
+            let (bx, by, bw, bh) = self.bar_rect(row, w, h, ui);
             let pad = ui * 8.0;
             if mouse.0 >= bx - pad
                 && mouse.0 <= bx + bw + pad
@@ -490,9 +540,12 @@ impl SettingsScreen {
         None
     }
 
-    /// Sets slider `index` from a mouse x position (click or drag).
+    /// Sets slider `index` (a `sliders` index) from a mouse x position.
     pub fn drag(&mut self, index: usize, mouse_x: f32, w: f32, h: f32, ui: f32) {
-        let (bx, _, bw, _) = self.bar_rect(index, w, h, ui);
+        let Some(row) = self.visible().iter().position(|&i| i == index) else {
+            return;
+        };
+        let (bx, _, bw, _) = self.bar_rect(row, w, h, ui);
         let t = (mouse_x - bx) / bw;
         self.sliders[index].set_fraction(t);
     }
@@ -501,7 +554,7 @@ impl SettingsScreen {
         let (_, y0) = self.row_origin(w, h, ui);
         Button {
             x: (w - BUTTON_W * ui) / 2.0,
-            y: y0 + (self.sliders.len() as f32 + 0.8) * (ROW_H + ROW_GAP) * ui,
+            y: y0 + (self.visible().len() as f32 + 0.8) * (ROW_H + ROW_GAP) * ui,
             w: BUTTON_W * ui,
             h: BUTTON_H * ui,
             label: registry.text("menu.back").to_owned(),
@@ -522,8 +575,8 @@ impl SettingsScreen {
         if self.back_to_pause {
             quads.push(UiQuad { x: 0.0, y: 0.0, w, h, color: [0.02, 0.02, 0.04, 0.65] });
         }
-        for index in 0..self.sliders.len() {
-            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+        for (row, &index) in self.visible().iter().enumerate() {
+            let (bx, by, bw, bh) = self.bar_rect(row, w, h, ui);
             quads.push(UiQuad {
                 x: bx,
                 y: by,
@@ -550,6 +603,22 @@ impl SettingsScreen {
                 color: if hot { [1.0, 1.0, 1.0, 1.0] } else { [0.8, 0.8, 0.85, 0.95] },
             });
         }
+        for tab in self.tab_buttons(registry, w, h, ui) {
+            let hovered = tab.contains(mouse);
+            quads.push(UiQuad {
+                x: tab.x,
+                y: tab.y,
+                w: tab.w,
+                h: tab.h,
+                color: if tab.highlighted {
+                    [0.30, 0.34, 0.44, 0.95]
+                } else if hovered {
+                    [0.34, 0.36, 0.42, 0.95]
+                } else {
+                    [0.15, 0.16, 0.20, 0.88]
+                },
+            });
+        }
         let back = self.back_button(registry, w, h, ui);
         let hovered = back.contains(mouse);
         quads.push(UiQuad {
@@ -562,6 +631,17 @@ impl SettingsScreen {
         quads
     }
 
+    /// The action under the mouse among tab/back buttons, if any.
+    pub fn button_hit(&self, registry: &Registry, mouse: (f32, f32), w: f32, h: f32, ui: f32) -> Option<String> {
+        for tab in self.tab_buttons(registry, w, h, ui) {
+            if tab.contains(mouse) {
+                return Some(tab.action);
+            }
+        }
+        let back = self.back_button(registry, w, h, ui);
+        back.contains(mouse).then(|| back.action)
+    }
+
     pub fn texts(&self, registry: &Registry, w: f32, h: f32, ui: f32) -> Vec<UiText> {
         let (x0, _) = self.row_origin(w, h, ui);
         let mut texts = vec![centered(
@@ -570,8 +650,9 @@ impl SettingsScreen {
             h * 0.18,
             3.0 * ui,
         )];
-        for (index, slider) in self.sliders.iter().enumerate() {
-            let (bx, by, bw, bh) = self.bar_rect(index, w, h, ui);
+        for (row, &index) in self.visible().iter().enumerate() {
+            let slider = &self.sliders[index];
+            let (bx, by, bw, bh) = self.bar_rect(row, w, h, ui);
             let text_y = by + bh / 2.0 - GLYPH_H * 1.25 * ui / 2.0;
             texts.push(UiText {
                 text: registry.text(slider.label).to_owned(),
@@ -586,6 +667,14 @@ impl SettingsScreen {
                 y: text_y,
                 scale: 1.25 * ui,
             });
+        }
+        for tab in self.tab_buttons(registry, w, h, ui) {
+            texts.push(centered(
+                tab.label.clone(),
+                tab.x + tab.w / 2.0,
+                tab.y + tab.h / 2.0,
+                1.25 * ui,
+            ));
         }
         let back = self.back_button(registry, w, h, ui);
         texts.push(centered(
@@ -766,23 +855,35 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 4);
+        assert_eq!(screen.sliders.len(), 6);
 
         let (w, h, ui) = (1280.0, 720.0, 1.0);
-        // Grab the FOV slider (row 1) at its bar and drag fully right.
+        // FOV lives on the Graphics tab (row 1 there, sliders[3]).
+        screen.tab = 1;
+        let fov = 3;
         let (bx, by, bw, bh) = screen.bar_rect(1, w, h, ui);
         let grabbed = screen.slider_at((bx + bw / 2.0, by + bh / 2.0), w, h, ui);
-        assert_eq!(grabbed, Some(1));
-        screen.drag(1, bx + bw + 50.0, w, h, ui);
-        assert_eq!(screen.sliders[1].value, 110.0, "clamped to max");
-        screen.drag(1, bx - 50.0, w, h, ui);
-        assert_eq!(screen.sliders[1].value, 50.0, "clamped to min");
-        screen.drag(1, bx + bw / 2.0, w, h, ui);
-        assert_eq!(screen.sliders[1].value, 80.0, "midpoint, step-rounded");
+        assert_eq!(grabbed, Some(fov));
+        screen.drag(fov, bx + bw + 50.0, w, h, ui);
+        assert_eq!(screen.sliders[fov].value, 110.0, "clamped to max");
+        screen.drag(fov, bx - 50.0, w, h, ui);
+        assert_eq!(screen.sliders[fov].value, 50.0, "clamped to min");
+        screen.drag(fov, bx + bw / 2.0, w, h, ui);
+        assert_eq!(screen.sliders[fov].value, 80.0, "midpoint, step-rounded");
 
-        // Step rounding on the UI scale slider (0.05 steps).
-        screen.drag(3, bx + bw * 0.4321, w, h, ui);
-        let v = screen.sliders[3].value;
+        // Sliders on the inactive tab can't be grabbed or dragged.
+        screen.tab = 0;
+        assert_ne!(screen.slider_at((bx + bw / 2.0, by + bh / 2.0), w, h, ui), Some(fov));
+        let before = screen.sliders[fov].value;
+        screen.drag(fov, bx, w, h, ui);
+        assert_eq!(screen.sliders[fov].value, before, "hidden slider ignores drags");
+        screen.tab = 1;
+
+        // Step rounding on the UI scale slider (0.05 steps, Game tab).
+        screen.tab = 0;
+        let (bx, _, bw, _) = screen.bar_rect(1, w, h, ui);
+        screen.drag(1, bx + bw * 0.4321, w, h, ui);
+        let v = screen.sliders[1].value;
         assert!((v / 0.05 - (v / 0.05).round()).abs() < 1e-4, "stepped: {v}");
 
         // Values write back, clamped.
@@ -791,9 +892,15 @@ mod tests {
         assert_eq!(settings.fov, 80.0);
         assert_eq!(settings.ui_scale, v);
 
-        // The value is rendered to the right of its bar.
+        // The value is rendered to the right of its bar (Graphics tab).
+        screen.tab = 1;
         let texts = screen.texts(&registry, w, h, ui);
         assert!(texts.iter().any(|t| t.text == "80" && t.x > bx + bw));
+        // Tab buttons exist and switch.
+        assert!(screen.button_hit(&registry, (5.0, 5.0), w, h, ui).is_none());
+        let tabs = screen.tab_buttons(&registry, w, h, ui);
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs[1].highlighted, "active tab marked");
         // Geometry scales linearly with ui.
         let (bx2, _, bw2, _) = screen.bar_rect(1, w, h, 2.0);
         assert!((bw2 - bw * 2.0).abs() < 1e-4);
