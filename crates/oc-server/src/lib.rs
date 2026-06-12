@@ -15,9 +15,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World as EcsWorld;
 use glam::DVec3;
+use oc_assets::{ItemId, Registry};
 use oc_core::{ChunkPos, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, ServerMessage, Transport};
 use oc_world::World;
@@ -27,6 +29,44 @@ use tracing::{info, warn};
 
 use falling::FallTracker;
 use stats::{Outcome, StatInputs, Stats};
+
+/// What the player is carrying (server-authoritative, §6).
+#[derive(Component, Debug, Default, Clone)]
+pub struct Inventory {
+    counts: std::collections::HashMap<ItemId, u32>,
+}
+
+impl Inventory {
+    pub fn count(&self, item: ItemId) -> u32 {
+        self.counts.get(&item).copied().unwrap_or(0)
+    }
+
+    pub fn add(&mut self, item: ItemId, n: u32) {
+        *self.counts.entry(item).or_insert(0) += n;
+    }
+
+    /// Removes `n` if available; false (and no change) otherwise.
+    pub fn take(&mut self, item: ItemId, n: u32) -> bool {
+        match self.counts.get_mut(&item) {
+            Some(have) if *have >= n => {
+                *have -= n;
+                if *have == 0 {
+                    self.counts.remove(&item);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Wire form for the protocol.
+    pub fn to_counts(&self) -> Vec<(u16, u32)> {
+        let mut counts: Vec<(u16, u32)> =
+            self.counts.iter().map(|(id, n)| (id.0, *n)).collect();
+        counts.sort();
+        counts
+    }
+}
 
 /// One full day, in real seconds (10 minutes).
 pub const DAY_LENGTH_SECS: f64 = 600.0;
@@ -86,6 +126,7 @@ struct LevelMeta {
 struct Server {
     transport: Box<dyn Transport<ServerMessage, ClientMessage>>,
     world: World,
+    registry: Registry,
     /// Everything dynamic is an entity (§6); just the player for now.
     ecs: EcsWorld,
     player_entity: Entity,
@@ -139,12 +180,13 @@ impl Server {
             None => position,
         };
         let mut ecs = EcsWorld::new();
-        let player_entity = ecs.spawn(Stats::full()).id();
+        let player_entity = ecs.spawn((Stats::full(), Inventory::default())).id();
 
         let (gen_tx, gen_rx) = channel();
         Ok(Self {
             transport,
             world,
+            registry: Registry::load_default()?,
             ecs,
             player_entity,
             spawn: world_spawn,
@@ -207,13 +249,7 @@ impl Server {
                     self.sprinting = sprinting;
                     self.flying = flying;
                 }
-                ClientMessage::SetBlock { pos, block } => {
-                    // Validation beyond "column is loaded" (reach, rates)
-                    // comes with real multiplayer.
-                    if self.world.set_block(pos, block) {
-                        self.transport.send(ServerMessage::BlockChanged { pos, block })?;
-                    }
-                }
+                ClientMessage::SetBlock { pos, block } => self.handle_set_block(pos, block)?,
                 ClientMessage::SubscribeColumn(chunk) => {
                     self.subscriptions.insert(chunk);
                     // Already loaded: ship it immediately.
@@ -229,6 +265,60 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Applies a block edit under survival rules: breaking yields the
+    /// block's item, placing consumes one. Invalid placements send a
+    /// corrective BlockChanged so the client's prediction rolls back.
+    fn handle_set_block(
+        &mut self,
+        pos: oc_core::BlockPos,
+        block: oc_world::BlockId,
+    ) -> Result<(), Disconnected> {
+        let existing = self.world.block(pos);
+        let mut inventory_changed = false;
+
+        if block.is_air() {
+            // Breaking: always allowed (no tools yet); gather the drop.
+            if !self.world.set_block(pos, block) {
+                return Ok(());
+            }
+            if let Some(item) = self.registry.item_for_block(existing) {
+                let mut entry = self.ecs.entity_mut(self.player_entity);
+                entry.get_mut::<Inventory>().expect("inventory").add(item, 1);
+                inventory_changed = true;
+            }
+            self.transport.send(ServerMessage::BlockChanged { pos, block })?;
+        } else {
+            // Placing: requires the matching item in the inventory.
+            let allowed = self.registry.item_for_block(block).is_some_and(|item| {
+                let mut entry = self.ecs.entity_mut(self.player_entity);
+                entry.get_mut::<Inventory>().expect("inventory").take(item, 1)
+            });
+            if allowed && self.world.set_block(pos, block) {
+                inventory_changed = true;
+                self.transport.send(ServerMessage::BlockChanged { pos, block })?;
+            } else {
+                // Rejected: re-assert the authoritative state.
+                self.transport
+                    .send(ServerMessage::BlockChanged { pos, block: existing })?;
+            }
+        }
+
+        if inventory_changed {
+            self.send_inventory()?;
+        }
+        Ok(())
+    }
+
+    fn send_inventory(&mut self) -> Result<(), Disconnected> {
+        let counts = self
+            .ecs
+            .entity(self.player_entity)
+            .get::<Inventory>()
+            .expect("inventory")
+            .to_counts();
+        self.transport.send(ServerMessage::Inventory { counts })
     }
 
     fn export_for_send(&self, chunk: ChunkPos) -> Option<GeneratedColumn> {
@@ -458,7 +548,6 @@ mod tests {
     use glam::IVec3;
     use oc_core::coords::block_to_chunk;
     use oc_protocol::in_proc_channel;
-    use oc_world::blocks;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -516,16 +605,71 @@ mod tests {
         });
         assert!(!column.sections.is_empty());
 
-        // Block edits echo back.
+        // Survival flow: harvest a solid block from the streamed column...
+        let (mine_pos, mined_block) = column
+            .sections
+            .iter()
+            .find_map(|(pos, section)| {
+                for y in 0..16 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            let b = section.get(IVec3::new(x, y, z));
+                            if b.is_solid() {
+                                return Some((
+                                    IVec3::new(
+                                        spawn_chunk.x * 16 + x,
+                                        pos.y * 16 + y,
+                                        spawn_chunk.z * 16 + z,
+                                    ),
+                                    b,
+                                ));
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .expect("column has solid blocks");
+        client
+            .send(ClientMessage::SetBlock { pos: mine_pos, block: oc_world::BlockId::AIR })
+            .unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == mine_pos => Some(block),
+            _ => None,
+        });
+        assert!(echoed.is_air(), "break echoes air");
+        let counts = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { counts } => Some(counts),
+            _ => None,
+        });
+        assert_eq!(counts.iter().map(|(_, n)| n).sum::<u32>(), 1, "one item gathered");
+
+        // ...place it elsewhere (consumes the item)...
         let edit = IVec3::new(spawn_chunk.x * 16 + 4, 200, spawn_chunk.z * 16 + 4);
         client
-            .send(ClientMessage::SetBlock { pos: edit, block: blocks::LAMP })
+            .send(ClientMessage::SetBlock { pos: edit, block: mined_block })
             .unwrap();
         let echoed = wait_for(&mut client, |m| match m {
             ServerMessage::BlockChanged { pos, block } if pos == edit => Some(block),
             _ => None,
         });
-        assert_eq!(echoed, blocks::LAMP);
+        assert_eq!(echoed, mined_block);
+        let counts = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { counts } => Some(counts),
+            _ => None,
+        });
+        assert!(counts.is_empty(), "item consumed: {counts:?}");
+
+        // ...and placing without items is rejected with a corrective echo.
+        let reject = IVec3::new(spawn_chunk.x * 16 + 5, 200, spawn_chunk.z * 16 + 5);
+        client
+            .send(ClientMessage::SetBlock { pos: reject, block: mined_block })
+            .unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == reject => Some(block),
+            _ => None,
+        });
+        assert!(echoed.is_air(), "rejected placement re-asserts air");
 
         // Time advances.
         let t1 = wait_for(&mut client, |m| match m {
@@ -577,7 +721,7 @@ mod tests {
                     section.get(IVec3::new(edit.x & 15, edit.y & 15, edit.z & 15))
                 })
             });
-        assert_eq!(in_column, Some(blocks::LAMP), "edit persisted");
+        assert_eq!(in_column, Some(mined_block), "edit persisted");
 
         drop(client2);
         handle2.join();

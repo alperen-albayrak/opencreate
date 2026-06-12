@@ -23,8 +23,9 @@ use hotbar::Hotbar;
 use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
 use oc_server::{ServerConfig, ServerHandle};
+use oc_assets::Registry;
 use oc_world::raycast::{RayHit, raycast};
-use oc_world::{BlockId, blocks};
+use oc_world::BlockId;
 use player::{MoveInput, Player};
 use streaming::ChunkStreamer;
 
@@ -79,6 +80,9 @@ struct App {
     frame_time_ema: f64,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
     stats: [f32; 4],
+    registry: Registry,
+    /// Server-authoritative item counts, keyed by per-load item id.
+    inventory: std::collections::HashMap<u16, u32>,
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets,
@@ -169,6 +173,8 @@ impl App {
             hud_visible: true,
             frame_time_ema: 1.0 / 60.0,
             stats: [10.0; 4],
+            registry: Registry::load_default()?,
+            inventory: std::collections::HashMap::new(),
         })
     }
 
@@ -277,6 +283,18 @@ impl App {
         }
     }
 
+    /// How many of a block's item the player carries.
+    fn count_of(&self, block: BlockId) -> u32 {
+        self.registry
+            .item_for_block(block)
+            .and_then(|item| self.inventory.get(&item.0).copied())
+            .unwrap_or(0)
+    }
+
+    fn hotbar_counts(&self) -> [u32; hotbar::ITEMS.len()] {
+        std::array::from_fn(|i| self.count_of(hotbar::ITEMS[i]))
+    }
+
     fn target(&self) -> Option<RayHit> {
         raycast(
             self.streamer.world(),
@@ -291,11 +309,17 @@ impl App {
     fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
         if std::mem::take(&mut self.break_clicked)
             && let Some(hit) = self.target()
-            && self.streamer.world_mut().set_block(hit.block, BlockId::AIR)
         {
-            self.streamer.remesh_after_edit(renderer, hit.block)?;
-            self.outbox
-                .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
+            let broken = self.streamer.world().block(hit.block);
+            if self.streamer.world_mut().set_block(hit.block, BlockId::AIR) {
+                self.streamer.remesh_after_edit(renderer, hit.block)?;
+                self.outbox
+                    .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
+                // Predict the pickup; the server's Inventory message confirms.
+                if let Some(item) = self.registry.item_for_block(broken) {
+                    *self.inventory.entry(item.0).or_insert(0) += 1;
+                }
+            }
         }
         if std::mem::take(&mut self.place_clicked)
             && let Some(hit) = self.target()
@@ -305,11 +329,17 @@ impl App {
             let pos = hit.block + hit.normal;
             // Water is replaceable, like Minecraft.
             let free = !self.streamer.world().block(pos).is_solid()
-                && !self.player.aabb().intersects_block(pos);
+                && !self.player.aabb().intersects_block(pos)
+                && self.count_of(self.hotbar.block()) > 0;
             if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox
                     .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
+                if let Some(item) = self.registry.item_for_block(self.hotbar.block()) {
+                    self.inventory
+                        .entry(item.0)
+                        .and_modify(|n| *n = n.saturating_sub(1));
+                }
             }
         }
         Ok(())
@@ -332,6 +362,9 @@ impl App {
                 Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
                 Some(ServerMessage::Stats { health, hunger, stamina, oxygen }) => {
                     self.stats = [health, hunger, stamina, oxygen];
+                }
+                Some(ServerMessage::Inventory { counts }) => {
+                    self.inventory = counts.into_iter().collect();
                 }
                 Some(ServerMessage::Respawn { position }) => {
                     info!("you died; respawning");
@@ -416,9 +449,14 @@ impl App {
             sun: sky.sun,
             sky_color: sky.sky_color,
             hud: self.hud_text(renderer),
+            ui_texts: {
+                let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
+                self.hotbar.count_labels(w, h, &self.hotbar_counts())
+            },
             ui_quads: {
                 let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let mut quads = self.hotbar.quads(w, h);
+                let counts = self.hotbar_counts();
+                let mut quads = self.hotbar.quads(w, h, &counts);
                 quads.extend(hotbar::stat_bars(
                     w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
                 ));

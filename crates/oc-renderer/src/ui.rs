@@ -13,9 +13,8 @@ const UI_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui.spv"));
 
 /// Maximum glyphs per frame; longer HUD text is truncated.
 const MAX_GLYPHS: usize = 1024;
-/// HUD pixel scale (the font cell is 6×8; framebuffers are hidpi).
-const TEXT_SCALE: f32 = 2.0;
-const MARGIN: f32 = 12.0;
+/// Drop-shadow offset in pixels.
+const SHADOW_OFFSET: f32 = 2.0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -30,6 +29,15 @@ struct UiPush {
     screen: [f32; 2],
     offset: [f32; 2],
     color: [f32; 4],
+}
+
+/// A positioned text run in framebuffer pixels (top-left origin).
+#[derive(Debug, Clone)]
+pub struct UiText {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
 }
 
 /// A solid-colored rectangle in framebuffer pixels (top-left origin).
@@ -182,7 +190,7 @@ impl UiRenderer {
         }
     }
 
-    /// Writes the HUD text and colored quads into this frame's buffer and
+    /// Writes the text runs and colored quads into this frame's buffer and
     /// records the draws. Must run inside the render pass with viewport set.
     pub unsafe fn record(
         &mut self,
@@ -190,11 +198,14 @@ impl UiRenderer {
         cmd: vk::CommandBuffer,
         slot: usize,
         extent: vk::Extent2D,
-        text: &str,
+        texts: &[UiText],
         quads: &[UiQuad],
     ) {
         unsafe {
-            let glyphs = font::layout(text, MARGIN, MARGIN, TEXT_SCALE);
+            let mut glyphs = Vec::new();
+            for run in texts {
+                glyphs.extend(font::layout(&run.text, run.x, run.y, run.scale));
+            }
             let glyph_count = glyphs.len().min(MAX_GLYPHS);
             let quad_count = quads.len().min(MAX_GLYPHS - glyph_count);
             if glyph_count + quad_count == 0 {
@@ -259,7 +270,7 @@ impl UiRenderer {
             // Text on top: drop shadow, then white.
             if glyph_count > 0 {
                 for (offset, color) in [
-                    ([TEXT_SCALE, TEXT_SCALE], [0.0, 0.0, 0.0, 0.85]),
+                    ([SHADOW_OFFSET, SHADOW_OFFSET], [0.0, 0.0, 0.0, 0.85]),
                     ([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]),
                 ] {
                     draw(UiPush { screen, offset, color }, 0, (glyph_count * 6) as u32);

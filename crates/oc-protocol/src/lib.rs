@@ -57,6 +57,10 @@ pub enum ServerMessage {
     },
     /// The player died and respawns here with full stats.
     Respawn { position: DVec3 },
+    /// Authoritative inventory contents: (per-load item id, count) pairs.
+    /// Client and server share the registry, so numeric ids agree; the
+    /// phase-5 mod handshake replaces this with a synced mapping.
+    Inventory { counts: Vec<(u16, u32)> },
 }
 
 /// The peer hung up.

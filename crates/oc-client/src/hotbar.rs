@@ -1,7 +1,7 @@
 //! The block hotbar: creative palette of placeable blocks until survival
 //! inventories (phase 3) replace it.
 
-use oc_renderer::{UiQuad, block_swatch};
+use oc_renderer::{UiQuad, UiText, block_swatch};
 use oc_world::{BlockId, blocks};
 
 /// Placeable palette, in slot order (keys 1..=9).
@@ -68,16 +68,10 @@ impl Hotbar {
     }
 
     /// Lays the hotbar out for a framebuffer of `width`×`height` pixels.
-    pub fn quads(&self, width: f32, height: f32) -> Vec<UiQuad> {
-        const SLOT: f32 = 64.0;
-        const GAP: f32 = 6.0;
-        const INSET: f32 = 8.0;
-        const MARGIN_BOTTOM: f32 = 24.0;
-
-        let total = ITEMS.len() as f32 * SLOT + (ITEMS.len() as f32 - 1.0) * GAP;
-        let x0 = (width - total) / 2.0;
-        let y = height - MARGIN_BOTTOM - SLOT;
-
+    /// `counts[i]` is how many of slot i's block the player carries; empty
+    /// slots render dimmed.
+    pub fn quads(&self, width: f32, height: f32, counts: &[u32; ITEMS.len()]) -> Vec<UiQuad> {
+        let (x0, y) = Self::origin(width, height);
         let mut quads = Vec::with_capacity(ITEMS.len() * 2 + 1);
         for (i, &block) in ITEMS.iter().enumerate() {
             let x = x0 + i as f32 * (SLOT + GAP);
@@ -99,7 +93,7 @@ impl Hotbar {
                 color: [0.08, 0.08, 0.1, 0.75],
             });
             let mut swatch = block_swatch(block);
-            swatch[3] = 1.0;
+            swatch[3] = if counts[i] > 0 { 1.0 } else { 0.25 };
             quads.push(UiQuad {
                 x: x + INSET,
                 y: y + INSET,
@@ -110,7 +104,43 @@ impl Hotbar {
         }
         quads
     }
+
+    /// Count labels for non-empty slots, bottom-right corners.
+    pub fn count_labels(
+        &self,
+        width: f32,
+        height: f32,
+        counts: &[u32; ITEMS.len()],
+    ) -> Vec<UiText> {
+        let (x0, y) = Self::origin(width, height);
+        const SCALE: f32 = 2.0;
+        counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(i, n)| {
+                let text = n.to_string();
+                let w = text.len() as f32 * 6.0 * SCALE;
+                UiText {
+                    text,
+                    x: x0 + i as f32 * (SLOT + GAP) + SLOT - w - 4.0,
+                    y: y + SLOT - 7.0 * SCALE - 4.0,
+                    scale: SCALE,
+                }
+            })
+            .collect()
+    }
+
+    fn origin(width: f32, height: f32) -> (f32, f32) {
+        let total = ITEMS.len() as f32 * SLOT + (ITEMS.len() as f32 - 1.0) * GAP;
+        ((width - total) / 2.0, height - MARGIN_BOTTOM - SLOT)
+    }
 }
+
+const SLOT: f32 = 64.0;
+const GAP: f32 = 6.0;
+const INSET: f32 = 8.0;
+const MARGIN_BOTTOM: f32 = 24.0;
 
 /// Survival stat bars drawn above the hotbar: health, hunger, stamina,
 /// and (only while not full) oxygen. Values are 0..=10.
@@ -183,7 +213,7 @@ mod tests {
     fn layout_is_centered_and_on_screen() {
         let hotbar = Hotbar::new();
         let (w, h) = (2560.0, 1600.0);
-        let quads = hotbar.quads(w, h);
+        let quads = hotbar.quads(w, h, &[1; ITEMS.len()]);
         // 8 slots x (bg + swatch) + 1 selection ring.
         assert_eq!(quads.len(), ITEMS.len() * 2 + 1);
         for q in &quads {
@@ -214,6 +244,19 @@ mod tests {
         let full_fill = full[1].w;
         let half_fill = half[1].w;
         assert!((half_fill / full_fill - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn count_labels_only_for_owned_items() {
+        let hotbar = Hotbar::new();
+        let mut counts = [0; ITEMS.len()];
+        counts[0] = 64;
+        counts[3] = 7;
+        let labels = hotbar.count_labels(2560.0, 1600.0, &counts);
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].text, "64");
+        assert_eq!(labels[1].text, "7");
+        assert!(labels[1].x > labels[0].x, "labels follow slot order");
     }
 
     #[test]

@@ -30,7 +30,7 @@ use ui::UiRenderer;
 
 pub use mesh::{ChunkMesh, mesh_section};
 pub use texture::block_swatch;
-pub use ui::UiQuad;
+pub use ui::{UiQuad, UiText};
 
 /// Number of frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -50,6 +50,8 @@ pub struct FrameCamera {
     pub hud: String,
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
     pub ui_quads: Vec<UiQuad>,
+    /// Positioned text runs (slot counts etc.).
+    pub ui_texts: Vec<UiText>,
 }
 
 /// Renderer counters for the perf log (§11).
@@ -267,9 +269,20 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
-            if !camera.hud.is_empty() || !camera.ui_quads.is_empty() {
+            if !camera.hud.is_empty() || !camera.ui_quads.is_empty() || !camera.ui_texts.is_empty()
+            {
+                let mut texts = Vec::with_capacity(camera.ui_texts.len() + 1);
+                if !camera.hud.is_empty() {
+                    texts.push(ui::UiText {
+                        text: camera.hud.clone(),
+                        x: 12.0,
+                        y: 12.0,
+                        scale: 2.0,
+                    });
+                }
+                texts.extend(camera.ui_texts.iter().cloned());
                 self.ui
-                    .record(device, cmd, slot, extent, &camera.hud, &camera.ui_quads);
+                    .record(device, cmd, slot, extent, &texts, &camera.ui_quads);
             }
 
             device.cmd_end_render_pass(cmd);

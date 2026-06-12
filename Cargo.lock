@@ -1446,6 +1446,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glam 0.30.10",
+ "oc-assets",
  "oc-core",
  "oc-protocol",
  "oc-renderer",
@@ -1497,6 +1498,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "glam 0.30.10",
+ "oc-assets",
  "oc-core",
  "oc-protocol",
  "oc-world",
