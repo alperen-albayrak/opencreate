@@ -84,6 +84,18 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
 @group(0) @binding(0) var block_textures: texture_2d_array<f32>;
 @group(0) @binding(1) var block_sampler: sampler;
 @group(1) @binding(0) var opaque_depth: texture_depth_2d;
+@group(1) @binding(1) var scene_color: texture_2d<f32>;
+@group(1) @binding(2) var scene_sampler: sampler;
+
+// Per-frame data for the reflection march.
+struct WaterFrame {
+    // Camera-relative world -> clip (same projection the chunks use).
+    view_proj: mat4x4<f32>,
+    // x, y: render extent in pixels; z: SSR enabled; w: unused.
+    params: vec4<f32>,
+}
+
+@group(1) @binding(3) var<uniform> frame: WaterFrame;
 
 // Lite surface ripple: two slow components at block-or-two wavelengths
 // (integer cycles over 256 blocks, seamless across chunk origins). It
@@ -115,6 +127,47 @@ const FAR: f32 = 4096.0;
 
 fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
+}
+
+// Screen-space reflection: march the reflected ray through the opaque
+// depth buffer and return (scene uv, confidence). Confidence fades at
+// screen edges and drops to zero on a miss, where the sky fallback
+// takes over. Steps grow geometrically: crisp nearby, cheap far away.
+fn ssr_trace(origin: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+    var t = 0.3;
+    for (var i = 0; i < 16; i++) {
+        if (t > 140.0) {
+            break;
+        }
+        let p = origin + dir * t;
+        let clip = frame.view_proj * vec4<f32>(p, 1.0);
+        if (clip.w <= 0.05) {
+            break;
+        }
+        let ndc = clip.xyz / clip.w;
+        let uv = ndc.xy * 0.5 + vec2(0.5);
+        if (any(uv < vec2(0.0)) || any(uv > vec2(1.0)) || ndc.z >= 1.0) {
+            break;
+        }
+        let texel = vec2<i32>(uv * frame.params.xy);
+        let scene_z = textureLoad(opaque_depth, texel, 0);
+        let scene_dist = linearize(scene_z);
+        let ray_dist = linearize(ndc.z);
+        if (ray_dist > scene_dist + 0.05) {
+            // Behind something. Reject paper-thin overhangs the ray
+            // actually passed behind, then refine one step back.
+            if (ray_dist - scene_dist > max(2.0, t * 0.35)) {
+                break;
+            }
+            let edge = min(
+                smoothstep(0.0, 0.08, min(uv.x, 1.0 - uv.x)),
+                smoothstep(0.0, 0.08, min(uv.y, 1.0 - uv.y)),
+            );
+            return vec3<f32>(uv, edge);
+        }
+        t *= 1.5;
+    }
+    return vec3<f32>(0.0, 0.0, 0.0);
 }
 
 @fragment
@@ -160,7 +213,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let reflect_dir = reflect(to_fragment, normal);
     let sky_follow = clamp(fresnel * 2.2, 0.25, 1.0);
     let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, sky_follow);
-    let sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
+    var sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
+    // SSR: top faces march the depth buffer for real scene reflections
+    // (trees, mountains, clouds on the far shore); the sky fallback
+    // remains wherever the ray misses or leaves the screen.
+    // Gated on fresnel: head-on water is body color, the mirror only
+    // matters at grazing angles — skipping the march there wins back
+    // most of its cost.
+    if (frame.params.z > 0.5 && in.face == 0u && fresnel > 0.08) {
+        let hit = ssr_trace(pc.rel.xyz + in.local, reflect_dir);
+        if (hit.z > 0.0) {
+            let reflected = textureSampleLevel(scene_color, scene_sampler, hit.xy, 0.0).rgb;
+            sky_reflect = mix(sky_reflect, reflected * (0.8 + 0.2 * in.shade), hit.z * 0.85);
+        }
+    }
 
     // Sun glint: the ONLY place the ripple acts — a tight specular off
     // the rippled normal breaks into the pixel-sparkle sun path, fading

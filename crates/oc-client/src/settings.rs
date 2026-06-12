@@ -35,6 +35,8 @@ pub struct Settings {
     pub clouds: bool,
     /// Cascaded sun shadows.
     pub shadows: bool,
+    /// Water reflects the scene (screen-space reflections).
+    pub water_reflections: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +50,7 @@ impl Default for Settings {
             max_fps: 0,
             clouds: true,
             shadows: true,
+            water_reflections: true,
         }
     }
 }
@@ -119,6 +122,7 @@ mod tests {
             max_fps: 100000,
             clouds: true,
             shadows: true,
+            water_reflections: true,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
@@ -140,6 +144,7 @@ mod tests {
             max_fps: 60,
             clouds: false,
             shadows: false,
+            water_reflections: false,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();

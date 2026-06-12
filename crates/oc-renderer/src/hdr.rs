@@ -28,12 +28,18 @@ pub struct HdrTarget {
     /// the opaque depth and depth-tests in the shader). Color ends in
     /// SHADER_READ_ONLY_OPTIMAL for the tonemap pass.
     pub water_pass: vk::RenderPass,
-    image: vk::Image,
+    pub image: vk::Image,
     allocation: Option<Allocation>,
     pub view: vk::ImageView,
     pub depth: DepthBuffer,
     pub framebuffer: vk::Framebuffer,
     pub water_framebuffer: vk::Framebuffer,
+    /// Snapshot of the opaque scene color, copied between the world and
+    /// water passes so water can reflect the scene (SSR) while blending
+    /// into the original.
+    pub scene_copy: vk::Image,
+    scene_copy_allocation: Option<Allocation>,
+    pub scene_copy_view: vk::ImageView,
 }
 
 impl HdrTarget {
@@ -45,18 +51,20 @@ impl HdrTarget {
         unsafe {
             let render_pass = create_world_pass(&ctx.device)?;
             let water_pass = create_water_pass(&ctx.device)?;
-            let (image, allocation, view, depth, framebuffer, water_framebuffer) =
-                create_images(ctx, allocator, render_pass, water_pass, extent)?;
+            let images = create_images(ctx, allocator, render_pass, water_pass, extent)?;
             Ok(Self {
                 extent,
                 render_pass,
                 water_pass,
-                image,
-                allocation: Some(allocation),
-                view,
-                depth,
-                framebuffer,
-                water_framebuffer,
+                image: images.image,
+                allocation: Some(images.allocation),
+                view: images.view,
+                depth: images.depth,
+                framebuffer: images.framebuffer,
+                water_framebuffer: images.water_framebuffer,
+                scene_copy: images.scene_copy,
+                scene_copy_allocation: Some(images.scene_copy_allocation),
+                scene_copy_view: images.scene_copy_view,
             })
         }
     }
@@ -71,15 +79,17 @@ impl HdrTarget {
     ) -> Result<()> {
         unsafe {
             self.destroy_images(&ctx.device, allocator);
-            let (image, allocation, view, depth, framebuffer, water_framebuffer) =
-                create_images(ctx, allocator, self.render_pass, self.water_pass, extent)?;
+            let images = create_images(ctx, allocator, self.render_pass, self.water_pass, extent)?;
             self.extent = extent;
-            self.image = image;
-            self.allocation = Some(allocation);
-            self.view = view;
-            self.depth = depth;
-            self.framebuffer = framebuffer;
-            self.water_framebuffer = water_framebuffer;
+            self.image = images.image;
+            self.allocation = Some(images.allocation);
+            self.view = images.view;
+            self.depth = images.depth;
+            self.framebuffer = images.framebuffer;
+            self.water_framebuffer = images.water_framebuffer;
+            self.scene_copy = images.scene_copy;
+            self.scene_copy_allocation = Some(images.scene_copy_allocation);
+            self.scene_copy_view = images.scene_copy_view;
             Ok(())
         }
     }
@@ -89,6 +99,11 @@ impl HdrTarget {
             device.destroy_framebuffer(self.water_framebuffer, None);
             device.destroy_framebuffer(self.framebuffer, None);
             self.depth.destroy(device, allocator);
+            device.destroy_image_view(self.scene_copy_view, None);
+            device.destroy_image(self.scene_copy, None);
+            if let Some(allocation) = self.scene_copy_allocation.take() {
+                let _ = allocator.free(allocation);
+            }
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
             if let Some(allocation) = self.allocation.take() {
@@ -112,14 +127,7 @@ unsafe fn create_images(
     render_pass: vk::RenderPass,
     water_pass: vk::RenderPass,
     extent: vk::Extent2D,
-) -> Result<(
-    vk::Image,
-    Allocation,
-    vk::ImageView,
-    DepthBuffer,
-    vk::Framebuffer,
-    vk::Framebuffer,
-)> {
+) -> Result<Images> {
     unsafe {
         let image = ctx.device.create_image(
             &vk::ImageCreateInfo::default()
@@ -178,8 +186,70 @@ unsafe fn create_images(
                 .layers(1),
             None,
         )?;
-        Ok((image, allocation, view, depth, framebuffer, water_framebuffer))
+        let scene_copy = ctx.device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(HDR_FORMAT)
+                .extent(vk::Extent3D { width: extent.width, height: extent.height, depth: 1 })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+                .initial_layout(vk::ImageLayout::UNDEFINED),
+            None,
+        )?;
+        let requirements = ctx.device.get_image_memory_requirements(scene_copy);
+        let scene_copy_allocation = allocator.allocate(&AllocationCreateDesc {
+            name: "scene copy",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })?;
+        ctx.device.bind_image_memory(
+            scene_copy,
+            scene_copy_allocation.memory(),
+            scene_copy_allocation.offset(),
+        )?;
+        let scene_copy_view = ctx.device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(scene_copy)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(HDR_FORMAT)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                ),
+            None,
+        )?;
+        Ok(Images {
+            image,
+            allocation,
+            view,
+            depth,
+            framebuffer,
+            water_framebuffer,
+            scene_copy,
+            scene_copy_allocation,
+            scene_copy_view,
+        })
     }
+}
+
+/// Everything `create_images` builds; rebuilt together on resize.
+struct Images {
+    image: vk::Image,
+    allocation: Allocation,
+    view: vk::ImageView,
+    depth: DepthBuffer,
+    framebuffer: vk::Framebuffer,
+    water_framebuffer: vk::Framebuffer,
+    scene_copy: vk::Image,
+    scene_copy_allocation: Allocation,
+    scene_copy_view: vk::ImageView,
 }
 
 /// The opaque world pass. Color stays an attachment (the water pass

@@ -83,6 +83,8 @@ pub struct FrameCamera {
     pub clouds: bool,
     /// Sun shadows enabled (settings toggle).
     pub shadows: bool,
+    /// Water reflects the scene (SSR; settings toggle).
+    pub water_reflections: bool,
     /// Cloud slab color (rgb) + opacity (a) for the moment of day.
     pub cloud_color: [f32; 4],
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
@@ -197,7 +199,7 @@ impl Renderer {
                 command_pool,
                 shadow.descriptor_layout,
             )?;
-            chunks.bind_water_depth(&ctx.device, hdr.depth.view);
+            chunks.bind_water_inputs(&ctx.device, hdr.depth.view, hdr.scene_copy_view);
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let sky = SkyPass::new(&ctx, hdr.render_pass)?;
@@ -327,7 +329,7 @@ impl Renderer {
                 self.exposure.bind_input(&self.ctx.device, self.hdr.view);
                 self.tonemap
                     .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
-                self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
+                self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
             }
             let device = &self.ctx.device;
 
@@ -444,6 +446,92 @@ impl Renderer {
             }
             device.cmd_end_render_pass(cmd);
 
+            // Between passes: snapshot the opaque color so water can
+            // reflect the scene while blending into the original.
+            let color_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .layer_count(1);
+            let to_transfer = [
+                vk::ImageMemoryBarrier::default()
+                    .image(self.hdr.image)
+                    .subresource_range(color_range)
+                    .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+                vk::ImageMemoryBarrier::default()
+                    .image(self.hdr.scene_copy)
+                    .subresource_range(color_range)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd,
+                // Prior-frame water reads of the old snapshot end here too.
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &to_transfer,
+            );
+            device.cmd_copy_image(
+                cmd,
+                self.hdr.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                self.hdr.scene_copy,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::ImageCopy::default()
+                    .src_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .dst_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .extent(vk::Extent3D {
+                        width: world_extent.width,
+                        height: world_extent.height,
+                        depth: 1,
+                    })],
+            );
+            let from_transfer = [
+                vk::ImageMemoryBarrier::default()
+                    .image(self.hdr.image)
+                    .subresource_range(color_range)
+                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .dst_access_mask(
+                        vk::AccessFlags::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    ),
+                vk::ImageMemoryBarrier::default()
+                    .image(self.hdr.scene_copy)
+                    .subresource_range(color_range)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &from_transfer,
+            );
+
             // Pass 1b: water, blended over the opaques, sampling their
             // depth (absorption, shore fade, in-shader occlusion).
             device.cmd_begin_render_pass(
@@ -463,6 +551,9 @@ impl Renderer {
                 Vec4::from_array(camera.sky_color),
                 camera.time,
                 camera.fog_distance,
+                slot,
+                world_extent,
+                camera.water_reflections,
             );
             device.cmd_end_render_pass(cmd);
 
@@ -576,7 +667,7 @@ impl Renderer {
             self.exposure.bind_input(&self.ctx.device, self.hdr.view);
             self.tonemap
                 .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
-            self.chunks.bind_water_depth(&self.ctx.device, self.hdr.depth.view);
+            self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
             self.scale_dirty = false;
             Ok(())
         }

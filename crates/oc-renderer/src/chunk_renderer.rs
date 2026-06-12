@@ -65,6 +65,16 @@ struct WaterPush {
     wave_origin: Vec4,
 }
 
+/// Per-frame water uniforms (set 1 binding 3): what the SSR march needs.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WaterFrameData {
+    /// Camera-relative world -> clip (the same projection chunks use).
+    view_proj: Mat4,
+    /// x, y: render extent in pixels; z: SSR enabled (1.0) or off; w: unused.
+    params: Vec4,
+}
+
 struct DrawBuf {
     vertex: GpuBuffer,
     index: GpuBuffer,
@@ -88,7 +98,9 @@ pub struct ChunkRenderer {
     water_pipeline: vk::Pipeline,
     water_depth_layout: vk::DescriptorSetLayout,
     water_depth_pool: vk::DescriptorPool,
-    water_depth_set: vk::DescriptorSet,
+    water_sets: Vec<vk::DescriptorSet>,
+    water_uniforms: Vec<(vk::Buffer, Allocation)>,
+    scene_sampler: vk::Sampler,
     texture_image: vk::Image,
     texture_allocation: Option<Allocation>,
     texture_view: vk::ImageView,
@@ -196,38 +208,116 @@ impl ChunkRenderer {
             )?;
             let pipeline = create_pipeline(device, render_pass, pipeline_layout)?;
 
-            // Water set 1: the opaque depth texture (rebound on resize).
-            let depth_binding = [vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+            // Water set 1: opaque depth + scene-color snapshot (rebound on
+            // resize), a sampler, and a per-slot UBO for the SSR march.
+            let water_bindings = [
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(3)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            ];
             let water_depth_layout = device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&depth_binding),
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&water_bindings),
                 None,
             )?;
-            let depth_pool_size = [vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(1)];
+            let slots = FRAMES_IN_FLIGHT as u32;
+            let water_pool_sizes = [
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(2 * slots),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::SAMPLER)
+                    .descriptor_count(slots),
+                vk::DescriptorPoolSize::default()
+                    .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(slots),
+            ];
             let water_depth_pool = device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .max_sets(1)
-                    .pool_sizes(&depth_pool_size),
+                    .max_sets(slots)
+                    .pool_sizes(&water_pool_sizes),
                 None,
             )?;
-            let water_depth_set = device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default()
-                    .descriptor_pool(water_depth_pool)
-                    .set_layouts(std::slice::from_ref(&water_depth_layout)),
-            )?[0];
+            // Linear clamp sampler for reflection lookups.
+            let scene_sampler = device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                None,
+            )?;
+            let mut water_sets = Vec::new();
+            let mut water_uniforms = Vec::new();
+            for i in 0..FRAMES_IN_FLIGHT {
+                let set = device.allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(water_depth_pool)
+                        .set_layouts(std::slice::from_ref(&water_depth_layout)),
+                )?[0];
+                let buffer = device.create_buffer(
+                    &vk::BufferCreateInfo::default()
+                        .size(size_of::<WaterFrameData>() as u64)
+                        .usage(vk::BufferUsageFlags::UNIFORM_BUFFER),
+                    None,
+                )?;
+                let requirements = device.get_buffer_memory_requirements(buffer);
+                let alloc = allocator.allocate(&AllocationCreateDesc {
+                    name: &format!("water ubo {i}"),
+                    requirements,
+                    location: MemoryLocation::CpuToGpu,
+                    linear: true,
+                    allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+                })?;
+                device.bind_buffer_memory(buffer, alloc.memory(), alloc.offset())?;
+                let buffer_info = [vk::DescriptorBufferInfo::default()
+                    .buffer(buffer)
+                    .range(size_of::<WaterFrameData>() as u64)];
+                let sampler_info =
+                    [vk::DescriptorImageInfo::default().sampler(scene_sampler)];
+                device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(set)
+                            .dst_binding(2)
+                            .descriptor_type(vk::DescriptorType::SAMPLER)
+                            .image_info(&sampler_info),
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(set)
+                            .dst_binding(3)
+                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                            .buffer_info(&buffer_info),
+                    ],
+                    &[],
+                );
+                water_sets.push(set);
+                water_uniforms.push((buffer, alloc));
+            }
 
             let water_push = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<WaterPush>() as u32);
-            let water_sets = [descriptor_set_layout, water_depth_layout];
+            let water_set_layouts = [descriptor_set_layout, water_depth_layout];
             let water_pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(&water_sets)
+                    .set_layouts(&water_set_layouts)
                     .push_constant_ranges(std::slice::from_ref(&water_push)),
                 None,
             )?;
@@ -244,7 +334,9 @@ impl ChunkRenderer {
                 water_pipeline,
                 water_depth_layout,
                 water_depth_pool,
-                water_depth_set,
+                water_sets,
+                water_uniforms,
+                scene_sampler,
                 texture_image,
                 texture_allocation: Some(texture_allocation),
                 texture_view,
@@ -470,26 +562,45 @@ impl ChunkRenderer {
         }
     }
 
-    /// Points the water pass at the (re)created opaque depth image.
-    /// Call while the device is idle.
-    pub unsafe fn bind_water_depth(&self, device: &ash::Device, view: vk::ImageView) {
+    /// Points the water pass at the (re)created opaque depth image and
+    /// scene-color snapshot. Call while the device is idle.
+    pub unsafe fn bind_water_inputs(
+        &self,
+        device: &ash::Device,
+        depth: vk::ImageView,
+        scene: vk::ImageView,
+    ) {
         unsafe {
-            let info = [vk::DescriptorImageInfo::default()
-                .image_view(view)
+            let depth_info = [vk::DescriptorImageInfo::default()
+                .image_view(depth)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(self.water_depth_set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .image_info(&info);
-            device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
+            let scene_info = [vk::DescriptorImageInfo::default()
+                .image_view(scene)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            for &set in &self.water_sets {
+                device.update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(set)
+                            .dst_binding(0)
+                            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                            .image_info(&depth_info),
+                        vk::WriteDescriptorSet::default()
+                            .dst_set(set)
+                            .dst_binding(1)
+                            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                            .image_info(&scene_info),
+                    ],
+                    &[],
+                );
+            }
         }
     }
 
     /// Records the blended water draws (after opaques and entities).
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn record_water(
-        &self,
+        &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
@@ -498,10 +609,28 @@ impl ChunkRenderer {
         sky: Vec4,
         time: f32,
         fog_distance: f32,
+        slot: usize,
+        extent: vk::Extent2D,
+        reflections: bool,
     ) {
         unsafe {
             if self.chunks.is_empty() {
                 return;
+            }
+            // The SSR march projects reflected rays with the same camera
+            // matrix the chunks use.
+            let frame = WaterFrameData {
+                view_proj,
+                params: Vec4::new(
+                    extent.width as f32,
+                    extent.height as f32,
+                    reflections as u32 as f32,
+                    0.0,
+                ),
+            };
+            if let Some(mapped) = self.water_uniforms[slot].1.mapped_slice_mut() {
+                mapped[..size_of::<WaterFrameData>()]
+                    .copy_from_slice(as_bytes(std::slice::from_ref(&frame)));
             }
             let mut bound = false;
             let frustum = frustum_planes(view_proj);
@@ -523,7 +652,7 @@ impl ChunkRenderer {
                         vk::PipelineBindPoint::GRAPHICS,
                         self.water_pipeline_layout,
                         0,
-                        &[self.descriptor_set, self.water_depth_set],
+                        &[self.descriptor_set, self.water_sets[slot]],
                         &[],
                     );
                     bound = true;
@@ -579,6 +708,11 @@ impl ChunkRenderer {
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline_layout(self.water_pipeline_layout, None);
+            for (buffer, alloc) in self.water_uniforms.drain(..) {
+                device.destroy_buffer(buffer, None);
+                let _ = allocator.free(alloc);
+            }
+            device.destroy_sampler(self.scene_sampler, None);
             device.destroy_descriptor_pool(self.water_depth_pool, None);
             device.destroy_descriptor_set_layout(self.water_depth_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
