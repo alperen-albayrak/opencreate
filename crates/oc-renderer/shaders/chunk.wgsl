@@ -181,27 +181,21 @@ fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
 }
 
-// How much of the sun reaches this fragment: PCF over the cascade that
-// contains it, fading out past the last cascade and through twilight.
-fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
-    let strength = shadow.params.x;
-    if (strength <= 0.0 || view_dist >= shadow.splits.z) {
-        return 1.0;
-    }
-    var cascade = 2;
-    if (view_dist < shadow.splits.x) {
-        cascade = 0;
-    } else if (view_dist < shadow.splits.y) {
-        cascade = 1;
-    }
-    // Normal offset (scaled to the cascade texel) prevents most acne.
-    let pos = world_rel + normal * shadow.params[1u + u32(cascade)] * 1.5;
+// PCF visibility from one cascade. The depth bias scales with the
+// cascade's texel size so every cascade self-shadows identically —
+// a flat bias over-biases the fine cascade and the brightness step
+// shows up as a line that follows the camera.
+fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let texel_world = shadow.params[1u + u32(cascade)];
+    let pos = world_rel + normal * texel_world * 1.5;
     let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
     // Vulkan rasterizes NDC y-down into the map; the lookup matches.
     let uv = ndc.xy * 0.5 + vec2(0.5);
     if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
         return 1.0;
     }
+    // 400 = the cascades' shared light-space depth range, blocks.
+    let bias = 0.0004 + texel_world * 2.5 / 400.0;
     // 3x3 PCF on top of the sampler's bilinear comparison.
     var lit = 0.0;
     let step = 1.0 / 2048.0;
@@ -212,11 +206,35 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
                 shadow_sampler,
                 uv + vec2(f32(dx), f32(dy)) * step,
                 cascade,
-                ndc.z - 0.0015,
+                ndc.z - bias,
             );
         }
     }
-    lit /= 9.0;
+    return lit / 9.0;
+}
+
+// How much of the sun reaches this fragment. Cascades cross-fade over
+// the last 15% of each range — a hard switch reads as a moving line —
+// and the whole effect eases out past the far cascade and at twilight.
+fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
+    let strength = shadow.params.x;
+    if (strength <= 0.0 || view_dist >= shadow.splits.z) {
+        return 1.0;
+    }
+    var cascade = 2;
+    var split = shadow.splits.z;
+    if (view_dist < shadow.splits.x) {
+        cascade = 0;
+        split = shadow.splits.x;
+    } else if (view_dist < shadow.splits.y) {
+        cascade = 1;
+        split = shadow.splits.y;
+    }
+    var lit = cascade_lit(cascade, world_rel, normal);
+    let blend = smoothstep(split * 0.85, split, view_dist);
+    if (blend > 0.0 && cascade < 2) {
+        lit = mix(lit, cascade_lit(cascade + 1, world_rel, normal), blend);
+    }
     // Ease back to fully lit at the cascade horizon and with twilight.
     let range_fade = smoothstep(shadow.splits.z * 0.8, shadow.splits.z, view_dist);
     return mix(1.0, mix(lit, 1.0, range_fade), strength);

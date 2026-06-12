@@ -173,7 +173,7 @@ impl FarRenderer {
                 let push = FarPush {
                     mvp: view_proj * Mat4::from_translation(rel),
                     fog,
-                    params: Vec4::new(daylight, rel.x, rel.z, 0.0),
+                    params: Vec4::new(daylight, rel.x, rel.z, rel.y),
                     cut,
                 };
                 device.cmd_push_constants(

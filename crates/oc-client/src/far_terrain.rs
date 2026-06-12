@@ -53,15 +53,18 @@ pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile 
     // Sample the corner grid once.
     let mut heights = vec![0i32; n * n];
     let mut colors = vec![[0.0f32; 3]; n * n];
+    let mut water = vec![false; n * n];
     for gz in 0..n {
         for gx in 0..n {
             let (x, z) = (x0 + gx as i32 * STEP, z0 + gz as i32 * STEP);
             let surface = generator.surface_height(x, z);
             let biome = generator.biome(x, z);
             let underwater = surface < SEA_LEVEL;
-            // Water tiles render the sea surface; the body color already
-            // encodes depth roughly via the biome (ocean vs deep ocean).
+            // Water renders the sea surface; the shader gives flagged
+            // vertices the real water's fresnel/sky look so the ring
+            // meets the detailed sea without a color seam.
             heights[gz * n + gx] = if underwater { SEA_LEVEL } else { surface };
+            water[gz * n + gx] = underwater;
             colors[gz * n + gx] = if underwater {
                 biome_color(Biome::Ocean, surface)
             } else {
@@ -82,6 +85,9 @@ pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile 
             let slope = ((hx + hz) as f32 / STEP as f32).clamp(-1.0, 1.0);
             let shade = 0.82 - 0.18 * slope;
             let c = colors[gz * n + gx];
+            // Water keeps full brightness (its shading is view-dependent,
+            // done in the shader); alpha 0 flags it.
+            let (shade, alpha) = if water[gz * n + gx] { (1.0, 0.0) } else { (shade, 1.0) };
             vertices.push(FarVertex {
                 position: [
                     (gx as i32 * STEP) as f32,
@@ -89,7 +95,7 @@ pub fn generate_tile(generator: &TerrainGenerator, tx: i32, tz: i32) -> FarTile 
                     (h + 1) as f32,
                     (gz as i32 * STEP) as f32,
                 ],
-                color: [c[0] * shade, c[1] * shade, c[2] * shade, 1.0],
+                color: [c[0] * shade, c[1] * shade, c[2] * shade, alpha],
             });
         }
     }
