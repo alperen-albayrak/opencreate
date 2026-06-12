@@ -66,7 +66,10 @@ dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
 rotating with the day. *Later polish:* per-direction fog color,
-per-cloud dusk tinting, sidereal drift.
+per-cloud dusk tinting, sidereal drift. **Far terrain LOD** (future):
+simplified distant chunk meshes past the full-detail radius, letting
+the render distance and fog push much further out — snow biomes feel
+hazy today only because white-on-white makes the pop-in fog obvious.
 
 **D. Lighting**
 Per-vertex ambient occlusion (corner darkening; AO joins the greedy
