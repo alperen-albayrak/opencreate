@@ -45,6 +45,11 @@ rendering (floating origin); textured chunk; fly camera.
   in items.ron is edible
 - Four game modes (survival/creative/adventure/spectator) as data
 - Passive creatures: server wander AI + interpolated client rendering
+- **Menus**: title screen, world select/create/delete (name + seed +
+  starting mode), pause menu with a game-mode picker; menus and all UI
+  text are data (`menus.ron`, `lang/en.ron`) so mods can extend both.
+  Pausing freezes the singleplayer simulation (`SetPaused`; multiplayer
+  servers will ignore it) and autosaves
 
 ## Known issues
 

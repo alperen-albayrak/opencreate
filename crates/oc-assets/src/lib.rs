@@ -16,6 +16,8 @@ const DEFAULT_ITEMS: &str = include_str!("../../../data/items.ron");
 const DEFAULT_RECIPES: &str = include_str!("../../../data/recipes.ron");
 const DEFAULT_GAMEMODES: &str = include_str!("../../../data/gamemodes.ron");
 const DEFAULT_CREATURES: &str = include_str!("../../../data/creatures.ron");
+const DEFAULT_MENUS: &str = include_str!("../../../data/menus.ron");
+const DEFAULT_LANG_EN: &str = include_str!("../../../data/lang/en.ron");
 
 /// Runtime item handle (index into the registry). String ids (`oc:stone`)
 /// are the stable identity; numeric ids are per-load.
@@ -114,6 +116,27 @@ pub struct RecipeView {
     pub ingredients: Vec<(ItemId, u32)>,
 }
 
+/// One button in a data-driven menu. Mods (phase 5) merge entries by id,
+/// so they can add buttons or replace vanilla ones.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MenuEntryDef {
+    /// Namespaced stable id, e.g. `oc:resume`.
+    pub id: String,
+    /// Language key (resolved through [`Registry::text`]), never literal text.
+    pub label: String,
+    /// Named action the client interprets, e.g. `oc:quit_world`.
+    pub action: String,
+}
+
+/// A data-driven menu screen (`data/menus.ron`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MenuDef {
+    pub id: String,
+    /// Language key for the heading.
+    pub title: String,
+    pub entries: Vec<MenuEntryDef>,
+}
+
 pub struct Registry {
     items: Vec<ItemDef>,
     by_string_id: HashMap<String, ItemId>,
@@ -123,12 +146,42 @@ pub struct Registry {
     mode_by_id: HashMap<String, ModeId>,
     creatures: Vec<CreatureDef>,
     creature_by_id: HashMap<String, CreatureKindId>,
+    menus: Vec<MenuDef>,
+    /// UI strings by language key (the active language's table).
+    texts: HashMap<String, String>,
 }
 
 impl Registry {
     /// Loads the embedded base-game content.
     pub fn load_default() -> Result<Self> {
-        Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES, DEFAULT_GAMEMODES, DEFAULT_CREATURES)
+        let mut registry =
+            Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES, DEFAULT_GAMEMODES, DEFAULT_CREATURES)?;
+        registry.load_menus(DEFAULT_MENUS)?;
+        registry.load_lang(DEFAULT_LANG_EN)?;
+        Ok(registry)
+    }
+
+    /// Parses `menus.ron`, replacing the menu set.
+    pub fn load_menus(&mut self, menus_ron: &str) -> Result<()> {
+        self.menus = ron::from_str(menus_ron).context("parsing menus")?;
+        Ok(())
+    }
+
+    /// Parses a language file, replacing the active string table.
+    pub fn load_lang(&mut self, lang_ron: &str) -> Result<()> {
+        self.texts = ron::from_str(lang_ron).context("parsing lang")?;
+        Ok(())
+    }
+
+    /// The menu with this id, if defined.
+    pub fn menu(&self, id: &str) -> Option<&MenuDef> {
+        self.menus.iter().find(|menu| menu.id == id)
+    }
+
+    /// Resolves a language key; unknown keys show as themselves, so a
+    /// missing translation is visible but never a crash.
+    pub fn text<'a>(&'a self, key: &'a str) -> &'a str {
+        self.texts.get(key).map_or(key, String::as_str)
     }
 
     /// Loads the content files from a directory.
@@ -250,6 +303,8 @@ impl Registry {
             mode_by_id,
             creatures,
             creature_by_id,
+            menus: Vec::new(),
+            texts: HashMap::new(),
         })
     }
 

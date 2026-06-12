@@ -22,23 +22,31 @@ counts) every 5 s, plus server lifecycle messages.
 
 ## Playing
 
+The game opens on a **title screen**: Singleplayer leads to the world
+list (each world is a folder under `./saves/`), where you can open,
+delete (click the delete tag twice), or **create** a world — the create
+screen takes a name, a seed (numeric or any string, blank = random) and
+the starting game mode. Menus, labels and languages are data:
+`data/menus.ron` + `data/lang/*.ron`.
+
 | Input | Action |
 |---|---|
-| Click window / Esc | Capture / release the mouse |
+| Esc | Pause menu (freezes the singleplayer simulation; multiplayer servers will keep running). In menus: back |
 | W A S D + mouse | Move and look |
 | Space | Jump; swim up; rise while flying |
 | Left Shift | Descend while flying |
 | Left Ctrl | Sprint (drains stamina when walking) |
 | F | Toggle fly/walk (creative & spectator only) |
-| G | Cycle game mode (survival → creative → adventure → spectator) |
+| G | Cycle game mode (the pause menu has the full picker) |
 | Left / right click | Break / place the targeted block |
 | 1–9 / mouse wheel | Select hotbar slot |
 | C | Open/close the crafting recipe book (digits craft while open) |
 | E | Eat an apple (survival; apples drop from leaves) |
 | F3 | Toggle the debug HUD |
 
-New worlds start in survival on the nearest dry land to the origin. You
-start with nothing: punch terrain to gather blocks, then build/craft.
+New worlds spawn you on the nearest dry land to the origin. In survival
+you start with nothing: punch terrain to gather blocks, then build/craft.
+Pausing autosaves, Minecraft-style; quitting to title runs a final save.
 
 ## Saves
 

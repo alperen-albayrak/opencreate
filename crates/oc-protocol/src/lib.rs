@@ -41,6 +41,10 @@ pub enum ClientMessage {
     /// Eat one of an item (per-load id). The server validates it is food,
     /// consumes it, and answers with Stats + Inventory.
     Eat { item: u16 },
+    /// Freeze/unfreeze simulation (the pause menu). Honored in offline
+    /// singleplayer — the embedded server stops time, stats and creatures
+    /// — but a multiplayer server ignores it (the world goes on).
+    SetPaused(bool),
 }
 
 /// Everything the server may tell a client.

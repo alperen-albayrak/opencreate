@@ -197,6 +197,11 @@ impl Renderer {
         self.chunks.remove_chunk(pos, self.frame);
     }
 
+    /// Removes every chunk mesh (leaving a world for the title screen).
+    pub fn clear_chunks(&mut self) {
+        self.chunks.clear_chunks(self.frame);
+    }
+
     pub fn stats(&self) -> RenderStats {
         RenderStats {
             chunks_resident: self.chunks.chunk_count(),

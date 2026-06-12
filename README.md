@@ -12,9 +12,11 @@ cargo run
 
 Procedural terrain streams in around you: Minecraft-1.18-style multi-noise worldgen with 13 biomes (plains, forests, taiga, deserts, snowfields, stony and snowy peaks…), connected rivers, deep oceans, beaches, cavern-and-tunnel caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
 
+The game opens on a title screen — create worlds (name, seed, game mode) or pick one from the list.
+
 | Input | Action |
 |---|---|
-| Click window / Esc | Capture / release the mouse |
+| Esc | Pause menu (pauses singleplayer) / back |
 | W A S D + mouse | Move and look |
 | Space | Jump, swim up (or rise while flying) |
 | Left Shift | Descend while flying |

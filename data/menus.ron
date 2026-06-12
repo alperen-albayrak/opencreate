@@ -1,0 +1,16 @@
+// Menu screens (ARCHITECTURE.md §7: content is data). Labels and titles
+// are language keys resolved through data/lang/*.ron — never literal text.
+// Actions are named client behaviors; mods (phase 5) merge entries by id
+// to add buttons or replace vanilla ones.
+[
+    (id: "oc:title", title: "menu.title", entries: [
+        (id: "oc:play", label: "menu.singleplayer", action: "oc:open_worlds"),
+        (id: "oc:quit", label: "menu.quit_game", action: "oc:quit_app"),
+    ]),
+    (id: "oc:pause", title: "menu.paused", entries: [
+        (id: "oc:resume", label: "menu.resume", action: "oc:resume"),
+        (id: "oc:mode", label: "menu.game_mode", action: "oc:open_modes"),
+        (id: "oc:quit_world", label: "menu.quit_to_title", action: "oc:quit_world"),
+        (id: "oc:quit", label: "menu.quit_game", action: "oc:quit_app"),
+    ]),
+]

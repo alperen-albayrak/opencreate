@@ -1,0 +1,22 @@
+// English UI strings. Adding a language = adding a lang file; menus and
+// screens look text up by key, so nothing else changes.
+{
+    "menu.title": "OPENCREATE",
+    "menu.paused": "Paused",
+    "menu.singleplayer": "Singleplayer",
+    "menu.resume": "Back to game",
+    "menu.game_mode": "Game mode",
+    "menu.select_mode": "Game Mode",
+    "menu.quit_to_title": "Save and quit to title",
+    "menu.quit_game": "Quit game",
+    "menu.worlds": "Select World",
+    "menu.back": "Back",
+    "worlds.new": "Create New World",
+    "worlds.name": "World name: click to type",
+    "worlds.seed": "Seed: blank is random",
+    "worlds.create": "Create",
+    "create.mode": "Game mode",
+    "worlds.delete": "Delete",
+    "worlds.delete_confirm": "Click again to delete",
+    "worlds.empty": "No worlds yet - create one",
+}

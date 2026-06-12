@@ -225,6 +225,14 @@ impl ChunkRenderer {
         }
     }
 
+    /// Drops every chunk mesh (leaving a world); buffers retire as usual.
+    pub fn clear_chunks(&mut self, frame: u64) {
+        for (_, old) in self.chunks.drain() {
+            self.retired.push((frame, old.vertex));
+            self.retired.push((frame, old.index));
+        }
+    }
+
     /// Frees retired buffers whose last possible use is at least
     /// `FRAMES_IN_FLIGHT` frames behind `frame` (i.e. provably complete).
     /// Call after waiting on the current frame's fence.

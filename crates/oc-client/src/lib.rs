@@ -1,13 +1,18 @@
-//! The game client: window, input, and the frame loop (ARCHITECTURE.md §2).
+//! The game client: window, input, menu screens and the frame loop
+//! (ARCHITECTURE.md §2). Per-world state lives in [`session::Session`];
+//! this shell owns the window, renderer, registry and menu navigation.
 
 mod camera;
 mod craft_menu;
 mod entities;
 mod hotbar;
+mod menu;
 mod player;
+mod session;
 mod sky;
 mod streaming;
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -20,27 +25,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
-use camera::Camera;
-use entities::EntityMirror;
-use hotbar::Hotbar;
-use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
+use menu::{CreateScreen, MenuView, WorldAction, WorldsScreen};
+use oc_assets::Registry;
+use oc_protocol::ClientMessage;
 use oc_renderer::{FrameCamera, Renderer};
-use oc_server::{ServerConfig, ServerHandle};
-use oc_assets::{GameModeDef, ModeId, Registry};
-use oc_world::raycast::{RayHit, raycast};
-use oc_world::BlockId;
-use player::{MoveInput, Player};
-use streaming::ChunkStreamer;
+use session::Session;
 
-/// Fixed world seed until there is a world-selection UI.
-const WORLD_SEED: u64 = 20260611;
-/// Save location, relative to the working directory (proper platform dirs
-/// come with the launcher/UI work).
-const SAVE_DIR: &str = "saves/world";
-/// How far the player can reach to break/place blocks.
-const REACH: f64 = 6.0;
-
-type ClientEnd = InProcEnd<ClientMessage, ServerMessage>;
+/// Worlds live in subdirectories of this folder.
+const SAVES_ROOT: &str = "saves";
 
 /// Runs the client until the window is closed.
 pub fn run() -> Result<()> {
@@ -54,45 +46,39 @@ pub fn run() -> Result<()> {
     }
 }
 
+/// Which screen has the input focus. `InGame`/`Paused`/`Modes` imply a
+/// session.
+enum Screen {
+    Title,
+    Worlds(WorldsScreen),
+    CreateWorld(CreateScreen),
+    InGame,
+    Paused,
+    /// The game-mode picker, reached from the pause menu.
+    Modes,
+}
+
 struct App {
     // Field order matters: the renderer (and its surface) must drop before
     // the window it was created from.
     renderer: Option<Renderer>,
     window: Option<Window>,
     error: Option<anyhow::Error>,
-    streamer: ChunkStreamer,
-    camera: Camera,
-    player: Player,
-    input: MoveInput,
-    hotbar: Hotbar,
-    /// Click edges captured by the event loop, consumed by the next frame.
-    break_clicked: bool,
-    place_clicked: bool,
+    screen: Screen,
+    /// The loaded world, if any (None on the title/world screens).
+    session: Option<Session>,
+    registry: Registry,
     mouse_captured: bool,
+    /// Cursor position in physical pixels, for menu hit-testing.
+    mouse_pos: (f32, f32),
     last_frame: Instant,
-    /// Time of day in [0, 1); locally advanced, corrected by server Time.
-    day_fraction: f64,
     perf: PerfLog,
-    /// Connection to the (embedded) server; None after shutdown.
-    transport: Option<ClientEnd>,
-    server: Option<ServerHandle>,
-    /// Messages queued for the server this frame.
-    outbox: Vec<ClientMessage>,
     hud_visible: bool,
-    craft_open: bool,
-    mode: ModeId,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
-    /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
-    stats: [f32; 4],
-    registry: Registry,
-    /// Server-authoritative item counts, keyed by per-load item id.
-    inventory: std::collections::HashMap<u16, u32>,
-    entities: EntityMirror,
 }
 
-/// Aggregates frame times and logs a summary periodically (§11 budgets,
-/// until the in-game HUD exists).
+/// Aggregates frame times and logs a summary periodically (§11 budgets).
 struct PerfLog {
     window_start: Instant,
     frames: u32,
@@ -128,94 +114,50 @@ impl PerfLog {
     }
 }
 
+/// Existing world names: the subdirectories of `saves/`, sorted.
+fn list_worlds() -> Vec<String> {
+    let mut worlds: Vec<String> = std::fs::read_dir(SAVES_ROOT)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    worlds.sort();
+    worlds
+}
+
+/// A seed nobody typed: from the clock, like Minecraft's "leave it blank".
+fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1)
+}
+
 impl App {
     fn new() -> Result<Self> {
-        // Offline play is still client-server (§1): an embedded server on
-        // its own thread, connected by the in-proc transport.
-        let (mut transport, server_end) = in_proc_channel();
-        let server = oc_server::start(
-            ServerConfig { seed: WORLD_SEED, save_dir: SAVE_DIR.into() },
-            server_end,
-        )?;
-
-        // The Welcome carries the seed, spawn and time of day.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let (seed, spawn, day_fraction, mode) = loop {
-            match transport
-                .try_recv()
-                .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
-            {
-                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode }) => {
-                    break (seed, spawn, day_fraction, ModeId(mode));
-                }
-                Some(_) => {}
-                None if Instant::now() > deadline => {
-                    anyhow::bail!("timed out waiting for the server welcome")
-                }
-                None => std::thread::sleep(Duration::from_millis(1)),
-            }
-        };
-        info!(seed, "connected to embedded server");
-
-        let player = Player::new(spawn);
         Ok(Self {
             renderer: None,
             window: None,
             error: None,
-            streamer: ChunkStreamer::new(seed),
-            camera: Camera::new(player.eye()),
-            player,
-            input: MoveInput::default(),
-            hotbar: Hotbar::new(),
-            break_clicked: false,
-            place_clicked: false,
-            mouse_captured: false,
-            last_frame: Instant::now(),
-            day_fraction,
-            perf: PerfLog::new(),
-            transport: Some(transport),
-            server: Some(server),
-            outbox: Vec::new(),
-            hud_visible: true,
-            craft_open: false,
-            mode,
-            frame_time_ema: 1.0 / 60.0,
-            stats: [10.0; 4],
+            screen: Screen::Title,
+            session: None,
             registry: Registry::load_default()?,
-            inventory: std::collections::HashMap::new(),
-            entities: EntityMirror::default(),
+            mouse_captured: false,
+            mouse_pos: (0.0, 0.0),
+            last_frame: Instant::now(),
+            perf: PerfLog::new(),
+            hud_visible: true,
+            frame_time_ema: 1.0 / 60.0,
         })
     }
 
-    /// Disconnects from the server and waits for its final save.
-    fn shutdown(&mut self) {
-        drop(self.transport.take());
-        if let Some(server) = self.server.take() {
-            server.join();
-        }
-    }
-
-    fn hud_text(&self, renderer: &Renderer) -> String {
-        if !self.hud_visible {
-            return String::new();
-        }
-        let stats = renderer.stats();
-        let p = self.player.position;
-        format!(
-            "fps {:>3.0}  {:>5.2} ms\nchunks {} / {}\npos {:.1} / {:.1} / {:.1}\nday {:.2}  {}  holding {}\n{}  [g] mode  [c] craft  [f3] hud  [f] {}",
-            (1.0 / self.frame_time_ema).round(),
-            self.frame_time_ema * 1e3,
-            stats.chunks_drawn,
-            stats.chunks_resident,
-            p.x,
-            p.y,
-            p.z,
-            self.day_fraction,
-            if self.player.flying { "flying" } else { "walking" },
-            hotbar::block_name(self.hotbar.block()),
-            self.caps().name.to_lowercase(),
-            if self.player.flying { "walk" } else { "fly" },
-        )
+    fn window_size(&self) -> (f32, f32) {
+        self.window.as_ref().map_or((1280.0, 720.0), |window| {
+            let size = window.inner_size();
+            (size.width.max(1) as f32, size.height.max(1) as f32)
+        })
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -235,7 +177,7 @@ impl App {
                 size.height,
             )?
         };
-        info!("renderer initialized — click to capture the mouse, Esc to release");
+        info!("renderer initialized");
         self.window = Some(window);
         self.renderer = Some(renderer);
         self.last_frame = Instant::now();
@@ -265,191 +207,230 @@ impl App {
         self.mouse_captured = captured;
     }
 
-    fn handle_key(&mut self, code: KeyCode, pressed: bool) {
-        match code {
-            KeyCode::KeyW => self.input.forward = pressed,
-            KeyCode::KeyS => self.input.backward = pressed,
-            KeyCode::KeyA => self.input.left = pressed,
-            KeyCode::KeyD => self.input.right = pressed,
-            KeyCode::Space => self.input.up = pressed,
-            KeyCode::ShiftLeft => self.input.down = pressed,
-            KeyCode::ControlLeft => self.input.fast = pressed,
-            KeyCode::KeyF if pressed => {
-                if self.caps().can_fly && !self.caps().noclip {
-                    self.player.flying = !self.player.flying;
-                    info!(flying = self.player.flying, "movement mode toggled");
+    /// Opens a world: starts its embedded server and enters the game.
+    fn start_session(&mut self, name: &str, seed: u64, mode: Option<String>) {
+        info!(world = name, "loading world");
+        match Session::start(PathBuf::from(SAVES_ROOT).join(name), seed, mode) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.screen = Screen::InGame;
+                self.set_mouse_captured(true);
+            }
+            Err(err) => {
+                error!("failed to start world {name:?}: {err:#}");
+                self.screen = Screen::Title;
+            }
+        }
+    }
+
+    /// Leaves the current world (final save included) for the title screen.
+    fn quit_to_title(&mut self) {
+        if let Some(mut session) = self.session.take() {
+            session.shutdown();
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.clear_chunks();
+        }
+        self.set_mouse_captured(false);
+        self.screen = Screen::Title;
+    }
+
+    /// The menu view for the current screen, if it shows one.
+    fn menu_view(&self, w: f32, h: f32) -> Option<MenuView> {
+        match &self.screen {
+            Screen::Title => self
+                .registry
+                .menu("oc:title")
+                .map(|def| MenuView::from_def(def, &self.registry, w, h, false)),
+            Screen::Paused => self
+                .registry
+                .menu("oc:pause")
+                .map(|def| MenuView::from_def(def, &self.registry, w, h, true)),
+            Screen::Worlds(worlds) => Some(worlds.view(&self.registry, w, h)),
+            Screen::CreateWorld(create) => Some(create.view(&self.registry, w, h)),
+            Screen::Modes => {
+                let current = self.session.as_ref().map_or(0, |s| s.mode.0);
+                Some(menu::modes_view(&self.registry, current, w, h))
+            }
+            Screen::InGame => None,
+        }
+    }
+
+    /// Tells the (singleplayer) server to freeze or resume simulation.
+    fn send_paused(&mut self, paused: bool) {
+        if let Some(session) = &mut self.session {
+            session.queue(ClientMessage::SetPaused(paused));
+        }
+    }
+
+    /// Fires a menu action (from menus.ron or a screen-internal one).
+    fn run_action(&mut self, action: &str, event_loop: &ActiveEventLoop) {
+        match action {
+            "oc:open_worlds" => self.screen = Screen::Worlds(WorldsScreen::new(list_worlds())),
+            "oc:quit_app" => {
+                if let Some(mut session) = self.session.take() {
+                    session.shutdown();
+                }
+                event_loop.exit();
+            }
+            "oc:resume" => {
+                self.send_paused(false);
+                self.screen = Screen::InGame;
+                self.set_mouse_captured(true);
+            }
+            "oc:open_modes" => self.screen = Screen::Modes,
+            "oc:quit_world" => self.quit_to_title(),
+            "back" => self.screen = Screen::Title,
+            "back_worlds" => self.screen = Screen::Worlds(WorldsScreen::new(list_worlds())),
+            "back_pause" => self.screen = Screen::Paused,
+            "create_screen" => self.screen = Screen::CreateWorld(CreateScreen::new()),
+            "cycle_create_mode" => {
+                if let Screen::CreateWorld(create) = &mut self.screen {
+                    create.cycle_mode(&self.registry);
                 }
             }
-            KeyCode::KeyG if pressed => {
-                self.outbox
-                    .push(ClientMessage::SetGameMode(self.registry.next_mode(self.mode).0));
+            "create" => {
+                if let Screen::CreateWorld(create) = &self.screen {
+                    let mut name = menu::sanitize_name(&create.name.value);
+                    while list_worlds().contains(&name) {
+                        name.push('2');
+                    }
+                    let seed = menu::parse_seed(&create.seed.value, random_seed());
+                    let mode = create.mode_id(&self.registry);
+                    self.start_session(&name, seed, Some(mode));
+                }
             }
-            KeyCode::KeyC if pressed => self.craft_open = !self.craft_open,
-            KeyCode::KeyE if pressed => self.eat(),
-            KeyCode::Digit1 if pressed => self.digit(0),
-            KeyCode::Digit2 if pressed => self.digit(1),
-            KeyCode::Digit3 if pressed => self.digit(2),
-            KeyCode::Digit4 if pressed => self.digit(3),
-            KeyCode::Digit5 if pressed => self.digit(4),
-            KeyCode::Digit6 if pressed => self.digit(5),
-            KeyCode::Digit7 if pressed => self.digit(6),
-            KeyCode::Digit8 if pressed => self.digit(7),
-            KeyCode::Digit9 if pressed => self.digit(8),
-            KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
-            KeyCode::Escape if pressed => self.set_mouse_captured(false),
+            _ if action.starts_with("focus:") => {
+                if let Screen::CreateWorld(create) = &mut self.screen {
+                    create.focus(&action["focus:".len()..]);
+                }
+            }
+            _ if action.starts_with("mode:") => {
+                if let Some(session) = &mut self.session
+                    && let Ok(mode) = action["mode:".len()..].parse::<u16>()
+                {
+                    session.queue(ClientMessage::SetGameMode(mode));
+                }
+                self.screen = Screen::Paused;
+            }
+            _ if action.starts_with("world:") => {
+                let world = action["world:".len()..].to_owned();
+                let (w, _) = self.window_size();
+                if let Screen::Worlds(worlds) = &mut self.screen {
+                    match worlds.world_click(&world, self.mouse_pos.0, w) {
+                        WorldAction::Play => self.start_session(&world, random_seed(), None),
+                        WorldAction::ArmDelete => {}
+                        WorldAction::Delete => {
+                            let path = PathBuf::from(SAVES_ROOT).join(&world);
+                            if let Err(err) = std::fs::remove_dir_all(&path) {
+                                error!("deleting {path:?}: {err}");
+                            }
+                            info!(world, "world deleted");
+                            self.screen = Screen::Worlds(WorldsScreen::new(list_worlds()));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    /// Capability flags of the current mode.
-    fn caps(&self) -> &GameModeDef {
-        self.registry.mode(self.mode)
-    }
-
-    /// How many of a block's item the player carries.
-    fn count_of(&self, block: BlockId) -> u32 {
-        self.registry
-            .item_for_block(block)
-            .and_then(|item| self.inventory.get(&item.0).copied())
-            .unwrap_or(0)
-    }
-
-    fn hotbar_counts(&self) -> [u32; hotbar::ITEMS.len()] {
-        std::array::from_fn(|i| self.count_of(hotbar::ITEMS[i]))
-    }
-
-    /// Eats an apple if we carry one and aren't full; the server validates
-    /// and its Stats/Inventory replies confirm the prediction.
-    fn eat(&mut self) {
-        if !self.caps().uses_inventory || !self.caps().has_stats || self.stats[1] >= 9.95 {
-            return;
-        }
-        let Some(apple) = self.registry.find("oc:apple") else {
-            return;
-        };
-        match self.inventory.get_mut(&apple.0) {
-            Some(count) if *count > 0 => *count -= 1, // predicted consumption
-            _ => return,
-        }
-        self.outbox.push(ClientMessage::Eat { item: apple.0 });
-    }
-
-    /// Number keys: hotbar slots normally, recipes while the book is open.
-    fn digit(&mut self, n: usize) {
-        if self.craft_open {
-            if self.registry.craftable(n, |item| {
-                self.inventory.get(&item.0).copied().unwrap_or(0)
-            }) {
-                self.outbox.push(ClientMessage::Craft { recipe: n as u32 });
-            }
-        } else {
-            self.hotbar.select(n);
+    /// A left click on a menu screen: resolve the button under the cursor.
+    fn menu_click(&mut self, event_loop: &ActiveEventLoop) {
+        let (w, h) = self.window_size();
+        let action = self
+            .menu_view(w, h)
+            .and_then(|view| view.hit(self.mouse_pos).map(str::to_owned));
+        if let Some(action) = action {
+            self.run_action(&action, event_loop);
         }
     }
 
-    fn target(&self) -> Option<RayHit> {
-        raycast(
-            self.streamer.world(),
-            self.camera.position,
-            self.camera.forward().as_dvec3(),
-            REACH,
-        )
-    }
-
-    /// Applies an edit locally (prediction) and tells the server. The
-    /// server's BlockChanged echo is a no-op when it matches.
-    fn apply_block_edits(&mut self, renderer: &mut Renderer) -> Result<()> {
-        if !self.caps().can_edit_blocks {
-            self.break_clicked = false;
-            self.place_clicked = false;
-            return Ok(());
-        }
-        if std::mem::take(&mut self.break_clicked)
-            && let Some(hit) = self.target()
-        {
-            let broken = self.streamer.world().block(hit.block);
-            if self.streamer.world_mut().set_block(hit.block, BlockId::AIR) {
-                self.streamer.remesh_after_edit(renderer, hit.block)?;
-                self.outbox
-                    .push(ClientMessage::SetBlock { pos: hit.block, block: BlockId::AIR });
-                // Predict the pickup; the server's Inventory message confirms.
-                if self.caps().uses_inventory
-                    && let Some(item) = self.registry.item_for_block(broken)
-                {
-                    *self.inventory.entry(item.0).or_insert(0) += 1;
+    fn handle_key(&mut self, code: KeyCode, pressed: bool, text: Option<&str>) {
+        match &mut self.screen {
+            Screen::InGame => self.handle_game_key(code, pressed),
+            Screen::Paused => {
+                if code == KeyCode::Escape && pressed {
+                    self.send_paused(false);
+                    self.screen = Screen::InGame;
+                    self.set_mouse_captured(true);
                 }
             }
-        }
-        if std::mem::take(&mut self.place_clicked)
-            && let Some(hit) = self.target()
-            // normal == 0 means the camera is inside the block: nowhere to place.
-            && hit.normal != glam::IVec3::ZERO
-        {
-            let pos = hit.block + hit.normal;
-            // Water is replaceable, like Minecraft.
-            let free = !self.streamer.world().block(pos).is_solid()
-                && !self.player.aabb().intersects_block(pos)
-                && (!self.caps().uses_inventory || self.count_of(self.hotbar.block()) > 0);
-            if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
-                self.streamer.remesh_after_edit(renderer, pos)?;
-                self.outbox
-                    .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
-                if self.caps().uses_inventory
-                    && let Some(item) = self.registry.item_for_block(self.hotbar.block())
-                {
-                    self.inventory
-                        .entry(item.0)
-                        .and_modify(|n| *n = n.saturating_sub(1));
+            Screen::Modes => {
+                if code == KeyCode::Escape && pressed {
+                    self.screen = Screen::Paused;
                 }
             }
-        }
-        Ok(())
-    }
-
-    /// Integrates everything the server sent since last frame.
-    fn drain_server_messages(&mut self, renderer: &mut Renderer) -> Result<()> {
-        let Some(transport) = &mut self.transport else {
-            return Ok(());
-        };
-        loop {
-            let msg = transport
-                .try_recv()
-                .map_err(|_| anyhow::anyhow!("server disconnected"))?;
-            match msg {
-                Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
-                Some(ServerMessage::BlockChanged { pos, block }) => {
-                    self.streamer.apply_block_change(renderer, pos, block)?;
+            Screen::Worlds(_) => {
+                if code == KeyCode::Escape && pressed {
+                    self.screen = Screen::Title;
                 }
-                Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
-                Some(ServerMessage::Stats { health, hunger, stamina, oxygen }) => {
-                    self.stats = [health, hunger, stamina, oxygen];
+            }
+            Screen::CreateWorld(create) => {
+                if !pressed {
+                    return;
                 }
-                Some(ServerMessage::GameMode(mode)) => {
-                    self.mode = ModeId(mode);
-                    // Field access keeps the borrow disjoint from `transport`.
-                    let caps = self.registry.mode(self.mode);
-                    info!(mode = caps.id, "game mode changed");
-                    if caps.noclip {
-                        self.player.flying = true;
-                    } else if !caps.can_fly {
-                        self.player.flying = false;
+                match code {
+                    KeyCode::Escape => {
+                        self.screen = Screen::Worlds(WorldsScreen::new(list_worlds()));
+                    }
+                    KeyCode::Backspace => create.backspace(),
+                    _ => {
+                        for c in text.unwrap_or("").chars() {
+                            create.type_char(c);
+                        }
                     }
                 }
-                Some(ServerMessage::Entities(snapshot)) => {
-                    self.entities.apply(snapshot, Instant::now());
-                }
-                Some(ServerMessage::Inventory { counts }) => {
-                    self.inventory = counts.into_iter().collect();
-                }
-                Some(ServerMessage::Respawn { position }) => {
-                    info!("you died; respawning");
-                    self.player.position = position;
-                    self.player.velocity = glam::DVec3::ZERO;
-                    self.stats = [10.0; 4];
-                }
-                Some(ServerMessage::Welcome { .. }) => {} // already consumed at startup
-                None => return Ok(()),
             }
+            Screen::Title => {}
+        }
+    }
+
+    fn handle_game_key(&mut self, code: KeyCode, pressed: bool) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match code {
+            KeyCode::KeyW => session.input.forward = pressed,
+            KeyCode::KeyS => session.input.backward = pressed,
+            KeyCode::KeyA => session.input.left = pressed,
+            KeyCode::KeyD => session.input.right = pressed,
+            KeyCode::Space => session.input.up = pressed,
+            KeyCode::ShiftLeft => session.input.down = pressed,
+            KeyCode::ControlLeft => session.input.fast = pressed,
+            KeyCode::KeyF if pressed => {
+                let caps = session.caps(&self.registry);
+                if caps.can_fly && !caps.noclip {
+                    session.player.flying = !session.player.flying;
+                    info!(flying = session.player.flying, "movement mode toggled");
+                }
+            }
+            KeyCode::KeyG if pressed => {
+                let next = self.registry.next_mode(session.mode);
+                session.queue(ClientMessage::SetGameMode(next.0));
+            }
+            KeyCode::KeyC if pressed => session.craft_open = !session.craft_open,
+            KeyCode::KeyE if pressed => session.eat(&self.registry),
+            KeyCode::Digit1 if pressed => session.digit(&self.registry, 0),
+            KeyCode::Digit2 if pressed => session.digit(&self.registry, 1),
+            KeyCode::Digit3 if pressed => session.digit(&self.registry, 2),
+            KeyCode::Digit4 if pressed => session.digit(&self.registry, 3),
+            KeyCode::Digit5 if pressed => session.digit(&self.registry, 4),
+            KeyCode::Digit6 if pressed => session.digit(&self.registry, 5),
+            KeyCode::Digit7 if pressed => session.digit(&self.registry, 6),
+            KeyCode::Digit8 if pressed => session.digit(&self.registry, 7),
+            KeyCode::Digit9 if pressed => session.digit(&self.registry, 8),
+            KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
+            KeyCode::Escape if pressed => {
+                // Stop moving, drop the mouse, show the pause menu, and
+                // freeze the singleplayer simulation (a multiplayer
+                // server would ignore the request and keep the world on).
+                session.input = Default::default();
+                session.queue(ClientMessage::SetPaused(true));
+                self.screen = Screen::Paused;
+                self.set_mouse_captured(false);
+            }
+            _ => {}
         }
     }
 
@@ -468,131 +449,42 @@ impl App {
         let dt = (frame_start - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = frame_start;
         self.frame_time_ema = self.frame_time_ema * 0.95 + dt * 0.05;
-        self.day_fraction = (self.day_fraction + dt / sky::DAY_LENGTH_SECS).fract();
 
-        self.drain_server_messages(renderer)?;
+        let (w, h) = self.window_size();
+        let in_game = matches!(self.screen, Screen::InGame);
 
-        // Out of stamina: no sprinting (the server drains/regens it).
-        let mut input = MoveInput { ..self.input };
-        if self.stats[2] <= 0.05 && !self.player.flying {
-            input.fast = false;
-        }
-        let moving = input.forward || input.backward || input.left || input.right;
-        let sprinting = input.fast && moving && !self.player.flying;
-
-        // Hold physics until the column under the player has terrain, so
-        // nobody falls through a world that hasn't streamed in yet.
-        let feet_chunk =
-            oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
-        if self.streamer.world().is_generated(feet_chunk) {
-            self.player
-                .update(self.streamer.world(), &input, self.camera.yaw, dt, self.caps().noclip);
-        }
-        self.camera.position = self.player.eye();
-
-        self.apply_block_edits(renderer)?;
-        self.streamer
-            .update(renderer, self.camera.position, &mut self.outbox)?;
-
-        // Flush this frame's messages, plus the player state the server
-        // persists (and will reconcile in phase 4).
-        self.outbox.push(ClientMessage::PlayerState {
-            position: self.player.position,
-            yaw: self.camera.yaw,
-            pitch: self.camera.pitch,
-            sprinting,
-            flying: self.player.flying,
-        });
-        if let Some(transport) = &mut self.transport {
-            for msg in self.outbox.drain(..) {
-                transport
-                    .send(msg)
-                    .map_err(|_| anyhow::anyhow!("server disconnected"))?;
+        let mut camera = if let Some(session) = &mut self.session {
+            session.update(renderer, &self.registry, dt, in_game)?;
+            session.frame_camera(
+                renderer,
+                &self.registry,
+                (w, h),
+                self.frame_time_ema,
+                self.hud_visible && in_game,
+                in_game,
+            )
+        } else {
+            // Menu screens without a world: a fixed late-morning sky.
+            let sky = sky::sky_at(0.30);
+            FrameCamera {
+                view_proj: glam::Mat4::IDENTITY,
+                position: glam::DVec3::ZERO,
+                highlight: None,
+                sun: sky.sun,
+                sky_color: sky.sky_color,
+                entities: Vec::new(),
+                hud: String::new(),
+                ui_texts: Vec::new(),
+                ui_quads: Vec::new(),
             }
+        };
+
+        if let Some(view) = self.menu_view(w, h) {
+            camera.ui_quads.extend(view.quads(w, h, self.mouse_pos));
+            camera.ui_texts.extend(view.texts(w, h));
         }
 
-        let Some(window) = &self.window else {
-            return Ok(());
-        };
-        let size = window.inner_size();
-        let aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
-        let sky = sky::sky_at(self.day_fraction);
-        renderer.draw(&FrameCamera {
-            view_proj: self.camera.view_proj(aspect),
-            position: self.camera.position,
-            highlight: self
-                .caps()
-                .can_edit_blocks
-                .then(|| self.target().map(|hit| hit.block))
-                .flatten(),
-            sun: sky.sun,
-            sky_color: sky.sky_color,
-            entities: self.entities.draws(&self.registry, Instant::now()),
-            hud: self.hud_text(renderer),
-            ui_texts: {
-                let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let mut texts = if self.caps().uses_inventory {
-                    self.hotbar.count_labels(w, h, &self.hotbar_counts())
-                } else {
-                    Vec::new()
-                };
-                if self.craft_open {
-                    let lines = craft_menu::lines(&self.registry, |item| {
-                        self.inventory.get(&item.0).copied().unwrap_or(0)
-                    });
-                    texts.extend(craft_menu::panel(&lines, w).1);
-                }
-                // Food on hand: a hint above the stat bars.
-                if self.caps().has_stats
-                    && let Some(apple) = self.registry.find("oc:apple")
-                {
-                    let apples = self.inventory.get(&apple.0).copied().unwrap_or(0);
-                    if apples > 0 {
-                        let plural = if apples == 1 { "" } else { "s" };
-                        texts.push(oc_renderer::UiText {
-                            text: format!("{apples} apple{plural} - E to eat"),
-                            x: w / 2.0 - 220.0,
-                            y: h - 150.0,
-                            scale: 2.0,
-                        });
-                    }
-                }
-                texts
-            },
-            ui_quads: {
-                let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
-                let counts = if self.caps().uses_inventory {
-                    self.hotbar_counts()
-                } else {
-                    [1; hotbar::ITEMS.len()] // creative: everything available
-                };
-                let mut quads = if self.caps().noclip {
-                    Vec::new() // spectators carry nothing
-                } else {
-                    self.hotbar.quads(w, h, &counts)
-                };
-                if self.craft_open {
-                    let lines = craft_menu::lines(&self.registry, |item| {
-                        self.inventory.get(&item.0).copied().unwrap_or(0)
-                    });
-                    quads.extend(craft_menu::panel(&lines, w).0);
-                }
-                if self.caps().has_stats {
-                    quads.extend(hotbar::stat_bars(
-                        w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
-                    ));
-                }
-                // Crosshair: a small plus at screen center.
-                let cross = [0.95, 0.95, 0.95, 0.8];
-                quads.push(oc_renderer::UiQuad {
-                    x: w / 2.0 - 12.0, y: h / 2.0 - 2.0, w: 24.0, h: 4.0, color: cross,
-                });
-                quads.push(oc_renderer::UiQuad {
-                    x: w / 2.0 - 2.0, y: h / 2.0 - 12.0, w: 4.0, h: 24.0, color: cross,
-                });
-                quads
-            },
-        })?;
+        renderer.draw(&camera)?;
         self.perf.frame(frame_start.elapsed(), renderer);
         Ok(())
     }
@@ -610,7 +502,9 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.shutdown(); // the server runs the final save
+                if let Some(mut session) = self.session.take() {
+                    session.shutdown(); // the server runs the final save
+                }
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -620,32 +514,46 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.handle_key(code, event.state == ElementState::Pressed);
+                    let pressed = event.state == ElementState::Pressed;
+                    self.handle_key(code, pressed, event.text.as_deref());
                 }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_pos = (position.x as f32, position.y as f32);
             }
             WindowEvent::MouseWheel { delta, .. } if self.mouse_captured => {
-                let amount = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
-                };
-                self.hotbar.scroll(amount);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } => {
-                if !self.mouse_captured {
-                    self.set_mouse_captured(true);
-                } else {
-                    match button {
-                        MouseButton::Left => self.break_clicked = true,
-                        MouseButton::Right => self.place_clicked = true,
-                        _ => {}
-                    }
+                if let Some(session) = &mut self.session {
+                    let amount = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                    };
+                    session.hotbar.scroll(amount);
                 }
             }
-            WindowEvent::Focused(false) => self.set_mouse_captured(false),
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+                match (&self.screen, button) {
+                    (Screen::InGame, _) if !self.mouse_captured => self.set_mouse_captured(true),
+                    (Screen::InGame, MouseButton::Left) => {
+                        if let Some(session) = &mut self.session {
+                            session.break_clicked = true;
+                        }
+                    }
+                    (Screen::InGame, MouseButton::Right) => {
+                        if let Some(session) = &mut self.session {
+                            session.place_clicked = true;
+                        }
+                    }
+                    (_, MouseButton::Left) => self.menu_click(event_loop),
+                    _ => {}
+                }
+            }
+            WindowEvent::Focused(false) => {
+                if matches!(self.screen, Screen::InGame) {
+                    self.send_paused(true);
+                    self.screen = Screen::Paused;
+                }
+                self.set_mouse_captured(false);
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(err) = self.frame() {
                     self.fail(event_loop, err);
@@ -657,9 +565,11 @@ impl ApplicationHandler for App {
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if self.mouse_captured
+            && matches!(self.screen, Screen::InGame)
+            && let Some(session) = &mut self.session
             && let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
         {
-            self.camera.look(dx, dy);
+            session.camera.look(dx, dy);
         }
     }
 

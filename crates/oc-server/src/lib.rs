@@ -86,6 +86,9 @@ const EYE_HEIGHT: f64 = 1.62;
 pub struct ServerConfig {
     pub seed: u64,
     pub save_dir: PathBuf,
+    /// Game mode (string id, e.g. `oc:creative`) for a freshly created
+    /// world; saved worlds keep their own. None = the registry default.
+    pub default_mode: Option<String>,
 }
 
 /// Handle to the running server thread. Dropping it does NOT stop the
@@ -155,6 +158,8 @@ struct Server {
     gen_rx: Receiver<GeneratedColumn>,
     tick: u64,
     last_autosave: Instant,
+    /// Simulation frozen by the (singleplayer) pause menu.
+    paused: bool,
 }
 
 impl Server {
@@ -172,6 +177,7 @@ impl Server {
         let mode = level
             .as_ref()
             .and_then(|l| registry.find_mode(&l.mode))
+            .or_else(|| config.default_mode.as_deref().and_then(|m| registry.find_mode(m)))
             .unwrap_or_else(|| registry.default_mode());
         let (position, yaw, pitch, day_fraction) = match &level {
             Some(l) => {
@@ -219,6 +225,7 @@ impl Server {
             gen_rx,
             tick: 0,
             last_autosave: Instant::now(),
+            paused: false,
         })
     }
 
@@ -231,15 +238,19 @@ impl Server {
             if self.drain_client_messages().is_err() {
                 break; // client gone: save and shut down
             }
+            // Generation and saving keep running while paused; only the
+            // simulation (time, stats, creatures) freezes.
             self.integrate_generated();
             self.dispatch_generation();
             self.unload_unsubscribed();
-            self.advance_time(tick_duration.as_secs_f64());
-            if self.tick_stats(tick_duration.as_secs_f32()).is_err() {
-                break;
-            }
-            if self.tick_creatures(tick_duration.as_secs_f64()).is_err() {
-                break;
+            if !self.paused {
+                self.advance_time(tick_duration.as_secs_f64());
+                if self.tick_stats(tick_duration.as_secs_f32()).is_err() {
+                    break;
+                }
+                if self.tick_creatures(tick_duration.as_secs_f64()).is_err() {
+                    break;
+                }
             }
 
             if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
@@ -283,6 +294,19 @@ impl Server {
                     self.send_inventory()?;
                 }
                 ClientMessage::Eat { item } => self.handle_eat(item)?,
+                ClientMessage::SetPaused(paused) => {
+                    // This is the embedded singleplayer server, so the
+                    // request is always honored; a dedicated multiplayer
+                    // server (phase 4) ignores it. Pausing also saves,
+                    // Minecraft-style.
+                    if paused != self.paused {
+                        self.paused = paused;
+                        info!(paused, "simulation pause");
+                        if paused {
+                            self.save_world();
+                        }
+                    }
+                }
                 ClientMessage::SubscribeColumn(chunk) => {
                     self.subscriptions.insert(chunk);
                     // Already loaded: ship it immediately.
@@ -813,7 +837,7 @@ mod tests {
         let dir = temp_dir("session");
         let (mut client, server_end) = in_proc_channel();
         let handle = start(
-            ServerConfig { seed: 77, save_dir: dir.clone() },
+            ServerConfig { seed: 77, save_dir: dir.clone(), default_mode: None },
             server_end,
         )
         .unwrap();
@@ -945,6 +969,25 @@ mod tests {
         });
         assert!(t2 > t1 || t2 < 0.01, "time should advance: {t1} -> {t2}");
 
+        // Pausing freezes the simulation: no Time broadcasts arrive.
+        client.send(ClientMessage::SetPaused(true)).unwrap();
+        std::thread::sleep(Duration::from_millis(80)); // pause lands, in-flight drains
+        while client.try_recv().expect("server alive").is_some() {}
+        std::thread::sleep(Duration::from_millis(200)); // ~6 ticks of silence
+        let mut frozen = true;
+        while let Some(msg) = client.try_recv().expect("server alive") {
+            if matches!(msg, ServerMessage::Time { .. } | ServerMessage::Entities(_)) {
+                frozen = false;
+            }
+        }
+        assert!(frozen, "paused server must not broadcast time/entities");
+        // Resuming brings time back.
+        client.send(ClientMessage::SetPaused(false)).unwrap();
+        wait_for(&mut client, |m| match m {
+            ServerMessage::Time { .. } => Some(()),
+            _ => None,
+        });
+
         // Player state is recorded and persisted on shutdown.
         client
             .send(ClientMessage::PlayerState {
@@ -962,7 +1005,7 @@ mod tests {
         // The edit and the player state survive a restart.
         let (mut client2, server_end2) = in_proc_channel();
         let handle2 = start(
-            ServerConfig { seed: 0, save_dir: dir.clone() }, // seed comes from the save
+            ServerConfig { seed: 0, save_dir: dir.clone(), default_mode: None }, // seed comes from the save
             server_end2,
         )
         .unwrap();
@@ -986,6 +1029,45 @@ mod tests {
             });
         assert_eq!(in_column, Some(mined_block), "edit persisted");
 
+        drop(client2);
+        handle2.join();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_worlds_honor_the_requested_game_mode() {
+        let dir = temp_dir("createmode");
+        let (mut client, server_end) = in_proc_channel();
+        let handle = start(
+            ServerConfig {
+                seed: 5,
+                save_dir: dir.clone(),
+                default_mode: Some("oc:creative".into()),
+            },
+            server_end,
+        )
+        .unwrap();
+        let mode = wait_for(&mut client, |m| match m {
+            ServerMessage::Welcome { mode, .. } => Some(mode),
+            _ => None,
+        });
+        let registry = Registry::load_default().unwrap();
+        assert_eq!(Some(ModeId(mode)), registry.find_mode("oc:creative"));
+        drop(client);
+        handle.join();
+
+        // The saved world keeps creative even without the config hint.
+        let (mut client2, server_end2) = in_proc_channel();
+        let handle2 = start(
+            ServerConfig { seed: 5, save_dir: dir.clone(), default_mode: None },
+            server_end2,
+        )
+        .unwrap();
+        let mode2 = wait_for(&mut client2, |m| match m {
+            ServerMessage::Welcome { mode, .. } => Some(mode),
+            _ => None,
+        });
+        assert_eq!(mode2, mode, "mode persists in level.txt");
         drop(client2);
         handle2.join();
         let _ = std::fs::remove_dir_all(dir);
