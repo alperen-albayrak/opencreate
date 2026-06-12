@@ -110,6 +110,46 @@ impl Hotbar {
     }
 }
 
+/// Survival stat bars drawn above the hotbar: health, hunger, stamina,
+/// and (only while not full) oxygen. Values are 0..=10.
+pub fn stat_bars(
+    width: f32,
+    height: f32,
+    health: f32,
+    hunger: f32,
+    stamina: f32,
+    oxygen: f32,
+) -> Vec<UiQuad> {
+    const BAR_W: f32 = 220.0;
+    const BAR_H: f32 = 12.0;
+    const GAP: f32 = 6.0;
+    const ABOVE_HOTBAR: f32 = 110.0;
+
+    let mut quads = Vec::new();
+    let mut bar = |index: i32, value: f32, color: [f32; 4]| {
+        let x = width / 2.0 - BAR_W - GAP / 2.0 + (index % 2) as f32 * (BAR_W + GAP);
+        let y = height - ABOVE_HOTBAR - (index / 2) as f32 * (BAR_H + GAP);
+        quads.push(UiQuad { x, y, w: BAR_W, h: BAR_H, color: [0.05, 0.05, 0.06, 0.7] });
+        let fill = (value / 10.0).clamp(0.0, 1.0);
+        if fill > 0.0 {
+            quads.push(UiQuad {
+                x: x + 2.0,
+                y: y + 2.0,
+                w: (BAR_W - 4.0) * fill,
+                h: BAR_H - 4.0,
+                color,
+            });
+        }
+    };
+    bar(0, health, [0.86, 0.18, 0.18, 0.95]);
+    bar(1, hunger, [0.83, 0.55, 0.2, 0.95]);
+    bar(2, stamina, [0.3, 0.78, 0.32, 0.95]);
+    if oxygen < 9.95 {
+        bar(3, oxygen, [0.25, 0.5, 0.95, 0.95]);
+    }
+    quads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +193,24 @@ mod tests {
         let left = xs.iter().cloned().fold(f32::MAX, f32::min);
         let right = quads.iter().map(|q| q.x + q.w).fold(0.0, f32::max);
         assert!((left - (w - right)).abs() < 8.0, "not centered: {left} vs {}", w - right);
+    }
+
+    #[test]
+    fn stat_bars_reflect_values() {
+        // Full oxygen hides its bar: 3 bars x (bg + fill).
+        let full = stat_bars(2560.0, 1600.0, 10.0, 10.0, 10.0, 10.0);
+        assert_eq!(full.len(), 6);
+        // Low oxygen shows a fourth bar.
+        let low = stat_bars(2560.0, 1600.0, 5.0, 10.0, 10.0, 3.0);
+        assert_eq!(low.len(), 8);
+        // Zero health: background only, no fill quad.
+        let dead = stat_bars(2560.0, 1600.0, 0.0, 10.0, 10.0, 10.0);
+        assert_eq!(dead.len(), 5);
+        // Fill width scales with the value.
+        let half = stat_bars(2560.0, 1600.0, 5.0, 10.0, 10.0, 10.0);
+        let full_fill = full[1].w;
+        let half_fill = half[1].w;
+        assert!((half_fill / full_fill - 0.5).abs() < 0.01);
     }
 
     #[test]

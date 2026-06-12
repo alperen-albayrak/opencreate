@@ -17,7 +17,13 @@ use oc_world::world::GeneratedColumn;
 pub enum ClientMessage {
     /// Player movement state (client-predicted; the server records it for
     /// persistence now and reconciles it in phase 4).
-    PlayerState { position: DVec3, yaw: f32, pitch: f32 },
+    PlayerState {
+        position: DVec3,
+        yaw: f32,
+        pitch: f32,
+        /// Sprinting and actually moving (drains stamina/hunger).
+        sprinting: bool,
+    },
     /// Place or break (AIR) a block.
     SetBlock { pos: BlockPos, block: BlockId },
     /// Interest management (§8): the client wants this column streamed.
@@ -40,6 +46,15 @@ pub enum ServerMessage {
     BlockChanged { pos: BlockPos, block: BlockId },
     /// Authoritative time of day, sent periodically.
     Time { day_fraction: f64 },
+    /// Survival stats (0..=10 each), sent when they change.
+    Stats {
+        health: f32,
+        hunger: f32,
+        stamina: f32,
+        oxygen: f32,
+    },
+    /// The player died and respawns here with full stats.
+    Respawn { position: DVec3 },
 }
 
 /// The peer hung up.

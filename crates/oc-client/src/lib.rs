@@ -77,6 +77,8 @@ struct App {
     hud_visible: bool,
     /// Exponentially smoothed frame time, for the HUD readout.
     frame_time_ema: f64,
+    /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
+    stats: [f32; 4],
 }
 
 /// Aggregates frame times and logs a summary periodically (§11 budgets,
@@ -166,6 +168,7 @@ impl App {
             outbox: Vec::new(),
             hud_visible: true,
             frame_time_ema: 1.0 / 60.0,
+            stats: [10.0; 4],
         })
     }
 
@@ -326,6 +329,15 @@ impl App {
                     self.streamer.apply_block_change(renderer, pos, block)?;
                 }
                 Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
+                Some(ServerMessage::Stats { health, hunger, stamina, oxygen }) => {
+                    self.stats = [health, hunger, stamina, oxygen];
+                }
+                Some(ServerMessage::Respawn { position }) => {
+                    info!("you died; respawning");
+                    self.player.position = position;
+                    self.player.velocity = glam::DVec3::ZERO;
+                    self.stats = [10.0; 4];
+                }
                 Some(ServerMessage::Welcome { .. }) => {} // already consumed at startup
                 None => return Ok(()),
             }
@@ -351,13 +363,21 @@ impl App {
 
         self.drain_server_messages(renderer)?;
 
+        // Out of stamina: no sprinting (the server drains/regens it).
+        let mut input = MoveInput { ..self.input };
+        if self.stats[2] <= 0.05 && !self.player.flying {
+            input.fast = false;
+        }
+        let moving = input.forward || input.backward || input.left || input.right;
+        let sprinting = input.fast && moving && !self.player.flying;
+
         // Hold physics until the column under the player has terrain, so
         // nobody falls through a world that hasn't streamed in yet.
         let feet_chunk =
             oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
         if self.streamer.world().is_generated(feet_chunk) {
             self.player
-                .update(self.streamer.world(), &self.input, self.camera.yaw, dt);
+                .update(self.streamer.world(), &input, self.camera.yaw, dt);
         }
         self.camera.position = self.player.eye();
 
@@ -371,6 +391,7 @@ impl App {
             position: self.player.position,
             yaw: self.camera.yaw,
             pitch: self.camera.pitch,
+            sprinting,
         });
         if let Some(transport) = &mut self.transport {
             for msg in self.outbox.drain(..) {
@@ -393,9 +414,14 @@ impl App {
             sun: sky.sun,
             sky_color: sky.sky_color,
             hud: self.hud_text(renderer),
-            ui_quads: self
-                .hotbar
-                .quads(size.width.max(1) as f32, size.height.max(1) as f32),
+            ui_quads: {
+                let (w, h) = (size.width.max(1) as f32, size.height.max(1) as f32);
+                let mut quads = self.hotbar.quads(w, h);
+                quads.extend(hotbar::stat_bars(
+                    w, h, self.stats[0], self.stats[1], self.stats[2], self.stats[3],
+                ));
+                quads
+            },
         })?;
         self.perf.frame(frame_start.elapsed(), renderer);
         Ok(())

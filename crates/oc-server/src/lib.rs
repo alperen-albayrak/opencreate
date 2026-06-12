@@ -4,6 +4,8 @@
 //! the in-proc transport; the phase-4 dedicated binary runs the same crate
 //! headless over QUIC.
 
+pub mod stats;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,6 +14,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::world::World as EcsWorld;
 use glam::DVec3;
 use oc_core::{ChunkPos, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, ServerMessage, Transport};
@@ -20,6 +24,8 @@ use oc_world::store::{FolderStore, WorldStore};
 use oc_world::world::{GeneratedColumn, generate_column_data};
 use tracing::{info, warn};
 
+use stats::{Outcome, StatInputs, Stats};
+
 /// One full day, in real seconds (10 minutes).
 pub const DAY_LENGTH_SECS: f64 = 600.0;
 /// Ticks between authoritative time broadcasts (1 s).
@@ -27,6 +33,10 @@ const TIME_BROADCAST_TICKS: u64 = TICKS_PER_SECOND as u64;
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 /// Cap on in-flight generation jobs.
 const MAX_GEN_INFLIGHT: usize = 24;
+/// Ticks between stat broadcasts (when they changed).
+const STATS_BROADCAST_TICKS: u64 = 8;
+/// Eye height above the feet, for the submerged check.
+const EYE_HEIGHT: f64 = 1.62;
 
 pub struct ServerConfig {
     pub seed: u64,
@@ -74,6 +84,13 @@ struct LevelMeta {
 struct Server {
     transport: Box<dyn Transport<ServerMessage, ClientMessage>>,
     world: World,
+    /// Everything dynamic is an entity (§6); just the player for now.
+    ecs: EcsWorld,
+    player_entity: Entity,
+    /// Where dying players come back (the world spawn).
+    spawn: DVec3,
+    sprinting: bool,
+    last_sent_stats: Option<Stats>,
     store: Arc<FolderStore>,
     level_path: PathBuf,
     seed: u64,
@@ -113,10 +130,22 @@ impl Server {
             .send(ServerMessage::Welcome { seed, spawn: position, day_fraction })
             .map_err(|_| anyhow::anyhow!("client disconnected before welcome"))?;
 
+        let world_spawn = match &level {
+            Some(_) => find_spawn(&world), // respawn point stays the world spawn
+            None => position,
+        };
+        let mut ecs = EcsWorld::new();
+        let player_entity = ecs.spawn(Stats::full()).id();
+
         let (gen_tx, gen_rx) = channel();
         Ok(Self {
             transport,
             world,
+            ecs,
+            player_entity,
+            spawn: world_spawn,
+            sprinting: false,
+            last_sent_stats: None,
             store,
             level_path,
             seed,
@@ -146,6 +175,9 @@ impl Server {
             self.dispatch_generation();
             self.unload_unsubscribed();
             self.advance_time(tick_duration.as_secs_f64());
+            if self.tick_stats(tick_duration.as_secs_f32()).is_err() {
+                break;
+            }
 
             if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
                 self.last_autosave = Instant::now();
@@ -162,10 +194,11 @@ impl Server {
     fn drain_client_messages(&mut self) -> Result<(), Disconnected> {
         while let Some(msg) = self.transport.try_recv()? {
             match msg {
-                ClientMessage::PlayerState { position, yaw, pitch } => {
+                ClientMessage::PlayerState { position, yaw, pitch, sprinting } => {
                     self.player_position = position;
                     self.player_yaw = yaw;
                     self.player_pitch = pitch;
+                    self.sprinting = sprinting;
                 }
                 ClientMessage::SetBlock { pos, block } => {
                     // Validation beyond "column is loaded" (reach, rates)
@@ -259,6 +292,46 @@ impl Server {
             }
             self.world.unload_column(chunk);
         }
+    }
+
+    /// Runs the survival systems on the player entity (§6).
+    fn tick_stats(&mut self, dt: f32) -> Result<(), Disconnected> {
+        let eye = self.player_position + DVec3::new(0.0, EYE_HEIGHT, 0.0);
+        let submerged =
+            self.world.block(eye.floor().as_ivec3()) == oc_world::blocks::WATER;
+        let inputs = StatInputs { submerged, sprinting: self.sprinting };
+
+        let mut entry = self.ecs.entity_mut(self.player_entity);
+        let mut stats = entry.get_mut::<Stats>().expect("player has stats");
+        let outcome = stats::tick(&mut stats, inputs, dt);
+        let mut current = *stats;
+
+        if outcome == Outcome::Died {
+            current = Stats::full();
+            *stats = current;
+            self.player_position = self.spawn;
+            info!("player died; respawning at world spawn");
+            self.transport.send(ServerMessage::Respawn { position: self.spawn })?;
+        }
+
+        // Broadcast on a cadence, only when something moved visibly.
+        let changed = self.last_sent_stats.is_none_or(|last| {
+            let q = |v: f32| (v * 20.0).round();
+            q(last.health) != q(current.health)
+                || q(last.hunger) != q(current.hunger)
+                || q(last.stamina) != q(current.stamina)
+                || q(last.oxygen) != q(current.oxygen)
+        });
+        if changed && self.tick % STATS_BROADCAST_TICKS == 0 {
+            self.last_sent_stats = Some(current);
+            self.transport.send(ServerMessage::Stats {
+                health: current.health,
+                hunger: current.hunger,
+                stamina: current.stamina,
+                oxygen: current.oxygen,
+            })?;
+        }
+        Ok(())
     }
 
     fn advance_time(&mut self, dt: f64) {
@@ -455,6 +528,7 @@ mod tests {
                 position: DVec3::new(9.5, 80.0, 9.5),
                 yaw: 1.0,
                 pitch: -0.2,
+                sprinting: false,
             })
             .unwrap();
         std::thread::sleep(Duration::from_millis(100)); // let a tick process it

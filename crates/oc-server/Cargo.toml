@@ -13,3 +13,4 @@ glam.workspace = true
 rayon.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+bevy_ecs.workspace = true
