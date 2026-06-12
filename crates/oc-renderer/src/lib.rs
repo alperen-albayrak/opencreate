@@ -11,6 +11,7 @@ mod context;
 mod depth;
 mod entity;
 mod exposure;
+mod far_renderer;
 mod hdr;
 mod mesh;
 mod font;
@@ -35,6 +36,7 @@ use context::VulkanContext;
 use depth::DepthBuffer;
 use entity::EntityRenderer;
 use exposure::ExposurePass;
+use far_renderer::FarRenderer;
 use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
 use shadow::ShadowPass;
@@ -42,6 +44,7 @@ use sky_pass::SkyPass;
 use swapchain::Swapchain;
 use ui::UiRenderer;
 
+pub use far_renderer::{FarTile, FarVertex};
 pub use mesh::{ChunkMesh, SectionMeshes, mesh_section};
 pub use texture::block_swatch;
 pub use entity::EntityDraw;
@@ -85,6 +88,8 @@ pub struct FrameCamera {
     pub shadows: bool,
     /// Water reflects the scene (SSR; settings toggle).
     pub water_reflections: bool,
+    /// Draw the coarse far-terrain ring beyond the loaded chunks.
+    pub far_terrain: bool,
     /// Cloud slab color (rgb) + opacity (a) for the moment of day.
     pub cloud_color: [f32; 4],
     /// Solid UI rectangles (hotbar etc.), drawn under the text.
@@ -126,6 +131,7 @@ pub struct Renderer {
     bloom: BloomPass,
     exposure: ExposurePass,
     shadow: ShadowPass,
+    far: FarRenderer,
     ui: UiRenderer,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -204,6 +210,7 @@ impl Renderer {
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let sky = SkyPass::new(&ctx, hdr.render_pass)?;
             let clouds_layer = CloudLayer::new(&ctx, &mut allocator, hdr.render_pass)?;
+            let far = FarRenderer::new(&ctx, hdr.render_pass)?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
@@ -241,6 +248,7 @@ impl Renderer {
                 bloom,
                 exposure,
                 shadow,
+                far,
                 ui,
                 command_pool,
                 command_buffers,
@@ -277,6 +285,19 @@ impl Renderer {
 
     /// Uploads a section mesh at `pos`, replacing any previous one there.
     /// An empty mesh removes the chunk.
+        /// Uploads (or replaces) one far-terrain tile.
+    pub fn set_far_tile(&mut self, key: (i32, i32), tile: &FarTile) -> Result<()> {
+        unsafe {
+            let allocator = self.allocator.as_mut().expect("allocator alive");
+            self.far.set_tile(&self.ctx, allocator, self.frame, key, tile)
+        }
+    }
+
+    /// Drops a far tile that left the ring.
+    pub fn remove_far_tile(&mut self, key: (i32, i32)) {
+        self.far.remove_tile(self.frame, key);
+    }
+
     pub fn set_chunk(&mut self, pos: SectionPos, meshes: &SectionMeshes) -> Result<()> {
         unsafe {
             let allocator = self.allocator.as_mut().expect("allocator alive");
@@ -312,6 +333,7 @@ impl Renderer {
             // so buffers it referenced can be freed now.
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.chunks.collect_garbage(&self.ctx.device, allocator, self.frame);
+            self.far.collect_garbage(&self.ctx.device, allocator, self.frame);
             // This slot's previous frame is done: its luminance grid is
             // readable, so the eye adapts now.
             let frame_exposure = self.exposure.adapt(slot, camera.time);
@@ -414,6 +436,18 @@ impl Renderer {
                 fog,
                 self.shadow.descriptor_sets[slot],
             );
+            // Far terrain ring: after the chunks, depth keeps detail on top.
+            if camera.far_terrain {
+                let daylight = camera.sun.truncate().length();
+                self.far.record(
+                    device,
+                    cmd,
+                    camera.view_proj,
+                    camera.position,
+                    fog,
+                    camera.sun.w + (1.0 - camera.sun.w) * daylight * 0.8,
+                );
+            }
             self.entity
                 .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
             if let Some(block) = camera.highlight {
@@ -686,6 +720,7 @@ impl Drop for Renderer {
             self.outline.destroy(device, &mut allocator);
             self.sky.destroy(device);
             self.clouds_layer.destroy(device, &mut allocator);
+            self.far.destroy(device, &mut allocator);
             self.ui.destroy(device, &mut allocator);
             self.bloom.destroy(device, &mut allocator);
             self.exposure.destroy(device, &mut allocator);

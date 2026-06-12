@@ -491,6 +491,14 @@ impl SettingsScreen {
                     1.0,
                     if settings.water_reflections { 1.0 } else { 0.0 },
                 ),
+                slider(
+                    "far_terrain",
+                    "settings.far_terrain",
+                    1,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.far_terrain { 1.0 } else { 0.0 },
+                ),
             ],
             tab: 0,
             back_to_pause,
@@ -536,6 +544,7 @@ impl SettingsScreen {
                 "clouds" => settings.clouds = slider.value > 0.5,
                 "shadows" => settings.shadows = slider.value > 0.5,
                 "water_reflections" => settings.water_reflections = slider.value > 0.5,
+                "far_terrain" => settings.far_terrain = slider.value > 0.5,
                 _ => {}
             }
         }
@@ -885,7 +894,7 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 9);
+        assert_eq!(screen.sliders.len(), 10);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");

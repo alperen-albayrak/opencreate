@@ -5,6 +5,7 @@
 mod camera;
 mod craft_menu;
 mod entities;
+mod far_terrain;
 mod hotbar;
 mod menu;
 mod player;
@@ -605,17 +606,22 @@ impl App {
         let time = (self.started.elapsed().as_secs_f64() % 3600.0) as f32;
 
         let mut camera = if let Some(session) = &mut self.session {
-            session.update(renderer, &self.registry, dt, in_game)?;
+            session.update(renderer, &self.registry, dt, in_game, self.settings.far_terrain)?;
             session.frame_camera(
                 renderer,
                 &self.registry,
                 (w, h),
                 ui,
                 time,
-                (self.settings.render_distance as f32) * 16.0,
+                if self.settings.far_terrain {
+                    far_terrain::fog_distance()
+                } else {
+                    (self.settings.render_distance as f32) * 16.0
+                },
                 self.settings.clouds,
                 self.settings.shadows,
                 self.settings.water_reflections,
+                self.settings.far_terrain,
                 self.frame_time_ema,
                 self.hud_visible && in_game,
                 in_game,
@@ -642,6 +648,7 @@ impl App {
                 clouds: true,
                 shadows: false,
                 water_reflections: false,
+                far_terrain: false,
                 cloud_color: sky.clouds,
                 entities: Vec::new(),
                 hud: String::new(),

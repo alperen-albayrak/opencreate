@@ -11,6 +11,7 @@ use tracing::info;
 
 use crate::camera::Camera;
 use crate::entities::EntityMirror;
+use crate::far_terrain::FarTerrain;
 use crate::hotbar::{self, Hotbar};
 use crate::player::{MoveInput, Player};
 use crate::streaming::ChunkStreamer;
@@ -29,6 +30,7 @@ type ClientEnd = InProcEnd<ClientMessage, ServerMessage>;
 
 pub struct Session {
     pub streamer: ChunkStreamer,
+    far: FarTerrain,
     pub camera: Camera,
     pub player: Player,
     pub input: MoveInput,
@@ -92,6 +94,7 @@ impl Session {
         let player = Player::new(spawn);
         Ok(Self {
             streamer: ChunkStreamer::new(seed),
+            far: FarTerrain::new(seed),
             camera: Camera::new(player.eye()),
             player,
             input: MoveInput::default(),
@@ -288,8 +291,12 @@ impl Session {
         registry: &Registry,
         dt: f64,
         active: bool,
+        far_terrain: bool,
     ) -> Result<()> {
         self.drain_server_messages(renderer, registry)?;
+        if far_terrain {
+            self.far.update(renderer, self.camera.position)?;
+        }
 
         if active {
             // Cumulative days (whole days = moon phase); the server's Time
@@ -390,6 +397,7 @@ impl Session {
         clouds: bool,
         shadows: bool,
         water_reflections: bool,
+        far_terrain: bool,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -482,6 +490,7 @@ impl Session {
             clouds: clouds && !underwater,
             shadows,
             water_reflections,
+            far_terrain: far_terrain && !underwater,
             cloud_color: sky.clouds,
             entities: self.entities.draws(registry, Instant::now()),
             hud: if hud_visible {

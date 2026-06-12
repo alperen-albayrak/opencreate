@@ -66,10 +66,13 @@ dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
 rotating with the day. *Later polish:* per-direction fog color,
-per-cloud dusk tinting, sidereal drift. **Far terrain LOD** (future):
-simplified distant chunk meshes past the full-detail radius, letting
-the render distance and fog push much further out — snow biomes feel
-hazy today only because white-on-white makes the pop-in fog obvious.
+per-cloud dusk tinting, sidereal drift. **Far terrain LOD** *(shipped, v1)*:
+a coarse colored heightmap ring generated from the seed on a worker
+thread (256-block tiles, 8-block grid, biome colors, slope shade, seas
+flattened to sea level), drawn after the chunks so depth keeps detail
+on top; fog saturates near the ring's edge (~970 blocks) instead of
+the chunk radius. Far terrain toggle in graphics settings. *Later:*
+multiple rings/resolutions, far trees, server-driven tiles for MP.
 
 **D. Lighting**
 Per-vertex ambient occlusion (corner darkening; AO joins the greedy

@@ -37,6 +37,8 @@ pub struct Settings {
     pub shadows: bool,
     /// Water reflects the scene (screen-space reflections).
     pub water_reflections: bool,
+    /// Coarse far-terrain ring beyond the loaded chunks.
+    pub far_terrain: bool,
 }
 
 impl Default for Settings {
@@ -51,6 +53,7 @@ impl Default for Settings {
             clouds: true,
             shadows: true,
             water_reflections: true,
+            far_terrain: true,
         }
     }
 }
@@ -123,6 +126,7 @@ mod tests {
             clouds: true,
             shadows: true,
             water_reflections: true,
+            far_terrain: true,
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
@@ -145,6 +149,7 @@ mod tests {
             clouds: false,
             shadows: false,
             water_reflections: false,
+            far_terrain: false,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();
         let back: Settings = ron::from_str(&text).unwrap();
