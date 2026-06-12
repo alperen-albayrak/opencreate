@@ -98,6 +98,26 @@ this column — the standard cross-chunk feature solution.
 The column's section span is sized by its max height (trees included);
 generation bottoms out at section −4 (block −64) until deep worlds matter.
 
+## Villages (two-phase placement)
+
+Structures follow the §5 two-phase rule — origins are derivable from the
+seed alone, columns materialize only their own slice:
+
+1. **Phase 1 — centers.** The world is tiled into 12×12-chunk regions;
+   each region hashes a 1-in-3 chance of a village and a center chunk.
+   The center must be friendly (Plains/Desert), non-steep, dry, and
+   below y 48, or the village is cancelled.
+2. **Phase 2 — houses.** Chunks within 2 of the center hash a candidate
+   house spot (5-in-8 chance, anchored 4..=11 inside the chunk so houses
+   from adjacent chunks can never overlap). The spot must be flat across
+   the 7×7 footprint (corners within ±2) or it stays empty.
+
+Houses are plank-walled, log-cornered 7×7 rooms with a 2-high doorway,
+flat roof, foundation skirt, and a lamp inside (the flood-fill lighting
+lights the room for free). Unlike trees, house blocks are
+**authoritative** — AIR entries carve the interior through any terrain
+bump or stray tree.
+
 ## Visualizing
 
 `cargo run -p oc-world --release --example mapgen [seed]` renders

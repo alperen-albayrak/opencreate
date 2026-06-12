@@ -31,6 +31,10 @@ rendering (floating origin); textured chunk; fly camera.
   rivers, 13 biomes with altitude zoning and steep-slope surface rules,
   cheese + spaghetti caves, biome-driven tree density, offline `mapgen`
   visualizer — see [world-generation.md](server/world-generation.md)
+- **Villages**: two-phase placement (region-hashed centers on flat
+  friendly land, per-chunk hash-placed houses), plank houses with log
+  corners, doorways and lamp-lit interiors carved authoritatively
+  through terrain
 - Survival stats on `bevy_ecs` (drowning, stamina, hunger, regen, respawn),
   fall damage, stat bars
 - Items/recipes/game-modes/creatures all data-driven (RON registry)
@@ -47,6 +51,6 @@ rendering (floating origin); textured chunk; fly camera.
 
 ## Not started yet
 
-Villages, food/eating, drag-grid inventory screen, `./mods/` loader,
+Food/eating, drag-grid inventory screen, `./mods/` loader,
 texture packs/skins, dedicated server binary + QUIC, palette compression,
 LOD, GPU occlusion culling, physics grids. See [roadmap.md](roadmap.md).

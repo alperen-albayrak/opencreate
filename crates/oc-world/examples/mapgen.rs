@@ -20,7 +20,88 @@ fn main() {
     let generator = TerrainGenerator::new(seed);
     top_down(&generator, "map.ppm", 1024, 4);
     cross_section(&generator, "section.ppm");
-    println!("wrote map.ppm (4096x4096 blocks) and section.ppm for seed {seed}");
+    village_view(&generator, seed, "village.ppm");
+    println!("wrote map.ppm (4096x4096 blocks), section.ppm and village.ppm for seed {seed}");
+}
+
+/// Top-down render of real generated blocks around the first village
+/// found that has at least 3 houses (4 px per block).
+fn village_view(generator: &TerrainGenerator, seed: u64, path: &str) {
+    let mut found = None;
+    'regions: for r in 0i32..40 {
+        for rx in -r..=r {
+            for rz in -r..=r {
+                if rx.abs() != r && rz.abs() != r {
+                    continue;
+                }
+                if let Some(center) = generator.village_center(rx, rz) {
+                    let houses: usize = (-2..=2)
+                        .flat_map(|dx| (-2..=2).map(move |dz| (dx, dz)))
+                        .map(|(dx, dz)| {
+                            generator
+                                .house_origins(oc_core::ChunkPos::new(center.x + dx, center.z + dz))
+                                .len()
+                        })
+                        .sum();
+                    if houses >= 3 {
+                        found = Some(center);
+                        break 'regions;
+                    }
+                }
+            }
+        }
+    }
+    let Some(center) = found else {
+        println!("no village with 3+ houses found; skipping {path}");
+        return;
+    };
+    let mut world = oc_world::World::new(seed);
+    for dx in -3..=3 {
+        for dz in -3..=3 {
+            world.generate_column(oc_core::ChunkPos::new(center.x + dx, center.z + dz));
+        }
+    }
+    const BLOCKS: i32 = 96;
+    const PX: usize = 4;
+    let size = (BLOCKS as usize) * PX;
+    let base_x = center.x * 16 + 8 - BLOCKS / 2;
+    let base_z = center.z * 16 + 8 - BLOCKS / 2;
+    let mut out = BufWriter::new(File::create(path).unwrap());
+    writeln!(out, "P6\n{size} {size}\n255").unwrap();
+    for pz in 0..size {
+        for px in 0..size {
+            let x = base_x + (px / PX) as i32;
+            let z = base_z + (pz / PX) as i32;
+            // Topmost non-air block.
+            let mut color = [0u8; 3];
+            for y in (-16..120).rev() {
+                let b = world.block(glam::IVec3::new(x, y, z));
+                if !b.is_air() {
+                    color = if b == blocks::WATER {
+                        [40, 90, 170]
+                    } else if b == blocks::GRASS {
+                        [100, 160, 70]
+                    } else if b == blocks::SAND {
+                        [216, 200, 150]
+                    } else if b == blocks::PLANKS {
+                        [196, 148, 84]
+                    } else if b == blocks::LOG {
+                        [96, 66, 40]
+                    } else if b == blocks::LEAVES {
+                        [40, 96, 36]
+                    } else if b == blocks::SNOW {
+                        [240, 244, 250]
+                    } else if b == blocks::DIRT {
+                        [120, 85, 58]
+                    } else {
+                        [110, 110, 110]
+                    };
+                    break;
+                }
+            }
+            out.write_all(&color).unwrap();
+        }
+    }
 }
 
 fn biome_color(biome: Biome) -> [f64; 3] {

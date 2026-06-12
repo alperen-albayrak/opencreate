@@ -71,6 +71,26 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
         }
     }
 
+    // Village houses use the same cross-chunk origin scan, but their
+    // blocks are authoritative: AIR entries carve interiors out of
+    // terrain (and out of any tree that strayed inside).
+    let mut structures: HashMap<BlockPos, BlockId> = HashMap::new();
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let neighbor = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+            for origin in generator.house_origins(neighbor) {
+                for (pos, block) in generator.house_blocks(origin) {
+                    let in_column = pos.x >> SECTION_SHIFT == chunk.x
+                        && pos.z >> SECTION_SHIFT == chunk.z;
+                    if in_column {
+                        max_height = max_height.max(pos.y);
+                        structures.insert(pos, block);
+                    }
+                }
+            }
+        }
+    }
+
     let span = ColumnSpan {
         min_section_y: BOTTOM_SECTION_Y,
         max_section_y: max_height.div_euclid(SECTION_SIZE),
@@ -94,6 +114,9 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
                         && let Some(&tree) = overlay.get(&IVec3::new(x, y, z))
                     {
                         block = tree;
+                    }
+                    if let Some(&structure) = structures.get(&IVec3::new(x, y, z)) {
+                        block = structure;
                     }
                     if !block.is_air() {
                         section.set(IVec3::new(dx as i32, dy, dz as i32), block);
@@ -319,6 +342,34 @@ mod tests {
 
         // Ungenerated column: rejected.
         assert!(!world.set_block(IVec3::new(1000, 0, 1000), blocks::STONE));
+    }
+
+    #[test]
+    fn village_houses_generate_into_columns() {
+        let generator = crate::terrain::TerrainGenerator::new(42);
+        for rx in -20..20 {
+            for rz in -20..20 {
+                let Some(center) = generator.village_center(rx, rz) else { continue };
+                for dcx in -2..=2 {
+                    for dcz in -2..=2 {
+                        let chunk = ChunkPos::new(center.x + dcx, center.z + dcz);
+                        let Some(&origin) = generator.house_origins(chunk).first() else {
+                            continue;
+                        };
+                        let mut world = World::new(42);
+                        world.generate_column(chunk);
+                        let at = |d: IVec3| world.block(origin + d);
+                        assert_eq!(at(IVec3::new(0, -1, 0)), blocks::PLANKS, "floor");
+                        assert_eq!(at(IVec3::new(0, 0, 0)), BlockId::AIR, "interior");
+                        assert_eq!(at(IVec3::new(2, 0, -2)), blocks::LAMP, "lamp");
+                        assert_eq!(at(IVec3::new(0, 3, 0)), blocks::PLANKS, "roof");
+                        assert_eq!(at(IVec3::new(3, 0, 3)), blocks::LOG, "corner");
+                        return; // one verified house is enough
+                    }
+                }
+            }
+        }
+        panic!("no village house found in the scan area");
     }
 
     #[test]

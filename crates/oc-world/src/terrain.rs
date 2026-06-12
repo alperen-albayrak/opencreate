@@ -53,6 +53,11 @@ const SEED_SPAGHETTI_A: u64 = 0x59A6_8E77_1000_000A;
 const SEED_SPAGHETTI_B: u64 = 0x59A6_8E77_2000_000B;
 const SEED_TREES: u64 = 0x7EE5_0000_0000_0001;
 const SEED_TREE_SHAPE: u64 = 0x7EE5_0000_0000_0002;
+const SEED_VILLAGE: u64 = 0x111A_6E00_0000_000C;
+const SEED_HOUSE: u64 = 0x115E_0000_0000_000D;
+
+/// Villages are placed per square region of this many chunks.
+pub const VILLAGE_REGION: i32 = 12;
 
 /// Heightmap terrain, pure function of (seed, x, z).
 #[derive(Clone, Copy)]
@@ -320,6 +325,105 @@ impl TerrainGenerator {
             }
         }
         origins
+    }
+
+    /// Two-phase village placement, phase 1: does this region (a
+    /// `VILLAGE_REGION`² chunk square) hold a village, and where is its
+    /// center chunk? Villages settle flat, friendly land only.
+    pub fn village_center(&self, region_x: i32, region_z: i32) -> Option<ChunkPos> {
+        let bits = lattice_bits(self.seed ^ SEED_VILLAGE, region_x, region_z);
+        if bits % 3 != 0 {
+            return None; // ~1 in 3 regions
+        }
+        let cx = region_x * VILLAGE_REGION + ((bits >> 8) % VILLAGE_REGION as u64) as i32;
+        let cz = region_z * VILLAGE_REGION + ((bits >> 16) % VILLAGE_REGION as u64) as i32;
+        let info = self.column(cx * SECTION_SIZE + 8, cz * SECTION_SIZE + 8);
+        let friendly = matches!(info.biome, Biome::Plains | Biome::Desert);
+        if !friendly || info.steep || info.surface <= BEACH_TOP || info.surface > 48 {
+            return None;
+        }
+        Some(ChunkPos::new(cx, cz))
+    }
+
+    /// Two-phase village placement, phase 2: the house anchored in this
+    /// chunk (floor-center block, one above the surface), if any. Houses
+    /// cluster within 2 chunks of the village center and only stand on
+    /// ground that is flat across their footprint.
+    pub fn house_origins(&self, chunk: ChunkPos) -> Vec<BlockPos> {
+        let region = (chunk.x.div_euclid(VILLAGE_REGION), chunk.z.div_euclid(VILLAGE_REGION));
+        let Some(center) = self.village_center(region.0, region.1) else {
+            return Vec::new();
+        };
+        if (chunk.x - center.x).abs() > 2 || (chunk.z - center.z).abs() > 2 {
+            return Vec::new();
+        }
+        let bits = lattice_bits(self.seed ^ SEED_HOUSE, chunk.x, chunk.z);
+        if bits % 8 >= 5 {
+            return Vec::new(); // ~5 of 8 in-range chunks build a house
+        }
+        // Keep the origin 4..=11 inside the chunk: houses from adjacent
+        // chunks can never overlap (min center spacing 9 > footprint 7).
+        let ox = 4 + ((bits >> 8) % 8) as i32;
+        let oz = 4 + ((bits >> 16) % 8) as i32;
+        let (x, z) = (chunk.x * SECTION_SIZE + ox, chunk.z * SECTION_SIZE + oz);
+        let anchor = self.column(x, z);
+        if !matches!(anchor.biome, Biome::Plains | Biome::Desert | Biome::Forest)
+            || anchor.surface <= BEACH_TOP
+            || anchor.surface > 48
+        {
+            return Vec::new();
+        }
+        // Flat-enough check across the footprint corners.
+        for (dx, dz) in [(-3, -3), (3, -3), (-3, 3), (3, 3)] {
+            let h = self.surface_height(x + dx, z + dz);
+            if (h - anchor.surface).abs() > 2 {
+                return Vec::new();
+            }
+        }
+        vec![IVec3::new(x, anchor.surface + 1, z)]
+    }
+
+    /// The blocks of one house. Unlike trees these are authoritative:
+    /// AIR entries carve the interior out of any terrain bump.
+    pub fn house_blocks(&self, origin: BlockPos) -> Vec<(BlockPos, BlockId)> {
+        let mut out = Vec::new();
+        for dx in -3i32..=3 {
+            for dz in -3i32..=3 {
+                let edge = dx.abs() == 3 || dz.abs() == 3;
+                // Floor slab, with a short foundation skirt under the edges
+                // so sloped ground doesn't leave gaps.
+                out.push((origin + IVec3::new(dx, -1, dz), blocks::PLANKS));
+                if edge {
+                    for dy in -3..-1 {
+                        out.push((origin + IVec3::new(dx, dy, dz), blocks::PLANKS));
+                    }
+                }
+                for dy in 0..3 {
+                    let pos = origin + IVec3::new(dx, dy, dz);
+                    if edge {
+                        let corner = dx.abs() == 3 && dz.abs() == 3;
+                        // Doorway: a 1×2 gap in the south wall center.
+                        let door = dz == 3 && dx == 0 && dy < 2;
+                        let block = if corner {
+                            blocks::LOG
+                        } else if door {
+                            BlockId::AIR
+                        } else {
+                            blocks::PLANKS
+                        };
+                        out.push((pos, block));
+                    } else {
+                        // Interior space, carved even through terrain.
+                        out.push((pos, BlockId::AIR));
+                    }
+                }
+                // Flat roof.
+                out.push((origin + IVec3::new(dx, 3, dz), blocks::PLANKS));
+            }
+        }
+        // A lamp on the floor in the back corner keeps the inside lit.
+        out.push((origin + IVec3::new(2, 0, -2), blocks::LAMP));
+        out
     }
 
     /// True where noise carves a cave out of solid terrain. Two systems,
@@ -848,6 +952,84 @@ mod tests {
             }
         }
         assert!(found > 10, "expected a healthy number of trees, got {found}");
+    }
+
+    #[test]
+    fn villages_exist_and_are_deterministic() {
+        let g = TerrainGenerator::new(42);
+        let mut villages = 0;
+        for rx in -40..40 {
+            for rz in -40..40 {
+                assert_eq!(g.village_center(rx, rz), g.village_center(rx, rz));
+                if let Some(center) = g.village_center(rx, rz) {
+                    villages += 1;
+                    // Centers sit inside their own region on friendly land.
+                    assert_eq!(center.x.div_euclid(VILLAGE_REGION), rx);
+                    assert_eq!(center.z.div_euclid(VILLAGE_REGION), rz);
+                    let info = g.column(center.x * 16 + 8, center.z * 16 + 8);
+                    assert!(matches!(info.biome, Biome::Plains | Biome::Desert));
+                }
+            }
+        }
+        // 6400 regions × (1/3 roll) × biome/flatness gate: plenty survive.
+        assert!(villages > 40, "expected villages across the map, found {villages}");
+    }
+
+    #[test]
+    fn houses_cluster_near_their_village_and_never_overlap() {
+        let g = TerrainGenerator::new(42);
+        let mut houses_total = 0;
+        let mut villages_with_houses = 0;
+        'regions: for rx in -40..40 {
+            for rz in -40..40 {
+                let Some(center) = g.village_center(rx, rz) else { continue };
+                let mut origins = Vec::new();
+                for dcx in -4..=4 {
+                    for dcz in -4..=4 {
+                        let chunk = oc_core::ChunkPos::new(center.x + dcx, center.z + dcz);
+                        for origin in g.house_origins(chunk) {
+                            // Phase 2 only builds within 2 chunks of center.
+                            assert!(dcx.abs() <= 2 && dcz.abs() <= 2, "stray house at {origin}");
+                            origins.push(origin);
+                        }
+                    }
+                }
+                for (i, a) in origins.iter().enumerate() {
+                    for b in &origins[i + 1..] {
+                        let gap = (a.x - b.x).abs().max((a.z - b.z).abs());
+                        assert!(gap >= 8, "houses overlap: {a} vs {b}");
+                    }
+                }
+                houses_total += origins.len();
+                if !origins.is_empty() {
+                    villages_with_houses += 1;
+                }
+                if houses_total > 60 && villages_with_houses > 10 {
+                    break 'regions;
+                }
+            }
+        }
+        assert!(villages_with_houses > 10, "most villages should have houses");
+        assert!(houses_total > 60, "expected a healthy housing stock, got {houses_total}");
+    }
+
+    #[test]
+    fn house_blocks_form_a_lit_walled_room() {
+        let g = TerrainGenerator::new(42);
+        let origin = IVec3::new(100, 20, 100);
+        let list = g.house_blocks(origin);
+        // Last write wins, matching the overlay map's insert order.
+        let get = |d: IVec3| {
+            list.iter().rev().find(|(p, _)| *p == origin + d).map(|(_, b)| *b)
+        };
+        assert_eq!(get(IVec3::new(0, 0, 3)), Some(BlockId::AIR), "doorway bottom");
+        assert_eq!(get(IVec3::new(0, 1, 3)), Some(BlockId::AIR), "doorway top");
+        assert_eq!(get(IVec3::new(3, 0, 3)), Some(blocks::LOG), "corner post");
+        assert_eq!(get(IVec3::new(1, 0, 3)), Some(blocks::PLANKS), "wall");
+        assert_eq!(get(IVec3::new(0, 3, 0)), Some(blocks::PLANKS), "roof");
+        assert_eq!(get(IVec3::new(0, -1, 0)), Some(blocks::PLANKS), "floor");
+        assert_eq!(get(IVec3::new(0, 0, 0)), Some(BlockId::AIR), "interior");
+        assert_eq!(get(IVec3::new(2, 0, -2)), Some(blocks::LAMP), "lamp");
     }
 
     #[test]

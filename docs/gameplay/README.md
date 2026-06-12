@@ -13,7 +13,8 @@ wander the grass and the sun sets on lamp-lit builds.
 - **World**: infinite procedural terrain — 13 biomes from plains and
   forests to deserts, snowfields and jagged peaks; connected rivers,
   deep oceans, beaches, cavern-and-tunnel caves (dark inside — bring
-  lamps), trees. Everything streams in around you and autosaves.
+  lamps), trees, and villages of lamp-lit houses on flat friendly land.
+  Everything streams in around you and autosaves.
 - **Building**: break and place any of the 9 hotbar blocks; the wireframe
   outline shows your target (reach: 6 blocks). In survival, blocks are
   finite: what you place comes from what you gathered.

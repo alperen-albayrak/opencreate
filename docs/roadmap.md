@@ -14,10 +14,10 @@ The first "it's a game" build.
 
 ## Phase 3 — Survival core (current)
 Done: client/server split, stats, inventory, crafting, game modes,
-passive creatures.
+passive creatures, MC 1.18-style multi-noise worldgen, villages
+(two-phase placement: region-hashed centers, per-chunk hash-placed
+houses with lit interiors).
 Remaining:
-- **Villages** — two-phase structure placement (origins from seed alone,
-  chunks materialize their slice), jigsaw-lite piece templates
 - **Food & eating** — close the hunger loop (food items, eat action)
 - **Inventory screen** — drag-and-drop grid UI + real crafting grid
 - **Ocean creatures** — fish with water movement AI
