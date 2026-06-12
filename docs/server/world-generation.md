@@ -7,8 +7,8 @@ crate splits out when this grows). Randomness comes from splitmix-style
 integer hashes; noise is hand-rolled value noise with fBm (2D for climate
 and relief, 3D for caves), keeping the §13 noise-crate decision open.
 
-The design follows **Minecraft 1.18+'s multi-noise architecture** (researched
-from the vanilla density-function data): climate noises pick both the terrain
+The design follows the **multi-noise architecture** modern voxel worldgen
+converged on: climate noises pick both the terrain
 shape (through splines) and the biome (through a parameter table), so biomes
 and terrain always agree and biome borders never produce seams.
 
@@ -73,7 +73,7 @@ the biome**; deserts/beaches cap with sand, snowy biomes with snow, peaks
 with stone/snow-over-stone, the grass family with grass + 3 dirt. Open
 terrain at y ≤ 0 fills with water.
 
-## Caves (two systems, MC 1.18 style)
+## Caves (two systems)
 
 - **Cheese caverns** — vertically squashed 3D fBm (1/36 xz, 1/22 y) carves
   where the value beats a threshold: 0.52 within 8 blocks of the surface

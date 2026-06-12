@@ -14,7 +14,7 @@ The first "it's a game" build.
 
 ## Phase 3 — Survival core (current)
 Done: client/server split, stats, inventory, crafting, game modes,
-passive creatures, MC 1.18-style multi-noise worldgen, villages
+passive creatures, multi-noise worldgen, villages
 (two-phase placement: region-hashed centers, per-chunk hash-placed
 houses with lit interiors), food & eating (apples from leaves, data-driven
 `food:` values).

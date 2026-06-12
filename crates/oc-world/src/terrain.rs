@@ -1,5 +1,5 @@
-//! Terrain generation (ARCHITECTURE.md §5), modeled on Minecraft 1.18+'s
-//! multi-noise worldgen:
+//! Terrain generation (ARCHITECTURE.md §5): multi-noise worldgen, the
+//! architecture modern voxel games converged on:
 //!
 //! - Five 2D climate channels — continentalness, erosion, weirdness,
 //!   temperature, humidity — sampled through a domain warp.
@@ -136,7 +136,7 @@ impl TerrainGenerator {
         let humidity =
             (fbm(self.seed ^ SEED_HUMIDITY, wx / 800.0, wz / 800.0, 3) * 2.4).clamp(-1.0, 1.0);
 
-        // MC 1.18's fold: valleys where weirdness crosses zero, peaks at
+        // The peaks&valleys fold: valleys where weirdness crosses zero, peaks at
         // |w| = 2/3. Rivers fall out of the PV ≈ −1 band.
         let pv = (1.0 - (3.0 * weirdness.abs() - 2.0).abs()).clamp(-1.0, 1.0);
 
@@ -427,7 +427,7 @@ impl TerrainGenerator {
     }
 
     /// True where noise carves a cave out of solid terrain. Two systems,
-    /// MC 1.18 style: "cheese" caverns (squashed 3D noise over a threshold)
+    /// "cheese" caverns (squashed 3D noise over a threshold)
     /// and "spaghetti" tunnels (the neighborhood of the intersection of two
     /// noise zero-surfaces — thin sheets crossing make winding 1D tunnels).
     pub fn is_cave(&self, pos: BlockPos, surface: i32) -> bool {

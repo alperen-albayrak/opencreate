@@ -25,7 +25,7 @@ rendering (floating origin); textured chunk; fly camera.
 ### Phase 3 — Survival core (in progress)
 - **The §1 client/server split is live**: `oc-protocol` + `oc-server`
   (30 TPS authoritative thread) + client as a predicted mirror
-- **Worldgen v3, MC 1.18-style multi-noise**: five warped climate
+- **Worldgen v3, multi-noise**: five warped climate
   channels, peaks&valleys fold, nested-spline terrain shaper (deep
   oceans → coasts → plains → jagged peaks), self-carving connected
   rivers, 13 biomes with altitude zoning and steep-slope surface rules,
@@ -51,7 +51,7 @@ rendering (floating origin); textured chunk; fly camera.
   `lang/en.ron`) so mods can extend both. Pausing freezes the
   singleplayer simulation (`SetPaused`; multiplayer servers will ignore
   it) and autosaves
-- **Cheats/permissions, MC-style**: mode changes require the world's
+- **Cheats/permissions**: mode changes require the world's
   cheats flag (singleplayer) — one mechanism with multiplayer ops/admins
   (phase 4); see [game-modes.md](gameplay/game-modes.md)
 - **Settings** (`settings.ron`): render distance, FOV, mouse sensitivity

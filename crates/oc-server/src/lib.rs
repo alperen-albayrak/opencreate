@@ -90,7 +90,7 @@ pub struct ServerConfig {
     /// world; saved worlds keep their own. None = the registry default.
     pub default_mode: Option<String>,
     /// Cheats flag for a freshly created world; saved worlds keep their
-    /// own. None = off (like Minecraft's default).
+    /// own. None = off (the safe default).
     pub cheats: Option<bool>,
 }
 
@@ -315,7 +315,7 @@ impl Server {
                     // Only the world owner may toggle this. The embedded
                     // server's single client IS the owner; a multiplayer
                     // server checks admin rights here instead (and admins
-                    // grant/revoke other players, like Minecraft ops).
+                    // grant/revoke other players, like classic ops systems).
                     if cheats != self.cheats {
                         self.cheats = cheats;
                         info!(cheats, "cheats toggled by the world owner");
@@ -335,7 +335,7 @@ impl Server {
                     // This is the embedded singleplayer server, so the
                     // request is always honored; a dedicated multiplayer
                     // server (phase 4) ignores it. Pausing also saves,
-                    // Minecraft-style.
+                    // for safety.
                     if paused != self.paused {
                         self.paused = paused;
                         info!(paused, "simulation pause");

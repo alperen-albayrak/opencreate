@@ -31,7 +31,7 @@ the registry, enforces every flag server-side, and persists the **string
 id** in `level.txt`. The client adapts controls and UI from the same
 shared flags.
 
-## Cheats & permissions (Minecraft's model)
+## Cheats & permissions
 
 Changing game mode is a **cheat**. Worlds carry a cheats flag, chosen at
 creation (default off) and persisted in `level.txt`:
@@ -44,7 +44,7 @@ creation (default off) and persisted in `level.txt`:
 - The **world owner can always re-toggle cheats** from the pause menu —
   in singleplayer the local player is the owner.
 
-This is the same concept as Minecraft's permissions: singleplayer's
+This is one unified permission concept: singleplayer's
 "allow cheats" flag and multiplayer's **ops** are one mechanism — "may
 this player run commands". Phase 4 multiplayer keeps a per-player admin
 list instead of the world-wide flag: the server owner/console ops the

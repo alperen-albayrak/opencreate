@@ -556,7 +556,7 @@ mod tests {
     const MODES: &str = r#"[(id: "oc:survival", name: "Survival", can_edit_blocks: true, uses_inventory: true, has_stats: true)]"#;
 
     #[test]
-    fn standard_modes_match_the_minecraft_model() {
+    fn standard_modes_cover_the_classic_set() {
         let reg = registry();
         assert_eq!(reg.mode_count(), 4);
         let survival = reg.mode(reg.find_mode("oc:survival").unwrap());

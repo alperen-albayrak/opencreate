@@ -2,7 +2,7 @@
 //! server simulates movement itself (phase 4 reconciliation), it watches
 //! the client-reported Y coordinate: damage applies when a long fall stops.
 
-/// Falls shorter than this are safe (like Minecraft).
+/// Falls shorter than this are safe.
 const SAFE_FALL_BLOCKS: f64 = 3.0;
 const DAMAGE_PER_BLOCK: f32 = 0.7;
 /// Y movement smaller than this counts as "standing".

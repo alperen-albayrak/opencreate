@@ -2,7 +2,7 @@
 //! module boundary (`rapier3d` + octrees replace the internals in phase 6).
 //!
 //! Movement resolves axis by axis (Y first, then X, then Z) against solid
-//! voxels, the classic Minecraft scheme: simple, stable, and tunneling-free
+//! voxels, the classic voxel-game scheme: simple, stable, and tunneling-free
 //! at survival movement speeds.
 
 use glam::DVec3;

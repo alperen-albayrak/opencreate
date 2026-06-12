@@ -56,7 +56,7 @@ are both readable and tunable. Worlds open through a loading screen
 
 New worlds spawn you on the nearest dry land to the origin. In survival
 you start with nothing: punch terrain to gather blocks, then build/craft.
-Pausing autosaves, Minecraft-style; quitting to title runs a final save.
+Pausing autosaves; quitting to title runs a final save.
 
 ## Saves
 

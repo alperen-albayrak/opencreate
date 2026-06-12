@@ -139,7 +139,7 @@ fn list_worlds() -> Vec<String> {
     worlds
 }
 
-/// A seed nobody typed: from the clock, like Minecraft's "leave it blank".
+/// A seed nobody typed: from the clock ("leave it blank for random").
 fn random_seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

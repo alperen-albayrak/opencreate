@@ -17,7 +17,7 @@ marked **locked** shouldn't be re-litigated without strong cause.
 | Rendering positions | Camera-relative `f32` (floating origin) | Precision never degrades far from spawn; baked in from the first triangle |
 | ECS | `bevy_ecs` standalone (0.16) | Archetypal like Flecs (Hytale's choice), mature; adopted with survival stats |
 | Content format | RON files in `data/`, embedded as defaults | Readable, serde-native; base game built the way mods will be |
-| Identity | Namespaced string ids (`oc:stone`) stable; numeric ids per-load | The painful Minecraft lesson; saves persist strings, wire uses u16 |
+| Identity | Namespaced string ids (`oc:stone`) stable; numeric ids per-load | The genre's painful id lesson; saves persist strings, wire uses u16 |
 | Serialization (saves) | Hand-rolled versioned binary + zstd | No serde overhead in the hot path; format-version field from day 1 |
 | Noise | Hand-rolled value-noise fBm | Keeps the §13 noise-crate decision open; deterministic, no deps |
 | Modding runtime | WASM via wasmtime (phase 5) | Rust has no stable ABI; sandbox + one binary per mod |

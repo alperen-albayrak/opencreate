@@ -1,4 +1,4 @@
-//! Flood-fill lighting (ARCHITECTURE.md §3): Minecraft-model sky light +
+//! Flood-fill lighting (ARCHITECTURE.md §3): classic voxel sky light +
 //! block light, 4 bits each.
 //!
 //! Milestone-2 design: light is a **pure function of the blocks**, computed

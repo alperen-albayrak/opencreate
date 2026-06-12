@@ -599,7 +599,7 @@ impl SettingsScreen {
 }
 
 /// Seed from user input: blank → fallback, digits → the number itself,
-/// anything else → a splitmix-style hash (MC-style string seeds).
+/// anything else → a splitmix-style hash (string seeds work too).
 pub fn parse_seed(input: &str, fallback: u64) -> u64 {
     let trimmed = input.trim();
     if trimmed.is_empty() {

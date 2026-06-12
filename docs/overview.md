@@ -1,6 +1,6 @@
 # Overview
 
-OpenCreate is a from-scratch, AGPL-3.0, Minecraft-class voxel game written
+OpenCreate is a from-scratch, AGPL-3.0 voxel survival game written
 in Rust with its **own engine on Vulkan** (`ash`, via MoltenVK on macOS — no
 Bevy, no wgpu). It is built to be a stable, extensible open-source base for
 years of development.
@@ -26,13 +26,13 @@ years of development.
   deterministic from a 64-bit seed
 - Survival: health/hunger/stamina/oxygen, 3×3 crafting
 - 30 TPS authoritative server; offline-capable and multiplayer-capable
-- Minecraft-compatible skins, resource-pack overlays
+- Standard 64×64 player skins, resource-pack overlays
 - `./mods/` drop-in modding: content mods are pure data, behavior mods are
   sandboxed WASM (phase 5)
 
 ## What it looks like today
 
-A playable survival prototype: Minecraft-1.18-style multi-noise worldgen
+A playable survival prototype: modern multi-noise worldgen
 (continents, 13 biomes, connected rivers, jagged peaks, cavern-and-tunnel
 caves); flood-fill lighting with a day/night cycle;
 gather-craft-build survival with stats, fall damage and swimming; passive

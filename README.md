@@ -1,6 +1,6 @@
 # OpenCreate
 
-An open-source, Minecraft-class voxel game written in Rust with its own Vulkan engine.
+An open-source voxel survival game written in Rust with its own Vulkan engine.
 
 **Status:** playable survival prototype (roadmap phase 3 of 6 in progress). The original design is in [ARCHITECTURE.md](ARCHITECTURE.md); living documentation — how everything works, decisions, roadmap, gotchas — lives in [docs/](docs/README.md).
 
@@ -10,7 +10,7 @@ An open-source, Minecraft-class voxel game written in Rust with its own Vulkan e
 cargo run
 ```
 
-Procedural terrain streams in around you: Minecraft-1.18-style multi-noise worldgen with 13 biomes (plains, forests, taiga, deserts, snowfields, stony and snowy peaks…), connected rivers, deep oceans, beaches, cavern-and-tunnel caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
+Procedural terrain streams in around you: multi-noise worldgen with 13 biomes (plains, forests, taiga, deserts, snowfields, stony and snowy peaks…), connected rivers, deep oceans, beaches, cavern-and-tunnel caves, flood-fill lighting with a day/night cycle. Worlds autosave to `./saves/` and resume on relaunch (only edited terrain is stored; the rest regenerates from the seed).
 
 The game opens on a title screen — create worlds (name, seed, game mode) or pick one from the list.
 
@@ -33,8 +33,8 @@ The game opens on a title screen — create worlds (name, seed, game mode) or pi
 - Own engine on Vulkan (`ash`; MoltenVK on macOS) — targets 60 fps at 32-chunk render distance, including on Apple Silicon
 - Huge worlds: ±30M+ blocks horizontally, ~5600 blocks of vertical build range (sea level at Y 0) via sparse storage
 - Survival gameplay: biomes, villages, rivers, caves, big mountains, crafting, health/hunger/stamina/oxygen
-- Client–server from day one: fully offline singleplayer and Minecraft-style multiplayer share one protocol
-- Multiple dimensions per world, data-driven content (RON), texture packs, Minecraft-compatible player skins
+- Client–server from day one: fully offline singleplayer and dedicated-server multiplayer share one protocol
+- Multiple dimensions per world, data-driven content (RON), texture packs, standard 64×64 player skins
 - Modding first: drop-in `./mods/` folder (data + sandboxed WASM), designed for an open ContentDB/Modrinth-style ecosystem
 - Extensible toward physics contraptions (airships à la Create Aeronautics) and block power networks
 

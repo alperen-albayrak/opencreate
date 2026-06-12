@@ -2,15 +2,15 @@
 
 ## Context
 
-A from-scratch, AGPL-3.0 licensed, Minecraft-class voxel game in Rust with its **own engine** on **Vulkan**. This document is the architecture-level design — the stable foundation everything else builds on. No code yet; this is the discussion artifact.
+A from-scratch, AGPL-3.0 licensed voxel survival game in Rust with its **own engine** on **Vulkan**. This document is the architecture-level design — the stable foundation everything else builds on. No code yet; this is the discussion artifact.
 
 **Hard requirements**
-- Very tall build range — well beyond Minecraft's 384: target **~5000+ blocks of sky headroom** (skyscrapers with LOD) while staying inside the M1/16 GB budget; X-Z world size ≥ Minecraft (±30M blocks)
+- Very tall build range — well beyond the genre-typical ~384: target **~5000+ blocks of sky headroom** (skyscrapers with LOD) while staying inside the M1/16 GB budget; X-Z world size ±30M+ blocks
 - Smooth on 16 GB RAM + RX 9060 XT-class GPU; stretch: 60 fps @ 32-chunk render distance on M1 MacBook Air
 - World generation: biomes, villages, rivers, lakes, trees, oceans with creatures
-- Survival systems: health, hunger, stamina, oxygen (diving); 3×3 Minecraft-style crafting
-- Fully offline-capable, and multiplayer-capable like Minecraft/Hytale; 30 TPS server tick
-- Minecraft-style customization: player skin files, texture/resource packs
+- Survival systems: health, hunger, stamina, oxygen (diving); classic 3×3 grid crafting
+- Fully offline-capable, and multiplayer-capable with dedicated servers; 30 TPS server tick
+- Customization: player skin files, texture/resource packs
 - Modding like NeoForge's UX: drop a mod in `./mods/`, later a Modrinth-style open store
 - Extensible toward Create Aeronautics-style physics contraptions (airships) and Create-style power networks — not in baseline, but architecture must not preclude them
 - Stable, extensible base — designed to be built upon for years
@@ -42,7 +42,7 @@ The single most important decision. The game is **client–server from day one**
 - **Multiplayer** = the exact same protocol over QUIC. The dedicated server is the same `oc-server` crate compiled headless (no Vulkan dependency — important for cheap Linux hosting, and AGPL makes server source availability a feature, not a burden).
 - **Server is authoritative** for all game state (blocks, entities, health/hunger, inventory). Client predicts movement and block edits locally, server reconciles. This kills the retrofit pain that has ended many voxel projects, and prevents cheating later.
 
-**Tick model**: server simulates at a fixed **30 TPS** (user choice; smoother than Minecraft's 20, still cheap — sim runs on its own thread and can never hitch rendering); client renders at uncapped/vsync fps with interpolation between server states. Fixed tick = deterministic-ish gameplay, simple save semantics, easy to reason about.
+**Tick model**: server simulates at a fixed **30 TPS** (user choice; smoother than the genre-typical 20, still cheap — sim runs on its own thread and can never hitch rendering); client renders at uncapped/vsync fps with interpolation between server states. Fixed tick = deterministic-ish gameplay, simple save semantics, easy to reason about.
 
 ## 2. Cargo workspace layout
 
@@ -75,9 +75,9 @@ Boundary rules that keep it stable:
 ## 3. World model
 
 ### Coordinates (centered at 0,0,0 — user decision)
-- **The world is centered on the origin: block coords are signed `i32` on all three axes** (±2.1 billion address space). Spawn is near 0,0; the playable X-Z border is per-dimension config (default ±32M like Minecraft, raisable any time since the address space is already there).
-- Vertical: signed Y with **sea level at Y = 0** (a nice property of centered coords — altitude reads like real-world elevation; compare Minecraft's −64..320 with sea level at 62). Per-dimension `min_y..max_y`, **default −512 .. +5120**: modest depth below sea level (the default generator does *not* dig 500-block oceans — ocean floors sit around −30..−60, deep oceans maybe −100, caves bottoming near −300), and a huge sky for megabuilds. A Subnautica-style mod dimension can configure −4000..+200 instead; the engine doesn't care (see "why tall is cheap" below).
-- **Entity positions: `f64` absolute, in a reference frame** — `(FrameId, DVec3)`. Frame 0 = the dimension's static grid (Minecraft also uses plain absolute doubles; even at 64M blocks f64 resolves to ~7.5 *nanometers*, so absolute f64 is genuinely fine — no chunk-relative scheme needed on the server). The `FrameId` exists for one reason: an entity standing on a **moving physics grid** (airship — see §6.5) is positioned *in that grid's local frame* and inherits its motion. Frame-relative from day one costs nothing and makes contraptions possible later.
+- **The world is centered on the origin: block coords are signed `i32` on all three axes** (±2.1 billion address space). Spawn is near 0,0; the playable X-Z border is per-dimension config (default ±32M, raisable any time since the address space is already there).
+- Vertical: signed Y with **sea level at Y = 0** (a nice property of centered coords — altitude reads like real-world elevation; compare the usual −64..320 with sea level at 62). Per-dimension `min_y..max_y`, **default −512 .. +5120**: modest depth below sea level (the default generator does *not* dig 500-block oceans — ocean floors sit around −30..−60, deep oceans maybe −100, caves bottoming near −300), and a huge sky for megabuilds. A Subnautica-style mod dimension can configure −4000..+200 instead; the engine doesn't care (see "why tall is cheap" below).
+- **Entity positions: `f64` absolute, in a reference frame** — `(FrameId, DVec3)`. Frame 0 = the dimension's static grid (mainstream voxel games use plain absolute doubles too; even at 64M blocks f64 resolves to ~7.5 *nanometers*, so absolute f64 is genuinely fine — no chunk-relative scheme needed on the server). The `FrameId` exists for one reason: an entity standing on a **moving physics grid** (airship — see §6.5) is positioned *in that grid's local frame* and inherits its motion. Frame-relative from day one costs nothing and makes contraptions possible later.
 - Rendering: **camera-relative `f32`** (floating origin) — the GPU only ever sees positions relative to the camera, so precision never degrades far from spawn. This must be baked in from the first triangle; retrofitting is miserable. (Chunk-relative encoding is also used on the wire to keep entity packets small — an encoding detail, not a data-model one.)
 
 ### Dimensions (overworld / nether / end style — user requirement)
@@ -99,10 +99,10 @@ Each dimension is **a set of voxel grids**: one huge static grid (`GridId 0`) pl
   - **detailed** — palette + packed bit array (1–8 bits/voxel typical, ~0.5–8 KB) + light only where light actually varies.
   So raising the sky from 1024 to 5120 costs **nothing until someone builds there** — and then only for the sections they touch. Skylight shafts through empty space are computed per-column analytically (everything above the heightmap = light 15), not stored.
 - Why 16³ and not 32³: meshing/lighting/network granularity stays small, sparse skipping is finer-grained, and the entire modding/tooling ecosystem intuition transfers.
-- **Block states**: a global registry (string id → numeric id, data-driven from `data/blocks/`) + per-block properties (orientation, waterlogged, growth stage) encoded as state ids, Minecraft-style.
+- **Block states**: a global registry (string id → numeric id, data-driven from `data/blocks/`) + per-block properties (orientation, waterlogged, growth stage) encoded as state ids.
 
 ### Lighting
-- Minecraft-model **block light + sky light, 4 bits each per voxel**, computed by flood-fill (BFS) on the server/meshing side, baked into chunk mesh vertices. Simple, proven, fast, and it's what makes caves/underwater feel right. Fancy GI can layer on top years later without changing the data model.
+- Classic voxel **block light + sky light, 4 bits each per voxel**, computed by flood-fill (BFS) on the server/meshing side, baked into chunk mesh vertices. Simple, proven, fast, and it's what makes caves/underwater feel right. Fancy GI can layer on top years later without changing the data model.
 
 ### Memory math (validates the hardware targets)
 - Realistic loaded column with default worldgen (surface band ≈ −300..+1500 of *potential* content, mostly uniform/absent outside ~20–40 detailed sections near the surface): ~150–300 KB — **independent of the dimension's Y range** thanks to sparse columns.
@@ -130,9 +130,9 @@ Each dimension is **a set of voxel grids**: one huge static grid (`GridId 0`) pl
 
 Deterministic from a 64-bit seed; pure function of (seed, position) so it's unit-testable and multiplayer-consistent.
 
-1. **Multi-noise biome system** (Minecraft 1.18 style): 5 noise channels — continentalness, erosion, peaks/valleys, temperature, humidity — looked up against a biome table defined in `data/biomes/`. Launch biome set: plains, forest, desert, mountains, snowy, ocean, beach, river.
+1. **Multi-noise biome system**: 5 noise channels — continentalness, erosion, peaks/valleys, temperature, humidity — looked up against a biome table defined in `data/biomes/`. Launch biome set: plains, forest, desert, mountains, snowy, ocean, beach, river.
 2. **Terrain**: heightmap from the noise stack, plus **3D density noise** for overhangs and sheer cliffs, and **cave carvers** (3D noise "cheese + spaghetti" caves, plus large cavern biome-like zones at depth). With sea level at Y0, the default generator uses roughly −300..+1500: caves and deep oceans in the negative band (kept shallow by design — no 500-block default oceans), and the peaks/valleys channel pushing **genuinely big mountains** to +800..+1500 — a headline feature, tuned aggressively. Everything above is open sky for builders (up to +5120), and mod dimensions can re-budget the bands freely.
-3. **Rivers & lakes**: river = its own noise channel carving below the water table where it crosses terrain (this is how MC 1.18 does it and it's robust); lakes = local depressions filled to the water table. Oceans come free from low continentalness.
+3. **Rivers & lakes**: river = its own noise channel carving below the water table where it crosses terrain (the modern multi-noise approach; robust); lakes = local depressions filled to the water table. Oceans come free from low continentalness.
 4. **Features** (per-chunk decorations, ordered, deterministic): trees (per-biome shapes), grass/flowers, ores by depth bands, kelp/seagrass in oceans.
 5. **Structures — villages**: the classic cross-chunk problem, solved with the standard **two-phase approach**: phase 1 picks structure origins + bounding boxes from seed alone (no chunk data needed); phase 2, any chunk that intersects a bounding box materializes its slice. Villages = **jigsaw-lite**: hand-built piece templates (saved as voxel snippets) connected via sockets — roads, houses, farms, wells — placed on terrain flat-enough heuristics. This same machinery later gives dungeons, ruins, etc.
 6. **Creatures/spawning**: biome-driven spawn tables in data (`data/biomes/*.ron` lists spawnable creatures + weights); ocean creatures (fish etc.) are just entities with water-movement AI, spawned by the same rules.
@@ -169,7 +169,7 @@ Sable's physics core is **Rust** (called from Java over JNI — a bridge we won'
 
 **What this means for our architecture — five seams we cut now, fill later:**
 
-1. **Grids are first-class** (§3): chunk storage keyed by `(GridId, ChunkPos)`. A contraption = a new small grid + a `RigidBody` component (transform, velocity, angular velocity, mass/inertia computed from its blocks). VS's "shipyard hack" exists because Minecraft *couldn't* do this; we can do it natively.
+1. **Grids are first-class** (§3): chunk storage keyed by `(GridId, ChunkPos)`. A contraption = a new small grid + a `RigidBody` component (transform, velocity, angular velocity, mass/inertia computed from its blocks). VS's "shipyard hack" exists because its host game *couldn't* do this; we can do it natively.
 2. **Entity frames** (§3): entity positions are `(FrameId, DVec3)`, so a player standing on an airship is parented to the airship's frame and moves with it for free.
 3. **Renderer draws grids, not "the world"**: every chunk mesh is drawn with its grid's model transform (identity for grid 0). Camera-relative rendering already requires a per-draw transform, so moving grids cost the renderer *nothing* architecturally.
 4. **Physics layer slot**: baseline ships simple AABB-vs-voxel character collision behind a `physics` module boundary. In the airships phase, `rapier3d` plugs in behind that boundary as the solver, and we build the Sable-proven voxel layer on top: per-grid solidity octrees (+liquid octrees) maintained incrementally on block change, octree-vs-octree pair finding as the mid-phase, per-blockstate collision data from the block registry, volumetric buoyancy/drag, and a force-group API for gameplay/mods. No JNI bridge needed — we're Rust end-to-end, which removes Sable's biggest tax.
@@ -185,13 +185,13 @@ Luanti (LGPL-2.1, 15 years in production) has a complete, battle-tested answer f
 - **Random ticks** (crops grow, grass spreads, fire): each active section gets N random voxel samples per tick; blocks declare a `random_tick` behavior in their data file. Luanti's ABM trigger model is worth copying for mods: triggers declared as *data* (which block contents, required/forbidden neighbors, interval, 1-in-N chance) so the engine can scan efficiently and mods never poll. Its "simple catch-up" trick — simulating missed triggers when a chunk reactivates so crops don't freeze while you're away — comes along too.
 - **Scheduled block timers** (furnace finishes in 8s, sapling grows at T+x): per-chunk timer lists, **serialized with the chunk** so they survive unload/reload, with elapsed-time catch-up on activation.
 - **Block update events**: placing/removing a block notifies neighbors (doors, torches falling, water starting to flow) — the same event stream the §6.5 block networks and WASM mods subscribe to.
-- **Liquids**: a dedicated **liquid update queue** (Luanti: `transforming_liquid` + a `ReflowScan` pass that rebuilds pending flows when a chunk loads), budgeted per tick so giant floods can't stall the server. Baseline ships Minecraft-style finite-spread flow for water; the queue design is what matters.
+- **Liquids**: a dedicated **liquid update queue** (Luanti: `transforming_liquid` + a `ReflowScan` pass that rebuilds pending flows when a chunk loads), budgeted per tick so giant floods can't stall the server. Baseline ships classic finite-spread flow for water; the queue design is what matters.
 
 **Two more Luanti lessons adopted**: (1) its mapgen is organized as registries of biomes/ores/decorations/schematics — same shape as our data-driven worldgen, good validation; (2) its map persistence sits behind a database interface with SQLite/PostgreSQL/LevelDB backends — so our §9 region files go behind a small `WorldStore` trait, letting big dedicated servers swap in PostgreSQL later without touching world code.
 
-## 7. Crafting & items (data-driven, Minecraft-style)
+## 7. Crafting & items (data-driven)
 
-- **3×3 shaped + shapeless recipes**, declared in `data/recipes/*.ron` — same mental model as Minecraft datapacks:
+- **3×3 shaped + shapeless recipes**, declared in `data/recipes/*.ron` — the familiar datapack mental model:
   ```ron
   ( type: "shaped", pattern: ["P P", " S ", " S "], keys: { "P": "oc:planks", "S": "oc:stick" }, result: ("oc:pickaxe_wood", 1) )
   ```
@@ -199,10 +199,10 @@ Luanti (LGPL-2.1, 15 years in production) has a complete, battle-tested answer f
 - **Items registry** mirrors the block registry; inventory = component (hotbar 9 + main 27, MC layout). Crafting executes **on the server** (client sends "craft request", server validates ingredients — multiplayer-safe by construction).
 - Because blocks/items/recipes/biomes are all data files loaded through `oc-assets` with **hot reload in dev**, the base game is built the way mods will be built (the Hytale principle) — modding later is an unlock, not a rewrite.
 
-## 7.5 Texture packs & player skins (Minecraft-style customization)
+## 7.5 Texture packs & player skins
 
-- **Resource packs**: the base game's own textures/sounds/models load as just another pack — `oc-assets` resolves assets through an **ordered overlay stack** (user packs override base, exactly like Minecraft resource packs). A pack is a folder/zip mirroring the asset tree (`textures/block/stone.png` overrides base). Switching packs rebuilds the block texture array at runtime; hot reload already exists in dev, so live pack switching is nearly free. Pack format is versioned from day 1.
-- **Player skins**: Minecraft-compatible **64×64 PNG skin files** (same UV layout, so existing skins and skin editors just work). Locally the player picks a file; on join the client uploads the skin (or its hash), the server caches and distributes it to clients in range via the protocol's asset-sync path — the same mechanism that later syncs server resource packs/mods to joining players (the Hytale model). Skins are client-visual only; the server never trusts them for anything but bytes + size limits.
+- **Resource packs**: the base game's own textures/sounds/models load as just another pack — `oc-assets` resolves assets through an **ordered overlay stack** (user packs override base, the classic resource-pack model). A pack is a folder/zip mirroring the asset tree (`textures/block/stone.png` overrides base). Switching packs rebuilds the block texture array at runtime; hot reload already exists in dev, so live pack switching is nearly free. Pack format is versioned from day 1.
+- **Player skins**: industry-standard **64×64 PNG skin files** (the common UV layout, so existing skins and skin editors just work). Locally the player picks a file; on join the client uploads the skin (or its hash), the server caches and distributes it to clients in range via the protocol's asset-sync path — the same mechanism that later syncs server resource packs/mods to joining players (the Hytale model). Skins are client-visual only; the server never trusts them for anything but bytes + size limits.
 
 ## 7.6 Modding architecture (NeoForge-like UX, data + WASM underneath)
 
@@ -219,13 +219,13 @@ mymod.ocmod
 └── code.wasm        # optional — only for behavior mods (new machines, AI, world hooks)
 ```
 Three tiers of mod, increasing power:
-1. **Content mods** = data + assets only, no code. Because the base game is itself data-driven (§7), a huge share of Minecraft-style mods (new blocks, items, recipes, biomes, structures, creatures-with-existing-AI) need **zero code** — these work from the *first survival release*, since the loader just merges mod data into the same registries the base game uses.
+1. **Content mods** = data + assets only, no code. Because the base game is itself data-driven (§7), a huge share of typical content mods (new blocks, items, recipes, biomes, structures, creatures-with-existing-AI) need **zero code** — these work from the *first survival release*, since the loader just merges mod data into the same registries the base game uses.
 2. **Behavior mods** = + WASM module: registers ECS systems, block behaviors, network types (§6.5 hooks), event handlers (block place/break, entity tick, player join…) through a versioned host API (`wasmtime` + WIT component model). Server-side first; client-side UI/script sandbox later, per Hytale.
 3. **Engine mods** (shaders/renderer): not sandboxed-moddable; instead the renderer exposes data-driven hooks (shader includes, post-process chain) — Hytale's node-shader idea is the eventual shape.
 
 **Architectural commitments made now (cheap) so this works later:**
 - **Namespaced string ids everywhere** (`oc:stone`, `mymod:copper_pipe`) — already the registry design (§3).
-- **Per-world id mapping persisted in the save** (string→numeric table in the level header): saves survive mods being added/removed/updated, numeric ids are never hardcoded. This is the painful Minecraft lesson; it costs one table if done now.
+- **Per-world id mapping persisted in the save** (string→numeric table in the level header): saves survive mods being added/removed/updated, numeric ids are never hardcoded. This is the painful lesson of the genre; it costs one table if done now.
 - **Registry freeze point**: mods load → registries freeze → world loads. No mid-session registration; hot reload in dev only.
 - **Protocol carries the mod handshake**: at join, server sends its mod list + registry mapping + missing packs via asset sync (§7.5) — clients auto-download content mods Hytale-style; behavior mods that need a client half are declared in the manifest.
 - **Dependency resolution**: loader topo-sorts mods by manifest dependencies (semver ranges), refuses conflicting ids with clear errors.
@@ -241,7 +241,7 @@ Three tiers of mod, increasing power:
   - **EntityState** (position/velocity snapshots, interpolated client-side)
   - **Stats/Inventory/Craft** transactions, **Chat/System**
 - Transports behind one trait: **in-proc channel** (offline, milestone 1) and **QUIC via `quinn`** (multiplayer phase — streams for bulk chunk data, datagrams for entity snapshots; TLS built-in).
-- **Interest management**: each player gets chunks/entities within their view radius only. Client prediction for own movement; server reconciliation. (Standard Minecraft/Hytale model.)
+- **Interest management**: each player gets chunks/entities within their view radius only. Client prediction for own movement; server reconciliation. (The standard model for the genre.)
 
 ## 9. Persistence
 
@@ -287,7 +287,7 @@ No engine frameworks, no Bevy-the-engine, no wgpu. ~12 direct deps for a whole g
 
 1. **ECS**: `bevy_ecs` standalone (my pick — most capable, Flecs-like) vs `hecs` (smaller, more "own everything").
 2. **Noise**: `noise` crate vs hand-rolled SIMD simplex (perf-critical; can defer to a benchmark in phase 2).
-3. **Default X-Z playable border**: address space is 0..4.29B; pick the default fence (0..64M ≈ "bigger than Minecraft", or larger).
+3. **Default X-Z playable border**: address space is 0..4.29B; pick the default fence (0..64M, or larger).
 4. **Name/branding**: "opencreate" assumed from the directory name (fits the Create inspiration nicely).
 
 **Decided so far**: signed `i32` coordinates centered on 0,0,0 with sea level at Y=0; per-dimension Y ranges with **default −512..+5120** backed by sparse column storage (tall sky is free until built in); 30 TPS; multi-dimension worlds in the data model from day one; client–server always; ash+MoltenVK; WASM modding with `./mods/` drop-in; **RON** for content files; **`rapier3d` + Sable-style voxel octree layer** for phase-6 physics (validated by reading Sable's source — it ships exactly this: stock-ish Rapier fork + custom octree mid-phase).

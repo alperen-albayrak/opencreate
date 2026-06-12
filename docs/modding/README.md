@@ -20,7 +20,7 @@ The repo files are embedded into the binary as built-in defaults
 (`Registry::load_default`); `Registry::load_from_dir` reads a directory —
 the seam the mod loader will use.
 
-## Identity rules (the Minecraft lesson, §7.6)
+## Identity rules (§7.6)
 
 - **Namespaced string ids everywhere** (`oc:stone`, `mymod:copper`).
   String ids are the stable identity: saves persist them, mods reference

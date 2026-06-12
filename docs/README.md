@@ -1,6 +1,6 @@
 # OpenCreate Documentation
 
-Living documentation for OpenCreate — an open-source, Minecraft-class voxel
+Living documentation for OpenCreate — an open-source voxel
 game in Rust with its own Vulkan engine. These pages describe the project
 **as built**; the original approved design lives in
 [../ARCHITECTURE.md](../ARCHITECTURE.md) and is referenced throughout as

@@ -207,7 +207,7 @@ impl Session {
             && hit.normal != glam::IVec3::ZERO
         {
             let pos = hit.block + hit.normal;
-            // Water is replaceable, like Minecraft.
+            // Water is replaceable, as players expect.
             let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos)
                 && (!self.caps(registry).uses_inventory

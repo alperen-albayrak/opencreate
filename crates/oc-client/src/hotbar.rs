@@ -277,4 +277,25 @@ mod tests {
             assert_ne!(block_name(block), "block");
         }
     }
+
+    #[test]
+    fn hud_layout_scales_with_the_ui_setting() {
+        // The in-game HUD (hotbar slots, stat bars) follows the effective
+        // UI scale: doubling it doubles every element's size.
+        let hotbar = Hotbar::new();
+        let (w, h) = (3840.0, 2160.0);
+        let at_1 = hotbar.quads(w, h, 1.0, &[1; ITEMS.len()]);
+        let at_2 = hotbar.quads(w, h, 2.0, &[1; ITEMS.len()]);
+        // Slot background quads (skip the selection ring at index 0).
+        assert!((at_2[1].w - at_1[1].w * 2.0).abs() < 1e-3, "slot width scales");
+        assert!((at_2[1].h - at_1[1].h * 2.0).abs() < 1e-3, "slot height scales");
+
+        let bars_1 = stat_bars(w, h, 1.0, 5.0, 5.0, 5.0, 10.0);
+        let bars_2 = stat_bars(w, h, 2.0, 5.0, 5.0, 5.0, 10.0);
+        assert!((bars_2[0].w - bars_1[0].w * 2.0).abs() < 1e-3, "bar width scales");
+        // Both stay centered and on-screen at the bigger scale.
+        for q in at_2.iter().chain(bars_2.iter()) {
+            assert!(q.x >= 0.0 && q.x + q.w <= w && q.y + q.h <= h, "off-screen: {q:?}");
+        }
+    }
 }

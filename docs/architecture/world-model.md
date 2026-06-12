@@ -38,7 +38,7 @@ snow 9, planks 10. Properties live as methods on `BlockId`:
 
 ## Light model
 
-Minecraft-style **sky light + block light, 4 bits each**, computed by BFS
+Classic voxel **sky light + block light, 4 bits each**, computed by BFS
 flood fill (`oc_world::light`): column scan seeds sky light (level-15
 travels down through air unattenuated), emissive blocks seed block light,
 both propagate with per-block opacity costs. Light is **not stored** — it
