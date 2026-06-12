@@ -4,6 +4,7 @@
 //! the in-proc transport; the phase-4 dedicated binary runs the same crate
 //! headless over QUIC.
 
+pub mod creatures;
 pub mod falling;
 pub mod stats;
 
@@ -77,6 +78,8 @@ const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_GEN_INFLIGHT: usize = 24;
 /// Ticks between stat broadcasts (when they changed).
 const STATS_BROADCAST_TICKS: u64 = 8;
+/// Ticks between entity snapshots (15 Hz).
+const ENTITY_BROADCAST_TICKS: u64 = 2;
 /// Eye height above the feet, for the submerged check.
 const EYE_HEIGHT: f64 = 1.62;
 
@@ -233,6 +236,9 @@ impl Server {
             self.unload_unsubscribed();
             self.advance_time(tick_duration.as_secs_f64());
             if self.tick_stats(tick_duration.as_secs_f32()).is_err() {
+                break;
+            }
+            if self.tick_creatures(tick_duration.as_secs_f64()).is_err() {
                 break;
             }
 
@@ -478,6 +484,34 @@ impl Server {
                 stamina: current.stamina,
                 oxygen: current.oxygen,
             })?;
+        }
+        Ok(())
+    }
+
+    /// Simulates the wildlife (§5.6) and streams snapshots.
+    fn tick_creatures(&mut self, dt: f64) -> Result<(), Disconnected> {
+        if self.tick % creatures::SPAWN_INTERVAL_TICKS == 0 {
+            creatures::try_spawn(
+                &mut self.ecs,
+                &self.world,
+                &self.registry,
+                self.player_position,
+                self.seed,
+                self.tick,
+            );
+        }
+        creatures::tick(
+            &mut self.ecs,
+            &self.world,
+            &self.registry,
+            self.player_position,
+            self.seed,
+            self.tick,
+            dt,
+        );
+        if self.tick % ENTITY_BROADCAST_TICKS == 0 {
+            let snapshots = creatures::snapshots(&mut self.ecs);
+            self.transport.send(ServerMessage::Entities(snapshots))?;
         }
         Ok(())
     }

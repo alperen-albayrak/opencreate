@@ -67,10 +67,25 @@ pub enum ServerMessage {
     Respawn { position: DVec3 },
     /// The player's game mode changed (per-load registry id).
     GameMode(u16),
+    /// Full snapshot of every live entity near the player, sent at a fixed
+    /// cadence; entities absent from a snapshot are gone.
+    Entities(Vec<EntitySnapshot>),
     /// Authoritative inventory contents: (per-load item id, count) pairs.
     /// Client and server share the registry, so numeric ids agree; the
     /// phase-5 mod handshake replaces this with a synced mapping.
     Inventory { counts: Vec<(u16, u32)> },
+}
+
+/// One entity's state in a snapshot.
+#[derive(Debug, Clone, Copy)]
+pub struct EntitySnapshot {
+    pub id: u64,
+    /// Per-load creature kind id (shared registry).
+    pub kind: u16,
+    /// Feet position (bottom-center).
+    pub position: DVec3,
+    /// Facing, radians (0 = -Z).
+    pub yaw: f32,
 }
 
 /// The peer hung up.

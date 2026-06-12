@@ -1,0 +1,20 @@
+// Creature kinds (ARCHITECTURE.md §5.6): spawn rules and looks are data so
+// mods can add creatures the same way. `size` is (width, height) of the
+// collision box in blocks; `color` is the placeholder cuboid tint until
+// real entity models arrive.
+[
+    (
+        id: "oc:critter",
+        name: "Critter",
+        size: (0.6, 0.5),
+        color: (188, 142, 110),
+        speed: 1.8,
+    ),
+    (
+        id: "oc:strider",
+        name: "Strider",
+        size: (0.5, 0.9),
+        color: (120, 150, 190),
+        speed: 2.6,
+    ),
+]

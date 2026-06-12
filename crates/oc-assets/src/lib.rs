@@ -15,6 +15,7 @@ use serde::Deserialize;
 const DEFAULT_ITEMS: &str = include_str!("../../../data/items.ron");
 const DEFAULT_RECIPES: &str = include_str!("../../../data/recipes.ron");
 const DEFAULT_GAMEMODES: &str = include_str!("../../../data/gamemodes.ron");
+const DEFAULT_CREATURES: &str = include_str!("../../../data/creatures.ron");
 
 /// Runtime item handle (index into the registry). String ids (`oc:stone`)
 /// are the stable identity; numeric ids are per-load.
@@ -84,6 +85,24 @@ pub struct GameModeDef {
     pub noclip: bool,
 }
 
+/// Runtime creature-kind handle (index into the registry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CreatureKindId(pub u16);
+
+/// A creature kind, data-driven like blocks/items (§5.6).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreatureDef {
+    /// Namespaced stable id, e.g. `oc:critter`.
+    pub id: String,
+    pub name: String,
+    /// Collision box (width, height) in blocks.
+    pub size: (f32, f32),
+    /// Placeholder cuboid tint (sRGB) until entity models exist.
+    pub color: (u8, u8, u8),
+    /// Walk speed, blocks per second.
+    pub speed: f32,
+}
+
 /// A recipe's shopping list, independent of arrangement.
 #[derive(Debug, Clone)]
 pub struct RecipeView {
@@ -99,24 +118,36 @@ pub struct Registry {
     recipes: Vec<Recipe>,
     modes: Vec<GameModeDef>,
     mode_by_id: HashMap<String, ModeId>,
+    creatures: Vec<CreatureDef>,
+    creature_by_id: HashMap<String, CreatureKindId>,
 }
 
 impl Registry {
     /// Loads the embedded base-game content.
     pub fn load_default() -> Result<Self> {
-        Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES, DEFAULT_GAMEMODES)
+        Self::parse(DEFAULT_ITEMS, DEFAULT_RECIPES, DEFAULT_GAMEMODES, DEFAULT_CREATURES)
     }
 
-    /// Loads `items.ron` + `recipes.ron` + `gamemodes.ron` from a directory.
+    /// Loads the content files from a directory.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         let read = |name: &str| {
             std::fs::read_to_string(dir.join(name))
                 .with_context(|| format!("reading {}", dir.join(name).display()))
         };
-        Self::parse(&read("items.ron")?, &read("recipes.ron")?, &read("gamemodes.ron")?)
+        Self::parse(
+            &read("items.ron")?,
+            &read("recipes.ron")?,
+            &read("gamemodes.ron")?,
+            &read("creatures.ron")?,
+        )
     }
 
-    fn parse(items_ron: &str, recipes_ron: &str, gamemodes_ron: &str) -> Result<Self> {
+    fn parse(
+        items_ron: &str,
+        recipes_ron: &str,
+        gamemodes_ron: &str,
+        creatures_ron: &str,
+    ) -> Result<Self> {
         let items: Vec<ItemDef> = ron::from_str(items_ron).context("parsing items")?;
         let mut by_string_id = HashMap::new();
         let mut by_block = HashMap::new();
@@ -195,7 +226,40 @@ impl Registry {
             }
         }
 
-        Ok(Self { items, by_string_id, by_block, recipes, modes, mode_by_id })
+        let creatures: Vec<CreatureDef> =
+            ron::from_str(creatures_ron).context("parsing creatures")?;
+        let mut creature_by_id = HashMap::new();
+        for (index, def) in creatures.iter().enumerate() {
+            if creature_by_id
+                .insert(def.id.clone(), CreatureKindId(index as u16))
+                .is_some()
+            {
+                bail!("duplicate creature id {:?}", def.id);
+            }
+        }
+
+        Ok(Self {
+            items,
+            by_string_id,
+            by_block,
+            recipes,
+            modes,
+            mode_by_id,
+            creatures,
+            creature_by_id,
+        })
+    }
+
+    pub fn creature(&self, id: CreatureKindId) -> &CreatureDef {
+        &self.creatures[(id.0 as usize).min(self.creatures.len().saturating_sub(1))]
+    }
+
+    pub fn creature_count(&self) -> usize {
+        self.creatures.len()
+    }
+
+    pub fn find_creature(&self, string_id: &str) -> Option<CreatureKindId> {
+        self.creature_by_id.get(string_id).copied()
     }
 
     pub fn mode(&self, id: ModeId) -> &GameModeDef {
@@ -421,14 +485,14 @@ mod tests {
     #[test]
     fn duplicate_item_ids_are_rejected() {
         let items = r#"[(id: "oc:x", name: "X", block: None), (id: "oc:x", name: "Y", block: None)]"#;
-        assert!(Registry::parse(items, "[]", MODES).is_err());
+        assert!(Registry::parse(items, "[]", MODES, "[]").is_err());
     }
 
     #[test]
     fn recipes_with_unknown_items_are_rejected() {
         let items = r#"[(id: "oc:x", name: "X", block: None)]"#;
         let recipes = r#"[Shapeless(ingredients: ["oc:missing"], result: ("oc:x", 1))]"#;
-        assert!(Registry::parse(items, recipes, MODES).is_err());
+        assert!(Registry::parse(items, recipes, MODES, "[]").is_err());
     }
 
     const MODES: &str = r#"[(id: "oc:survival", name: "Survival", can_edit_blocks: true, uses_inventory: true, has_stats: true)]"#;
@@ -454,6 +518,16 @@ mod tests {
     }
 
     #[test]
+    fn creatures_load_with_stable_ids() {
+        let reg = registry();
+        assert!(reg.creature_count() >= 2);
+        let critter = reg.creature(reg.find_creature("oc:critter").unwrap());
+        assert_eq!(critter.name, "Critter");
+        assert!(critter.size.0 > 0.0 && critter.speed > 0.0);
+        assert!(reg.find_creature("oc:missing").is_none());
+    }
+
+    #[test]
     fn mods_can_define_new_modes() {
         // A mod-style mode: free building but grounded and mortal.
         let modes = r#"[
@@ -461,15 +535,15 @@ mod tests {
             (id: "mymod:builder", name: "Builder", can_edit_blocks: true, has_stats: true),
         ]"#;
         let items = r#"[(id: "oc:x", name: "X", block: None)]"#;
-        let reg = Registry::parse(items, "[]", modes).unwrap();
+        let reg = Registry::parse(items, "[]", modes, "[]").unwrap();
         assert_eq!(reg.mode_count(), 2);
         let builder = reg.mode(reg.find_mode("mymod:builder").unwrap());
         assert!(builder.can_edit_blocks && builder.has_stats);
         assert!(!builder.uses_inventory && !builder.can_fly, "defaults are off");
 
         // Duplicates and empty mode lists are load errors.
-        assert!(Registry::parse(items, "[]", "[]").is_err());
+        assert!(Registry::parse(items, "[]", "[]", "[]").is_err());
         let dup = r#"[(id: "oc:a", name: "A"), (id: "oc:a", name: "B")]"#;
-        assert!(Registry::parse(items, "[]", dup).is_err());
+        assert!(Registry::parse(items, "[]", dup, "[]").is_err());
     }
 }
