@@ -1,8 +1,11 @@
 //! Sound (phase 3 polish): everything is synthesized at startup — filtered
 //! noise bursts for footsteps and digging, a sine thud for placing, slow
 //! noise loops for wind and water — so the repo ships zero audio assets
-//! and stays fully our own. Output runs through rodio; a missing audio
-//! device just means silence, never a crash.
+//! and stays fully our own. Mods and sound packs can replace any effect
+//! by dropping `data/sounds/<name>.wav` (step_grass, step_sand,
+//! step_stone, step_wood, break, place, eat, splash, click, wind,
+//! water); files win over synthesis. Output runs through rodio; a
+//! missing audio device just means silence, never a crash.
 
 use std::collections::HashMap;
 
@@ -37,13 +40,52 @@ pub fn step_for(block: BlockId) -> Sound {
     }
 }
 
+/// A playable clip: synthesized (44.1k mono) or a loaded .wav override.
+struct Sample {
+    data: Vec<f32>,
+    rate: u32,
+    channels: u16,
+}
+
+impl Sample {
+    fn synthesized(data: Vec<f32>) -> Sample {
+        Sample { data, rate: RATE, channels: 1 }
+    }
+
+    fn buffer(&self) -> SamplesBuffer {
+        SamplesBuffer::new(
+            std::num::NonZero::new(self.channels.max(1)).expect("nonzero"),
+            std::num::NonZero::new(self.rate.max(1)).expect("nonzero"),
+            self.data.clone(),
+        )
+    }
+}
+
+/// `data/sounds/<name>.wav`, if a pack provides one.
+fn load_override(name: &str) -> Option<Sample> {
+    let file = std::fs::File::open(format!("data/sounds/{name}.wav")).ok()?;
+    let decoder = rodio::Decoder::try_from(file).ok()?;
+    let rate = decoder.sample_rate().get();
+    let channels = decoder.channels().get();
+    let data: Vec<f32> = decoder.collect();
+    if data.is_empty() {
+        return None;
+    }
+    tracing::info!("sound override loaded: {name}.wav");
+    Some(Sample { data, rate, channels })
+}
+
+fn sample_for(name: &str, synth: impl FnOnce() -> Vec<f32>) -> Sample {
+    load_override(name).unwrap_or_else(|| Sample::synthesized(synth()))
+}
+
 pub struct Audio {
     /// Owns the device; dropping it stops everything.
     _device: rodio::stream::MixerDeviceSink,
     effects: rodio::Player,
     wind: rodio::Player,
     water: rodio::Player,
-    samples: HashMap<Sound, Vec<f32>>,
+    samples: HashMap<Sound, Sample>,
     /// Master volume (settings), applied to every play call.
     volume: f32,
     /// Seconds until the next footstep is due.
@@ -70,24 +112,20 @@ impl Audio {
 
         // Ambient loops start at zero volume; update() fades them.
         wind.set_volume(0.0);
-        wind.append(
-            SamplesBuffer::new(rodio::nz!(1), rodio::nz!(44_100), wind_loop()).repeat_infinite(),
-        );
+        wind.append(sample_for("wind", wind_loop).buffer().repeat_infinite());
         water.set_volume(0.0);
-        water.append(
-            SamplesBuffer::new(rodio::nz!(1), rodio::nz!(44_100), water_loop()).repeat_infinite(),
-        );
+        water.append(sample_for("water", water_loop).buffer().repeat_infinite());
 
         let mut samples = HashMap::new();
-        samples.insert(Sound::StepGrass, step_burst(0.09, 1300.0, 0.16));
-        samples.insert(Sound::StepSand, step_burst(0.12, 800.0, 0.14));
-        samples.insert(Sound::StepStone, step_burst(0.05, 3200.0, 0.20));
-        samples.insert(Sound::StepWood, step_burst(0.07, 1900.0, 0.18));
-        samples.insert(Sound::Break, break_crunch());
-        samples.insert(Sound::Place, place_thud());
-        samples.insert(Sound::Eat, eat_crunch());
-        samples.insert(Sound::Splash, splash());
-        samples.insert(Sound::Click, click());
+        samples.insert(Sound::StepGrass, sample_for("step_grass", || step_burst(0.09, 1300.0, 0.16)));
+        samples.insert(Sound::StepSand, sample_for("step_sand", || step_burst(0.12, 800.0, 0.14)));
+        samples.insert(Sound::StepStone, sample_for("step_stone", || step_burst(0.05, 3200.0, 0.20)));
+        samples.insert(Sound::StepWood, sample_for("step_wood", || step_burst(0.07, 1900.0, 0.18)));
+        samples.insert(Sound::Break, sample_for("break", break_crunch));
+        samples.insert(Sound::Place, sample_for("place", place_thud));
+        samples.insert(Sound::Eat, sample_for("eat", eat_crunch));
+        samples.insert(Sound::Splash, sample_for("splash", splash));
+        samples.insert(Sound::Click, sample_for("click", click));
 
         Some(Audio {
             _device: device,
@@ -111,12 +149,11 @@ impl Audio {
         if self.volume <= 0.0 {
             return;
         }
-        let Some(samples) = self.samples.get(&sound) else { return };
+        let Some(sample) = self.samples.get(&sound) else { return };
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         let jitter = 0.92 + 0.16 * (self.rng >> 16) as f32 / 65535.0;
-        let buffer = SamplesBuffer::new(rodio::nz!(1), rodio::nz!(44_100), samples.clone());
         self.effects
-            .append(buffer.speed(jitter).amplify(self.volume));
+            .append(sample.buffer().speed(jitter).amplify(self.volume));
     }
 
     /// Per-frame state: footstep cadence and the ambient mix.
