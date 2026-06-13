@@ -41,7 +41,9 @@ impl BlockId {
     pub fn light_opacity(self) -> Option<u8> {
         match self {
             blocks::AIR => Some(1),
-            blocks::WATER => Some(3),
+            // One level per block, like Java 1.13+ — the old cost of 3
+            // turned everything below ~5 blocks pitch black.
+            blocks::WATER => Some(1),
             _ => None,
         }
     }

@@ -99,7 +99,10 @@ pub fn compute_light(
                 match field.blocks[i].light_opacity() {
                     None => break,
                     Some(cost) => {
-                        if !(cost == 1 && level == MAX_LIGHT) {
+                        // The free vertical shaft is air-only: water still
+                        // dims a level per block on the way down.
+                        let air = field.blocks[i] == crate::blocks::AIR;
+                        if !(air && level == MAX_LIGHT) {
                             level = level.saturating_sub(cost);
                         }
                         field.sky[i] = level;
@@ -160,7 +163,8 @@ fn bfs(
             let Some(cost) = blocks[ni].light_opacity() else {
                 continue;
             };
-            let next = if sky_rule && downward && level == MAX_LIGHT && cost == 1 {
+            let air = blocks[ni] == crate::blocks::AIR;
+            let next = if sky_rule && downward && level == MAX_LIGHT && air {
                 MAX_LIGHT
             } else {
                 level.saturating_sub(cost)

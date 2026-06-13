@@ -68,6 +68,9 @@ pub struct Session {
     pub sounds: Vec<crate::audio::Sound>,
     /// Whether the camera was submerged last frame (splash detection).
     pub underwater: bool,
+    /// How long the camera has been submerged, seconds (fog clears as
+    /// the eyes adjust, like Minecraft's 30-second ramp).
+    submerged_for: f32,
     /// Block item picked up in the inventory screen, riding the cursor.
     drag_item: Option<oc_assets::ItemId>,
     pub mode: ModeId,
@@ -136,6 +139,7 @@ impl Session {
             inventory_open: false,
             sounds: Vec::new(),
             underwater: false,
+            submerged_for: 0.0,
             drag_item: None,
             mode,
             cheats,
@@ -411,6 +415,8 @@ impl Session {
                 self.sounds.push(crate::audio::Sound::Splash);
             }
             self.underwater = now_underwater;
+            self.submerged_for =
+                if now_underwater { self.submerged_for + dt as f32 } else { 0.0 };
 
             // Walk-cycle state for the visible body: swing speed follows
             // ground speed, amplitude eases in and out.
@@ -648,7 +654,7 @@ impl Session {
             ],
             sky_angle: sky.angle,
             fog_distance: if underwater {
-                sky::UNDERWATER_FOG_DISTANCE.min(fog_distance)
+                sky::underwater_fog_distance(self.submerged_for).min(fog_distance)
             } else {
                 fog_distance
             },

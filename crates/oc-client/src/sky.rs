@@ -87,15 +87,20 @@ pub fn sky_at(day: f64) -> SkyState {
     }
 }
 
-/// How far you can see underwater before the fog saturates, in blocks.
-pub const UNDERWATER_FOG_DISTANCE: f32 = 40.0;
+/// Underwater visibility ramps like Minecraft's (dense on the dive,
+/// clearing as the eyes adjust; Java settles past 90 blocks, Bedrock
+/// at 60 — we sit between, scaled to our render distances).
+pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
+    let t = (submerged_secs / 12.0).clamp(0.0, 1.0);
+    24.0 + (72.0 - 24.0) * (t * t * (3.0 - 2.0 * t))
+}
 
-/// Submerged camera: dense blue fog swallows the sky and the horizon —
-/// both fade to deep water blue, scaled by daylight so night dives are
-/// dark. The sun keeps shining through as a bright glow overhead.
+/// Submerged camera: blue fog swallows the sky and the horizon — both
+/// fade to water blue, daylight-scaled with a floor so dusk dives stay
+/// readable. The sun keeps shining through as a bright glow overhead.
 pub fn underwater(state: &SkyState) -> SkyState {
     let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
-    let water = Vec3::new(0.05, 0.22, 0.42) * (0.04 + 0.96 * daylight);
+    let water = Vec3::new(0.09, 0.30, 0.55) * (0.22 + 0.78 * daylight);
     SkyState {
         sky_color: [water.x, water.y, water.z, 1.0],
         horizon_away: [water.x, water.y, water.z, 1.0],
@@ -178,11 +183,14 @@ mod tests {
         );
         let night = underwater(&sky_at(0.75));
         assert!(
-            night.sky_color[2] < noon.sky_color[2] * 0.2,
+            night.sky_color[2] < noon.sky_color[2] * 0.3,
             "night dives should be dark: {:?} vs {:?}",
             night.sky_color,
             noon.sky_color
         );
+        // The visibility ramp: dense on the dive, clear once adjusted.
+        assert!(underwater_fog_distance(0.0) < 30.0);
+        assert!(underwater_fog_distance(20.0) > 70.0);
     }
 
     #[test]
