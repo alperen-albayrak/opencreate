@@ -21,7 +21,7 @@ Current HUD stack (toggle F3): perf line (smoothed fps/frame ms), chunk
 counters, position, time of day + mode + held block, key hints; stat bars
 above the hotbar (oxygen only when submerged); 9-slot hotbar with count
 labels and dimmed empty slots; center crosshair; the E/C inventory screen
-(recipe list, slot grid, paper-doll).
+(per-slot grid, 3×3 crafting grid, configurable hotbar, paper-doll).
 
 Real fonts/imagery arrive with the §7.5 asset pipeline; this stack exists
 so gameplay UI never blocks on it.

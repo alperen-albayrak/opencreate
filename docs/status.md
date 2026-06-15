@@ -38,11 +38,11 @@ rendering (floating origin); textured chunk; fly camera.
 - Survival stats on `bevy_ecs` (drowning, stamina, hunger, regen, respawn),
   fall damage, stat bars
 - Items/recipes/game-modes/creatures all data-driven (RON registry)
-- Survival inventory (gather on break, consume on place, server-validated
-  with prediction rollback); the **E/C inventory screen** (paper-doll, stack
-  grid, click-to-craft recipe list, rebindable hotbar) is presentation-only —
-  storage stays a server item→count map, with no movable per-slot stacks or
-  3×3 crafting grid yet
+- Survival inventory: gather on break, consume on place (server-validated,
+  client-predicted). The **E/C inventory screen** holds 36 real per-slot
+  stacks (a configurable 9-slot hotbar + 27 main), a 3×3 crafting grid with
+  a result slot, a cursor for moving/splitting/merging stacks, and a
+  watching paper-doll; the server is authoritative (full resync per change)
 - Food & eating: apples drop from leaves (1-in-3, position-hashed),
   G eats (+3 hunger, server-validated); any item with a `food:` value
   in items.ron is edible
@@ -101,8 +101,7 @@ rendering (floating origin); textured chunk; fly camera.
 
 ## Not started yet
 
-A true drag-grid / per-slot inventory with a 3×3 crafting grid (today's
-screen is display-only), image skins + a texture-pack picker (color-set
-skins and a blocky player avatar already exist), the `./mods/` loader, a
-dedicated server binary + QUIC, palette compression, GPU occlusion culling,
-and physics grids. See [roadmap.md](roadmap.md).
+Image skins + a texture-pack picker (color-set skins and a blocky player
+avatar already exist), the `./mods/` loader, a dedicated server binary +
+QUIC, palette compression, GPU occlusion culling, and physics grids. See
+[roadmap.md](roadmap.md).

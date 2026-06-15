@@ -32,9 +32,13 @@ pub enum ClientMessage {
     SubscribeColumn(ChunkPos),
     /// The column left the client's view; the server may unload it.
     UnsubscribeColumn(ChunkPos),
-    /// Craft a recipe by registry index (client and server share the
-    /// registry; the phase-5 mod handshake syncs it instead).
-    Craft { recipe: u32 },
+    /// A click in the open inventory screen: move/stack/swap items between
+    /// slots, or take a crafted result. `right` is the right mouse button.
+    /// The server is authoritative and answers with a full Inventory resync.
+    InventoryClick { target: InvTarget, right: bool },
+    /// The inventory screen closed. The server returns the cursor stack and
+    /// anything left in the 3×3 crafting grid to storage, so nothing is lost.
+    CloseInventory,
     /// Ask to switch game mode by per-load registry id (granted freely in
     /// singleplayer; permission checks arrive with multiplayer).
     SetGameMode(u16),
@@ -89,10 +93,29 @@ pub enum ServerMessage {
     /// Full snapshot of every live entity near the player, sent at a fixed
     /// cadence; entities absent from a snapshot are gone.
     Entities(Vec<EntitySnapshot>),
-    /// Authoritative inventory contents: (per-load item id, count) pairs.
-    /// Client and server share the registry, so numeric ids agree; the
-    /// phase-5 mod handshake replaces this with a synced mapping.
-    Inventory { counts: Vec<(u16, u32)> },
+    /// Authoritative inventory: 36 storage slots (indices 0..9 are the
+    /// hotbar row), the 3×3 crafting grid, and the cursor stack held while
+    /// the screen is open. Each slot is `Some((per-load item id, count))`
+    /// or `None`. Sent as a full snapshot after any change — robust and
+    /// cheap (the §8 full-snapshot pattern); the phase-5 mod handshake
+    /// replaces the shared-registry id assumption with a synced mapping.
+    Inventory {
+        slots: Vec<Option<(u16, u32)>>,
+        craft: Vec<Option<(u16, u32)>>,
+        cursor: Option<(u16, u32)>,
+    },
+}
+
+/// A clickable slot in the inventory screen (wire form; the server maps it
+/// to its authoritative inventory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvTarget {
+    /// Storage slot, 0..36 — indices 0..9 are the hotbar row.
+    Storage(u8),
+    /// Crafting-grid slot, 0..9 (row-major 3×3).
+    Craft(u8),
+    /// The crafting result slot.
+    Output,
 }
 
 /// One entity's state in a snapshot.

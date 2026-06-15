@@ -5,7 +5,6 @@
 mod audio;
 mod avatar;
 mod camera;
-mod craft_menu;
 mod entities;
 mod far_terrain;
 mod hotbar;
@@ -580,8 +579,7 @@ impl App {
             }
             KeyCode::F5 if pressed => session.cycle_camera(),
             KeyCode::KeyE | KeyCode::KeyC if pressed => {
-                session.inventory_open = !session.inventory_open;
-                let open = session.inventory_open;
+                let open = session.toggle_inventory();
                 self.set_mouse_captured(!open);
             }
             KeyCode::KeyG if pressed => session.eat(&self.registry),
@@ -597,7 +595,7 @@ impl App {
             KeyCode::F3 if pressed => self.hud_visible = !self.hud_visible,
             KeyCode::Escape if pressed => {
                 if session.inventory_open {
-                    session.inventory_open = false;
+                    session.close_inventory();
                     self.set_mouse_captured(true);
                     return;
                 }
@@ -804,14 +802,12 @@ impl ApplicationHandler for App {
                 let inventory_open =
                     self.session.as_ref().is_some_and(|session| session.inventory_open);
                 match (&mut self.screen, button) {
-                    (Screen::InGame, MouseButton::Left) if inventory_open => {
+                    (Screen::InGame, MouseButton::Left | MouseButton::Right)
+                        if inventory_open =>
+                    {
                         if let Some(session) = &mut self.session {
-                            session.inventory_click(
-                                &self.registry,
-                                self.mouse_pos,
-                                (w, h),
-                                ui,
-                            );
+                            let right = button == MouseButton::Right;
+                            session.inventory_click(self.mouse_pos, (w, h), ui, right);
                         }
                     }
                     (Screen::InGame, _) if inventory_open => {}

@@ -16,9 +16,9 @@ use crate::far_terrain::FarTerrain;
 use crate::hotbar::{self, Hotbar};
 use crate::player::{MoveInput, Player};
 use crate::streaming::ChunkStreamer;
-use crate::{craft_menu, inventory_screen, sky};
+use crate::{inventory_screen, sky};
 use oc_assets::{GameModeDef, ModeId, Registry};
-use oc_protocol::{ClientMessage, InProcEnd, ServerMessage, Transport, in_proc_channel};
+use oc_protocol::{ClientMessage, InProcEnd, InvTarget, ServerMessage, Transport, in_proc_channel};
 use oc_renderer::{FrameCamera, Renderer};
 use oc_server::{ServerConfig, ServerHandle};
 use oc_world::BlockId;
@@ -30,7 +30,7 @@ const REACH: f64 = 6.0;
 /// Third-person camera orbit distance, blocks (pulled in by walls).
 const CAMERA_DISTANCE: f64 = 4.0;
 
-/// F5 cycles these like Minecraft: eyes, behind, facing.
+/// F5 cycles these: eyes, behind the player, facing the player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     FirstPerson,
@@ -69,18 +69,21 @@ pub struct Session {
     /// Whether the camera was submerged last frame (splash detection).
     pub underwater: bool,
     /// How long the camera has been submerged, seconds (fog clears as
-    /// the eyes adjust, like Minecraft's 30-second ramp).
+    /// the eyes adjust, over roughly 30 seconds).
     submerged_for: f32,
-    /// Block item picked up in the inventory screen, riding the cursor.
-    drag_item: Option<oc_assets::ItemId>,
     pub mode: ModeId,
     /// May this player use cheats (change mode / later run commands)?
     /// Server-authoritative; toggled from the pause menu by the owner.
     pub cheats: bool,
     /// Server-authoritative survival stats (health, hunger, stamina, oxygen).
     pub stats: [f32; 4],
-    /// Server-authoritative item counts, keyed by per-load item id.
-    inventory: std::collections::HashMap<u16, u32>,
+    /// Server-authoritative inventory mirror (full resync after any change):
+    /// 36 storage slots (indices 0..9 the hotbar row), the 3×3 crafting
+    /// grid, and the cursor stack held while the screen is open. Each entry
+    /// is `Some((per-load item id, count))`.
+    inv_slots: [Option<(u16, u32)>; oc_server::STORAGE_SLOTS],
+    inv_craft: [Option<(u16, u32)>; oc_server::CRAFT_SLOTS],
+    inv_cursor: Option<(u16, u32)>,
     entities: EntityMirror,
 }
 
@@ -140,11 +143,12 @@ impl Session {
             sounds: Vec::new(),
             underwater: false,
             submerged_for: 0.0,
-            drag_item: None,
             mode,
             cheats,
             stats: [10.0; 4],
-            inventory: std::collections::HashMap::new(),
+            inv_slots: [None; oc_server::STORAGE_SLOTS],
+            inv_craft: [None; oc_server::CRAFT_SLOTS],
+            inv_cursor: None,
             entities: EntityMirror::default(),
         })
     }
@@ -166,70 +170,102 @@ impl Session {
         registry.mode(self.mode)
     }
 
-    /// How many of a block's item the player carries.
-    fn count_of(&self, registry: &Registry, block: BlockId) -> u32 {
-        registry
-            .item_for_block(block)
-            .and_then(|item| self.inventory.get(&item.0).copied())
-            .unwrap_or(0)
-    }
-
-    fn hotbar_counts(&self, registry: &Registry) -> [u32; hotbar::ITEMS.len()] {
-        std::array::from_fn(|i| self.count_of(registry, self.hotbar.items[i]))
-    }
-
-    /// Carried stacks for the inventory screen, sorted by item id.
-    fn stacks(&self, registry: &Registry) -> Vec<inventory_screen::Stack> {
-        let mut stacks: Vec<inventory_screen::Stack> = self
-            .inventory
+    /// Total of an item (per-load id) across the storage slots.
+    fn item_count(&self, item: u16) -> u32 {
+        self.inv_slots
             .iter()
-            .filter(|(_, count)| **count > 0)
-            .map(|(&id, &count)| inventory_screen::Stack {
-                item: oc_assets::ItemId(id),
-                count,
-                name: registry.item(oc_assets::ItemId(id)).name.clone(),
-            })
-            .collect();
-        stacks.sort_by_key(|s| s.item.0);
-        stacks
+            .flatten()
+            .filter(|(i, _)| *i == item)
+            .map(|(_, n)| n)
+            .sum()
     }
 
-    /// A click inside the open inventory screen, framebuffer pixels.
-    pub fn inventory_click(
-        &mut self,
-        registry: &Registry,
-        pos: (f32, f32),
-        size: (f32, f32),
-        ui: f32,
-    ) {
-        let stacks = self.stacks(registry);
-        let recipes = craft_menu::lines(registry, |item| {
-            self.inventory.get(&item.0).copied().unwrap_or(0)
-        });
-        match inventory_screen::hit(pos, size.0, size.1, ui, stacks.len(), recipes.len()) {
-            inventory_screen::Hit::Stack(index) => {
-                // Pick up blocks (only blocks can bind to the hotbar).
-                let item = stacks[index].item;
-                self.drag_item = match self.drag_item {
-                    Some(current) if current == item => None,
-                    _ if registry.block_for_item(item).is_some() => Some(item),
-                    other => other,
-                };
-            }
-            inventory_screen::Hit::HotbarSlot(slot) => {
-                if let Some(item) = self.drag_item.take() {
-                    if let Some(block) = registry.block_for_item(item) {
-                        self.hotbar.items[slot] = block;
-                    }
-                }
-            }
-            inventory_screen::Hit::Recipe(recipe) => {
-                if recipes[recipe].craftable {
-                    self.outbox.push(ClientMessage::Craft { recipe: recipe as u32 });
-                }
-            }
-            inventory_screen::Hit::None => self.drag_item = None,
+    /// The block the selected hotbar slot would place, if any. Survival
+    /// reads the slot's item; creative uses the fixed palette.
+    fn held_block(&self, registry: &Registry) -> Option<BlockId> {
+        if self.caps(registry).uses_inventory {
+            let (item, _) = self.inv_slots[self.hotbar.selected]?;
+            registry.block_for_item(oc_assets::ItemId(item))
+        } else {
+            Some(hotbar::ITEMS[self.hotbar.selected])
         }
+    }
+
+    /// The nine hotbar display stacks (storage slots 0..9 in survival, the
+    /// fixed palette in creative).
+    fn hotbar_slots(&self, registry: &Registry) -> [hotbar::Slot; 9] {
+        if self.caps(registry).uses_inventory {
+            std::array::from_fn(|i| self.inv_slots[i].map(|(id, n)| (oc_assets::ItemId(id), n)))
+        } else {
+            std::array::from_fn(|i| {
+                registry.item_for_block(hotbar::ITEMS[i]).map(|item| (item, 1))
+            })
+        }
+    }
+
+    /// Predicts gathering one of an item, mirroring the server's `add`.
+    fn mirror_add(&mut self, item: u16) {
+        for slot in self.inv_slots.iter_mut() {
+            if let Some((i, c)) = slot
+                && *i == item
+                && *c < oc_server::STACK_MAX
+            {
+                *c += 1;
+                return;
+            }
+        }
+        for slot in self.inv_slots.iter_mut() {
+            if slot.is_none() {
+                *slot = Some((item, 1));
+                return;
+            }
+        }
+    }
+
+    /// Predicts consuming one of an item, mirroring the server's `take`.
+    fn mirror_take(&mut self, item: u16) {
+        for slot in self.inv_slots.iter_mut() {
+            if let Some((i, c)) = slot
+                && *i == item
+            {
+                *c -= 1;
+                if *c == 0 {
+                    *slot = None;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Toggles the inventory screen; returns the new open state. Closing
+    /// asks the server to return the cursor + crafting grid to storage.
+    pub fn toggle_inventory(&mut self) -> bool {
+        self.inventory_open = !self.inventory_open;
+        if !self.inventory_open {
+            self.outbox.push(ClientMessage::CloseInventory);
+        }
+        self.inventory_open
+    }
+
+    /// Closes the inventory screen (Esc), returning held items to storage.
+    pub fn close_inventory(&mut self) {
+        if self.inventory_open {
+            self.inventory_open = false;
+            self.outbox.push(ClientMessage::CloseInventory);
+        }
+    }
+
+    /// A click inside the open inventory screen (framebuffer pixels). The
+    /// server is authoritative; we translate the hit slot and send it,
+    /// then the Inventory resync reflects the move.
+    pub fn inventory_click(&mut self, pos: (f32, f32), size: (f32, f32), ui: f32, right: bool) {
+        let target = match inventory_screen::hit(pos, size.0, size.1, ui) {
+            inventory_screen::Hit::Storage(i) => InvTarget::Storage(i as u8),
+            inventory_screen::Hit::Craft(i) => InvTarget::Craft(i as u8),
+            inventory_screen::Hit::Output => InvTarget::Output,
+            inventory_screen::Hit::None => return,
+        };
+        self.outbox.push(ClientMessage::InventoryClick { target, right });
     }
 
     /// Eats an apple if we carry one and aren't full; the server validates
@@ -242,10 +278,10 @@ impl Session {
         let Some(apple) = registry.find("oc:apple") else {
             return;
         };
-        match self.inventory.get_mut(&apple.0) {
-            Some(count) if *count > 0 => *count -= 1, // predicted consumption
-            _ => return,
+        if self.item_count(apple.0) == 0 {
+            return;
         }
+        self.mirror_take(apple.0); // predicted consumption
         self.sounds.push(crate::audio::Sound::Eat);
         self.outbox.push(ClientMessage::Eat { item: apple.0 });
     }
@@ -286,11 +322,12 @@ impl Session {
                 if self.caps(registry).uses_inventory
                     && let Some(item) = registry.item_for_block(broken)
                 {
-                    *self.inventory.entry(item.0).or_insert(0) += 1;
+                    self.mirror_add(item.0);
                 }
             }
         }
         if std::mem::take(&mut self.place_clicked)
+            && let Some(block) = self.held_block(registry)
             && let Some(hit) = self.target()
             // normal == 0 means the camera is inside the block: nowhere to place.
             && hit.normal != glam::IVec3::ZERO
@@ -300,18 +337,17 @@ impl Session {
             let free = !self.streamer.world().block(pos).is_solid()
                 && !self.player.aabb().intersects_block(pos)
                 && (!self.caps(registry).uses_inventory
-                    || self.count_of(registry, self.hotbar.block()) > 0);
-            if free && self.streamer.world_mut().set_block(pos, self.hotbar.block()) {
+                    || registry
+                        .item_for_block(block)
+                        .is_some_and(|item| self.item_count(item.0) > 0));
+            if free && self.streamer.world_mut().set_block(pos, block) {
                 self.sounds.push(crate::audio::Sound::Place);
                 self.streamer.remesh_after_edit(renderer, pos)?;
-                self.outbox
-                    .push(ClientMessage::SetBlock { pos, block: self.hotbar.block() });
+                self.outbox.push(ClientMessage::SetBlock { pos, block });
                 if self.caps(registry).uses_inventory
-                    && let Some(item) = registry.item_for_block(self.hotbar.block())
+                    && let Some(item) = registry.item_for_block(block)
                 {
-                    self.inventory
-                        .entry(item.0)
-                        .and_modify(|n| *n = n.saturating_sub(1));
+                    self.mirror_take(item.0);
                 }
             }
         }
@@ -353,8 +389,10 @@ impl Session {
                 Some(ServerMessage::Entities(snapshot)) => {
                     self.entities.apply(snapshot, Instant::now());
                 }
-                Some(ServerMessage::Inventory { counts }) => {
-                    self.inventory = counts.into_iter().collect();
+                Some(ServerMessage::Inventory { slots, craft, cursor }) => {
+                    self.inv_slots = std::array::from_fn(|i| slots.get(i).copied().flatten());
+                    self.inv_craft = std::array::from_fn(|i| craft.get(i).copied().flatten());
+                    self.inv_cursor = cursor;
                 }
                 Some(ServerMessage::Respawn { position }) => {
                     info!("you died; respawning");
@@ -468,7 +506,7 @@ impl Session {
             p.z,
             self.day_fraction,
             if self.player.flying { "flying" } else { "walking" },
-            hotbar::block_name(self.hotbar.block()),
+            self.held_block(registry).map(hotbar::block_name).unwrap_or("-"),
             self.caps(registry).name.to_lowercase(),
             if self.player.flying { "walk" } else { "fly" },
         )
@@ -569,32 +607,30 @@ impl Session {
         }
         let caps = self.caps(registry);
 
-        let mut texts = if caps.uses_inventory {
-            self.hotbar.count_labels(w, h, ui, &self.hotbar_counts(registry))
-        } else {
-            Vec::new()
-        };
+        let hotbar_slots = self.hotbar_slots(registry);
+        let show_counts = caps.uses_inventory;
+        let mut texts = self.hotbar.count_labels(w, h, ui, &hotbar_slots, show_counts);
         let mut quads = if caps.noclip {
             Vec::new() // spectators carry nothing
         } else {
-            let counts = if caps.uses_inventory {
-                self.hotbar_counts(registry)
-            } else {
-                [1; hotbar::ITEMS.len()] // creative: everything available
-            };
-            self.hotbar.quads(w, h, ui, &counts)
+            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, show_counts)
         };
         if self.inventory_open {
-            let recipes = craft_menu::lines(registry, |item| {
-                self.inventory.get(&item.0).copied().unwrap_or(0)
-            });
+            let slots: [Option<(oc_assets::ItemId, u32)>; 36] =
+                std::array::from_fn(|i| self.inv_slots[i].map(|(id, n)| (oc_assets::ItemId(id), n)));
+            let craft: [Option<(oc_assets::ItemId, u32)>; 9] =
+                std::array::from_fn(|i| self.inv_craft[i].map(|(id, n)| (oc_assets::ItemId(id), n)));
+            let cursor = self.inv_cursor.map(|(id, n)| (oc_assets::ItemId(id), n));
+            let craft_items: [Option<oc_assets::ItemId>; 9] =
+                std::array::from_fn(|i| self.inv_craft[i].map(|(id, _)| oc_assets::ItemId(id)));
+            let craft_result = registry.match_recipe(&craft_items);
             let (panel_quads, panel_texts) = inventory_screen::panel(
                 registry,
-                &self.stacks(registry),
-                &recipes,
-                &self.hotbar.items,
+                &slots,
+                &craft,
+                cursor,
+                craft_result,
                 self.hotbar.selected,
-                self.drag_item,
                 &self.skin,
                 mouse,
                 w,
@@ -608,7 +644,7 @@ impl Session {
         if caps.has_stats
             && let Some(apple) = registry.find("oc:apple")
         {
-            let apples = self.inventory.get(&apple.0).copied().unwrap_or(0);
+            let apples = self.item_count(apple.0);
             if apples > 0 {
                 let plural = if apples == 1 { "" } else { "s" };
                 texts.push(oc_renderer::UiText {

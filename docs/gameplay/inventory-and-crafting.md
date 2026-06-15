@@ -2,18 +2,23 @@
 
 ## Inventory (as built)
 
-A server-authoritative multiset: item → count, living on the player's ECS
-entity. The **E** (or **C**) key opens an inventory screen — a paper-doll
-avatar, a 9×3 grid that *displays* your carried stacks, a click-to-craft
-recipe list, and a rebindable hotbar row (drag a block from the grid onto a
-hotbar slot to bind it). The screen is **presentation only**: storage stays
-the item → count map, so there are no movable per-slot stacks, no true 3×3
-crafting grid, and the armor slots are placeholders. A real per-slot server
-inventory arrives with the multiplayer protocol work.
+Server-authoritative **per-slot** storage on the player's ECS entity: 36
+slots — a 9-slot hotbar row (also keys 1..=9) and 27 main slots — each a
+stack of up to 99. The **E** (or **C**) key opens the inventory screen: a
+watching paper-doll on the left, a 3×3 crafting grid with a result slot, the
+main grid, and the hotbar row. Any item goes in any slot, so the hotbar is
+fully configurable (the armor slots are still placeholders).
 
-Client prediction keeps it snappy: pickups and consumption apply locally
-at click time, and every server `Inventory` message (sent after any
-change) is a full authoritative resync.
+Items move through a **cursor** stack: left-click picks up / drops / swaps /
+merges a whole stack, right-click takes half or drops one. The server owns
+all of it — clicks send `InventoryClick` and it answers with a full
+`Inventory` resync (storage slots + crafting grid + cursor). Closing the
+screen (`CloseInventory`) returns the cursor and crafting grid to storage,
+so nothing is lost.
+
+Client prediction keeps the world snappy: gathering, placing and eating
+apply locally at click time; inventory-screen moves are not predicted — they
+reconcile from the next resync.
 
 ## Crafting
 
@@ -25,16 +30,14 @@ Shaped( pattern: ["P", "P"], keys: {'P': "oc:planks"}, result: ("oc:stick", 4) )
 ```
 
 Shaped patterns match at any offset in the 3×3 grid (normalized at load);
-shapeless recipes are sorted multisets. The matcher and the
-ingredient-aggregation views live in `oc-assets` with tests.
+shapeless recipes are sorted multisets. The matcher (`Registry::match_recipe`,
+over a 3×3 grid of items) lives in `oc-assets` with tests.
 
-**In game**: E/C open the inventory screen, whose recipe list shows every
-recipe with its ingredient line and availability against your inventory;
-**click a craftable recipe** to make it. The wire message is
-`Craft { recipe-index }` (shared registry);
-the server re-validates, consumes ingredients, adds the result, and
-resyncs the inventory — a request the client shouldn't have sent simply
-resyncs to unchanged counts.
+**In game**: place items into the inventory screen's 3×3 crafting grid; the
+result appears in the result slot whenever the grid matches a recipe.
+Clicking the result takes one batch onto the cursor and consumes one of each
+ingredient. The server is authoritative — it matches the grid, applies the
+craft, and resyncs the whole inventory.
 
 Starter chain: 1 log → 4 planks; 2 planks (column) → 4 sticks;
 2×2 planks → 1 lamp; 2 snow → 1 stone.

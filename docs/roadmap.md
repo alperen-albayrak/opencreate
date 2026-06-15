@@ -19,11 +19,11 @@ passive creatures, multi-noise worldgen, villages
 houses with lit interiors), food & eating (apples from leaves, data-driven
 `food:` values).
 Remaining:
-- ~~**Inventory screen**~~ ✅ — E opens a panel: every carried stack in a
-  grid, click-to-craft recipe list, and a rebindable hotbar (drag a
-  block onto a slot to bind it). Server keeps the authoritative
-  item->count map; slot layout is client presentation. A true per-slot
-  server inventory joins the multiplayer protocol work.
+- ~~**Inventory screen**~~ ✅ — E opens a panel with 36 server-authoritative
+  per-slot stacks (a configurable 9-slot hotbar + 27 main), a 3×3 crafting
+  grid with a result slot, and a cursor for moving/splitting/merging stacks.
+  Items move via `InventoryClick`; the server resyncs the whole inventory.
+  Per-player inventories over the wire join the multiplayer protocol work.
 - **Ocean creatures** — fish with water movement AI
 - ~~**Sound**~~ ✅ — fully synthesized at startup (zero audio assets in
   the repo): per-surface footsteps with speed-following cadence, dig

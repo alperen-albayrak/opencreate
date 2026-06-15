@@ -22,7 +22,7 @@ use bevy_ecs::world::World as EcsWorld;
 use glam::DVec3;
 use oc_assets::{ItemId, ModeId, Registry};
 use oc_core::{ChunkPos, TICKS_PER_SECOND};
-use oc_protocol::{ClientMessage, Disconnected, ServerMessage, Transport};
+use oc_protocol::{ClientMessage, Disconnected, InvTarget, ServerMessage, Transport};
 use oc_world::World;
 use oc_world::store::{FolderStore, WorldStore};
 use oc_world::world::{GeneratedColumn, generate_column_data};
@@ -31,41 +31,218 @@ use tracing::{info, warn};
 use falling::FallTracker;
 use stats::{Outcome, StatInputs, Stats};
 
-/// What the player is carrying (server-authoritative, §6).
-#[derive(Component, Debug, Default, Clone)]
+/// Hotbar slots (the bottom row, also keys 1..=9).
+pub const HOTBAR_SLOTS: usize = 9;
+/// Total storage slots: the hotbar row plus three main rows.
+pub const STORAGE_SLOTS: usize = 36;
+/// The 3×3 crafting grid.
+pub const CRAFT_SLOTS: usize = 9;
+/// Maximum items in a single stack.
+pub const STACK_MAX: u32 = 99;
+
+/// One slot: an item with a count, or empty.
+type Stack = Option<(ItemId, u32)>;
+
+/// What the player is carrying (server-authoritative, §6). A fixed array of
+/// storage slots (indices 0..9 are the hotbar row, 9..36 the main grid),
+/// the 3×3 crafting grid, and the cursor stack held while the inventory
+/// screen is open. Items move slot-to-slot through cursor clicks
+/// ([`Inventory::click_storage`] / [`click_craft`](Inventory::click_craft)),
+/// the same rules survival players expect.
+#[derive(Component, Debug, Clone)]
 pub struct Inventory {
-    counts: std::collections::HashMap<ItemId, u32>,
+    slots: [Stack; STORAGE_SLOTS],
+    craft: [Stack; CRAFT_SLOTS],
+    cursor: Stack,
+}
+
+impl Default for Inventory {
+    fn default() -> Self {
+        Self { slots: [None; STORAGE_SLOTS], craft: [None; CRAFT_SLOTS], cursor: None }
+    }
 }
 
 impl Inventory {
+    /// Total of `item` across the storage slots (not the crafting grid or
+    /// cursor) — what gathering, placing and eating count against.
     pub fn count(&self, item: ItemId) -> u32 {
-        self.counts.get(&item).copied().unwrap_or(0)
+        self.slots
+            .iter()
+            .filter_map(|s| s.filter(|(i, _)| *i == item).map(|(_, n)| n))
+            .sum()
     }
 
-    pub fn add(&mut self, item: ItemId, n: u32) {
-        *self.counts.entry(item).or_insert(0) += n;
-    }
-
-    /// Removes `n` if available; false (and no change) otherwise.
-    pub fn take(&mut self, item: ItemId, n: u32) -> bool {
-        match self.counts.get_mut(&item) {
-            Some(have) if *have >= n => {
-                *have -= n;
-                if *have == 0 {
-                    self.counts.remove(&item);
-                }
-                true
+    /// Adds `n` of `item`: tops up matching stacks first, then fills empty
+    /// slots (hotbar row first). Overflow past a full inventory is dropped.
+    pub fn add(&mut self, item: ItemId, mut n: u32) {
+        for slot in self.slots.iter_mut() {
+            if n == 0 {
+                return;
             }
-            _ => false,
+            if let Some((i, c)) = slot
+                && *i == item
+                && *c < STACK_MAX
+            {
+                let put = (STACK_MAX - *c).min(n);
+                *c += put;
+                n -= put;
+            }
+        }
+        for slot in self.slots.iter_mut() {
+            if n == 0 {
+                return;
+            }
+            if slot.is_none() {
+                let put = n.min(STACK_MAX);
+                *slot = Some((item, put));
+                n -= put;
+            }
         }
     }
 
-    /// Wire form for the protocol.
-    pub fn to_counts(&self) -> Vec<(u16, u32)> {
-        let mut counts: Vec<(u16, u32)> =
-            self.counts.iter().map(|(id, n)| (id.0, *n)).collect();
-        counts.sort();
-        counts
+    /// Removes `n` of `item` across the storage slots; false (no change) if
+    /// fewer than `n` are present.
+    pub fn take(&mut self, item: ItemId, n: u32) -> bool {
+        if self.count(item) < n {
+            return false;
+        }
+        let mut remaining = n;
+        for slot in self.slots.iter_mut() {
+            if remaining == 0 {
+                break;
+            }
+            if let Some((i, c)) = slot
+                && *i == item
+            {
+                let taken = (*c).min(remaining);
+                *c -= taken;
+                remaining -= taken;
+                if *c == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        true
+    }
+
+    /// Clicks a storage slot with the cursor (left, or `right` for the
+    /// single-item / split-half variant).
+    pub fn click_storage(&mut self, index: usize, right: bool) {
+        if index >= STORAGE_SLOTS {
+            return;
+        }
+        let mut cursor = self.cursor;
+        click_into(&mut self.slots[index], &mut cursor, right);
+        self.cursor = cursor;
+    }
+
+    /// Clicks a crafting-grid slot with the cursor.
+    pub fn click_craft(&mut self, index: usize, right: bool) {
+        if index >= CRAFT_SLOTS {
+            return;
+        }
+        let mut cursor = self.cursor;
+        click_into(&mut self.craft[index], &mut cursor, right);
+        self.cursor = cursor;
+    }
+
+    /// The result the current crafting grid would yield, if any.
+    pub fn craft_result(&self, registry: &Registry) -> Option<(ItemId, u8)> {
+        let grid: [Option<ItemId>; CRAFT_SLOTS] =
+            std::array::from_fn(|i| self.craft[i].map(|(it, _)| it));
+        registry.match_recipe(&grid)
+    }
+
+    /// Takes one batch of the crafted result onto the cursor and consumes
+    /// one of each grid ingredient. No-op if nothing matches or the cursor
+    /// can't hold the result.
+    pub fn take_output(&mut self, registry: &Registry) {
+        let Some((result, count)) = self.craft_result(registry) else {
+            return;
+        };
+        let count = count as u32;
+        match self.cursor {
+            None => self.cursor = Some((result, count)),
+            Some((ci, cn)) if ci == result && cn + count <= STACK_MAX => {
+                self.cursor = Some((ci, cn + count));
+            }
+            _ => return,
+        }
+        for slot in self.craft.iter_mut() {
+            if let Some((_, c)) = slot {
+                *c -= 1;
+                if *c == 0 {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    /// Returns the cursor stack and any items in the crafting grid to
+    /// storage (called when the screen closes), so nothing is lost.
+    pub fn close(&mut self) {
+        for i in 0..CRAFT_SLOTS {
+            if let Some((item, n)) = self.craft[i].take() {
+                self.add(item, n);
+            }
+        }
+        if let Some((item, n)) = self.cursor.take() {
+            self.add(item, n);
+        }
+    }
+
+    /// Wire form for the protocol: (storage slots, crafting grid, cursor).
+    pub fn to_wire(&self) -> (Vec<Stack16>, Vec<Stack16>, Stack16) {
+        let w = |s: &Stack| s.map(|(i, n)| (i.0, n));
+        (
+            self.slots.iter().map(w).collect(),
+            self.craft.iter().map(w).collect(),
+            w(&self.cursor),
+        )
+    }
+}
+
+/// Wire form of one slot.
+type Stack16 = Option<(u16, u32)>;
+
+/// Resolves one cursor click against a slot. Left: pick up / drop / merge /
+/// swap the whole stack. Right: pick up half, or drop a single item.
+fn click_into(slot: &mut Stack, cursor: &mut Stack, right: bool) {
+    if right {
+        match (*cursor, *slot) {
+            (None, Some((i, c))) => {
+                let take = c.div_ceil(2);
+                *cursor = Some((i, take));
+                *slot = (c - take > 0).then_some((i, c - take));
+            }
+            (Some((ci, cn)), None) => {
+                *slot = Some((ci, 1));
+                *cursor = (cn > 1).then_some((ci, cn - 1));
+            }
+            (Some((ci, cn)), Some((si, sn))) if ci == si && sn < STACK_MAX => {
+                *slot = Some((si, sn + 1));
+                *cursor = (cn > 1).then_some((ci, cn - 1));
+            }
+            _ => {}
+        }
+    } else {
+        match (*cursor, *slot) {
+            (None, Some(_)) => {
+                *cursor = *slot;
+                *slot = None;
+            }
+            (Some(_), None) => {
+                *slot = *cursor;
+                *cursor = None;
+            }
+            (Some((ci, cn)), Some((si, sn))) if ci == si => {
+                let put = (STACK_MAX - sn.min(STACK_MAX)).min(cn);
+                *slot = Some((si, sn + put));
+                *cursor = (cn - put > 0).then_some((ci, cn - put));
+            }
+            (Some(_), Some(_)) => std::mem::swap(slot, cursor),
+            (None, None) => {}
+        }
     }
 }
 
@@ -322,12 +499,24 @@ impl Server {
                         self.transport.send(ServerMessage::Cheats(cheats))?;
                     }
                 }
-                ClientMessage::Craft { recipe } => {
+                ClientMessage::InventoryClick { target, right } => {
+                    // The screen only acts in modes that use the inventory;
+                    // others still get a resync (an empty, no-op inventory).
+                    if self.registry.mode(self.mode).uses_inventory {
+                        let mut entry = self.ecs.entity_mut(self.player_entity);
+                        let inv = entry.get_mut::<Inventory>().expect("inventory").into_inner();
+                        match target {
+                            InvTarget::Storage(i) => inv.click_storage(i as usize, right),
+                            InvTarget::Craft(i) => inv.click_craft(i as usize, right),
+                            InvTarget::Output => inv.take_output(&self.registry),
+                        }
+                    }
+                    // Authoritative resync — prediction reconciles for free.
+                    self.send_inventory()?;
+                }
+                ClientMessage::CloseInventory => {
                     let mut entry = self.ecs.entity_mut(self.player_entity);
-                    let inventory = entry.get_mut::<Inventory>().expect("inventory");
-                    try_craft(inventory.into_inner(), &self.registry, recipe as usize);
-                    // Always resync: success and rejection both end with the
-                    // client matching the authoritative counts.
+                    entry.get_mut::<Inventory>().expect("inventory").into_inner().close();
                     self.send_inventory()?;
                 }
                 ClientMessage::Eat { item } => self.handle_eat(item)?,
@@ -460,13 +649,13 @@ impl Server {
     }
 
     fn send_inventory(&mut self) -> Result<(), Disconnected> {
-        let counts = self
+        let (slots, craft, cursor) = self
             .ecs
             .entity(self.player_entity)
             .get::<Inventory>()
             .expect("inventory")
-            .to_counts();
-        self.transport.send(ServerMessage::Inventory { counts })
+            .to_wire();
+        self.transport.send(ServerMessage::Inventory { slots, craft, cursor })
     }
 
     fn export_for_send(&self, chunk: ChunkPos) -> Option<GeneratedColumn> {
@@ -664,23 +853,6 @@ impl Server {
     }
 }
 
-/// Consumes a recipe's ingredients and adds its result. False (and no
-/// change) when ingredients are missing or the index is bogus.
-pub fn try_craft(inventory: &mut Inventory, registry: &Registry, recipe: usize) -> bool {
-    let Some(view) = registry.recipe_view(recipe) else {
-        return false;
-    };
-    if !registry.craftable(recipe, |item| inventory.count(item)) {
-        return false;
-    }
-    for (item, n) in &view.ingredients {
-        let taken = inventory.take(*item, *n);
-        debug_assert!(taken, "craftable() guaranteed availability");
-    }
-    inventory.add(view.result.0, view.result.1 as u32);
-    true
-}
-
 /// Eats one of `item` if it is food, the player carries it, and there is
 /// hunger to restore. Pure over (inventory, stats); the caller resyncs.
 pub fn try_eat(
@@ -777,31 +949,44 @@ mod craft_tests {
     use super::*;
 
     #[test]
-    fn crafting_consumes_and_produces() {
+    fn grid_crafting_consumes_and_produces() {
         let registry = Registry::load_default().unwrap();
         let log = registry.find("oc:log").unwrap();
         let planks = registry.find("oc:planks").unwrap();
-        let lamp = registry.find("oc:lamp").unwrap();
-        let to_planks = (0..registry.recipe_count())
-            .find(|&i| registry.recipe_view(i).unwrap().result.0 == planks)
-            .unwrap();
-        let to_lamp = (0..registry.recipe_count())
-            .find(|&i| registry.recipe_view(i).unwrap().result.0 == lamp)
-            .unwrap();
 
         let mut inv = Inventory::default();
-        assert!(!try_craft(&mut inv, &registry, to_planks), "empty inventory");
+        assert!(inv.craft_result(&registry).is_none(), "empty grid makes nothing");
 
+        // Pick a log out of storage and drop it into the crafting grid.
         inv.add(log, 1);
-        assert!(try_craft(&mut inv, &registry, to_planks));
-        assert_eq!(inv.count(log), 0);
-        assert_eq!(inv.count(planks), 4);
+        inv.click_storage(0, false); // log -> cursor
+        inv.click_craft(0, false); // cursor -> craft slot 0
+        assert_eq!(inv.count(log), 0, "log left storage");
 
-        assert!(try_craft(&mut inv, &registry, to_lamp), "4 planks -> lamp");
-        assert_eq!(inv.count(planks), 0);
-        assert_eq!(inv.count(lamp), 1);
-        assert!(!try_craft(&mut inv, &registry, to_lamp), "out of planks");
-        assert!(!try_craft(&mut inv, &registry, 9999), "bogus index");
+        // 1 log -> 4 planks: the result appears, taking it consumes the grid.
+        assert_eq!(inv.craft_result(&registry), Some((planks, 4)));
+        inv.take_output(&registry); // result -> cursor
+        assert!(inv.craft_result(&registry).is_none(), "grid emptied");
+        inv.click_storage(0, false); // planks -> storage
+        assert_eq!(inv.count(planks), 4);
+    }
+
+    #[test]
+    fn cursor_clicks_move_split_and_close_loses_nothing() {
+        let registry = Registry::load_default().unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+
+        let mut inv = Inventory::default();
+        inv.add(stone, 10); // storage slot 0
+
+        inv.click_storage(0, false); // pick up all 10
+        inv.click_storage(5, false); // drop all into slot 5
+        assert_eq!(inv.count(stone), 10);
+
+        inv.click_storage(5, true); // right-click: split half (5) onto cursor
+        inv.click_storage(5, true); // right-click: drop one back (slot 6, cursor 4)
+        inv.close(); // cursor returns to storage
+        assert_eq!(inv.count(stone), 10, "closing the screen loses nothing");
     }
 
     #[test]
@@ -935,11 +1120,12 @@ mod tests {
             _ => None,
         });
         assert!(echoed.is_air(), "break echoes air");
-        let counts = wait_for(&mut client, |m| match m {
-            ServerMessage::Inventory { counts } => Some(counts),
+        let slots = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { slots, .. } => Some(slots),
             _ => None,
         });
-        assert_eq!(counts.iter().map(|(_, n)| n).sum::<u32>(), 1, "one item gathered");
+        let total: u32 = slots.iter().flatten().map(|(_, n)| n).sum();
+        assert_eq!(total, 1, "one item gathered");
 
         // ...place it elsewhere (consumes the item)...
         let edit = IVec3::new(spawn_chunk.x * 16 + 4, 200, spawn_chunk.z * 16 + 4);
@@ -951,11 +1137,12 @@ mod tests {
             _ => None,
         });
         assert_eq!(echoed, mined_block);
-        let counts = wait_for(&mut client, |m| match m {
-            ServerMessage::Inventory { counts } => Some(counts),
+        let slots = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { slots, .. } => Some(slots),
             _ => None,
         });
-        assert!(counts.is_empty(), "item consumed: {counts:?}");
+        let total: u32 = slots.iter().flatten().map(|(_, n)| n).sum();
+        assert_eq!(total, 0, "item consumed: {slots:?}");
 
         // ...and placing without items is rejected with a corrective echo.
         let reject = IVec3::new(spawn_chunk.x * 16 + 5, 200, spawn_chunk.z * 16 + 5);

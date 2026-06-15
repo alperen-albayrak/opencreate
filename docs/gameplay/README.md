@@ -7,7 +7,7 @@ How the game plays today. Controls live in
 
 You spawn on the nearest dry land with empty pockets, mid-morning of a
 30-minute day. In survival you punch terrain to gather blocks, craft
-from the inventory screen's recipe list (E/C), build, and manage four
+in the inventory screen's 3×3 grid (E/C), build, and manage four
 stats — while critters
 wander the grass and the sun sets on lamp-lit builds.
 
@@ -19,9 +19,9 @@ wander the grass and the sun sets on lamp-lit builds.
 - **Building**: break and place any of the 9 hotbar blocks; the wireframe
   outline shows your target (reach: 6 blocks). In survival, blocks are
   finite: what you place comes from what you gathered.
-- **Crafting**: log → planks → sticks/lamps via the inventory screen's
-  click-to-craft recipe list; a drag-and-drop per-slot grid is still
-  planned. Recipes are data ([modding](../modding/README.md)).
+- **Crafting**: place items into the inventory screen's 3×3 grid — log →
+  planks → sticks/lamps — and click the result to craft. Recipes are data
+  ([modding](../modding/README.md)).
 - **Survival pressure**: hunger, stamina, oxygen and fall damage —
   numbers in [survival.md](survival.md). Death returns you to spawn.
 - **Creatures**: passive wildlife spawns on grass nearby and wanders;

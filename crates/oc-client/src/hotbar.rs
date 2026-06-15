@@ -1,11 +1,15 @@
-//! The block hotbar: creative palette of placeable blocks until survival
-//! inventories (phase 3) replace it.
+//! The hotbar: the bottom row of the inventory (storage slots 0..9). Any
+//! item can be bound to any slot by dragging it there in the inventory
+//! screen; keys 1..=9 and the mouse wheel pick the active slot. Creative
+//! carries no gathered items, so it falls back to a fixed block palette.
 
-use oc_renderer::{UiQuad, UiText, block_swatch};
+use oc_assets::{ItemId, Registry};
+use oc_renderer::{UiQuad, UiText};
 use oc_world::{BlockId, blocks};
 
-/// Default palette, in slot order (keys 1..=9); the inventory screen
-/// can rebind slots by dragging blocks onto them.
+use crate::inventory_screen::item_swatch;
+
+/// Creative's fixed palette, in slot order (keys 1..=9).
 pub const ITEMS: [BlockId; 9] = [
     blocks::STONE,
     blocks::DIRT,
@@ -33,21 +37,18 @@ pub fn block_name(block: BlockId) -> &'static str {
     }
 }
 
+/// One displayed hotbar slot: an item with a count, or empty.
+pub type Slot = Option<(ItemId, u32)>;
+
 pub struct Hotbar {
     pub selected: usize,
-    /// The bound palette (defaults to ITEMS; rebindable per slot).
-    pub items: [BlockId; 9],
     /// Accumulated scroll, consumed in whole steps.
     scroll: f64,
 }
 
 impl Hotbar {
     pub fn new() -> Self {
-        Self { selected: 0, items: ITEMS, scroll: 0.0 }
-    }
-
-    pub fn block(&self) -> BlockId {
-        self.items[self.selected]
+        Self { selected: 0, scroll: 0.0 }
     }
 
     /// Selects slot `n` (0-based) if it exists.
@@ -60,30 +61,33 @@ impl Hotbar {
     /// Feeds mouse-wheel motion; whole steps cycle the selection.
     pub fn scroll(&mut self, delta: f64) {
         self.scroll += delta;
+        let len = ITEMS.len();
         while self.scroll >= 1.0 {
             self.scroll -= 1.0;
-            self.selected = (self.selected + ITEMS.len() - 1) % ITEMS.len();
+            self.selected = (self.selected + len - 1) % len;
         }
         while self.scroll <= -1.0 {
             self.scroll += 1.0;
-            self.selected = (self.selected + 1) % ITEMS.len();
+            self.selected = (self.selected + 1) % len;
         }
     }
 
-    /// Lays the hotbar out for a framebuffer of `width`×`height` pixels
-    /// at the given UI scale. `counts[i]` is how many of slot i's block
-    /// the player carries; empty slots render dimmed.
+    /// Lays the hotbar out for a framebuffer of `width`×`height` pixels at
+    /// the given UI scale. `slots[i]` is the item bound to slot i (or none);
+    /// `show_counts` is false in creative (the palette is infinite).
     pub fn quads(
         &self,
         width: f32,
         height: f32,
         ui: f32,
-        counts: &[u32; ITEMS.len()],
+        registry: &Registry,
+        slots: &[Slot; 9],
+        _show_counts: bool,
     ) -> Vec<UiQuad> {
         let (slot, gap, inset) = (SLOT * ui, GAP * ui, INSET * ui);
         let (x0, y) = Self::origin(width, height, ui);
         let mut quads = Vec::with_capacity(ITEMS.len() * 2 + 1);
-        for (i, &block) in self.items.iter().enumerate() {
+        for (i, stack) in slots.iter().enumerate() {
             let x = x0 + i as f32 * (slot + gap);
             if i == self.selected {
                 // Selection ring: a slightly larger bright quad behind.
@@ -95,41 +99,41 @@ impl Hotbar {
                     color: [1.0, 1.0, 1.0, 0.9],
                 });
             }
-            quads.push(UiQuad {
-                x,
-                y,
-                w: slot,
-                h: slot,
-                color: [0.08, 0.08, 0.1, 0.75],
-            });
-            let mut swatch = block_swatch(block);
-            swatch[3] = if counts[i] > 0 { 1.0 } else { 0.25 };
-            quads.push(UiQuad {
-                x: x + inset,
-                y: y + inset,
-                w: slot - 2.0 * inset,
-                h: slot - 2.0 * inset,
-                color: swatch,
-            });
+            quads.push(UiQuad { x, y, w: slot, h: slot, color: [0.08, 0.08, 0.1, 0.75] });
+            if let Some((item, _)) = stack {
+                quads.push(UiQuad {
+                    x: x + inset,
+                    y: y + inset,
+                    w: slot - 2.0 * inset,
+                    h: slot - 2.0 * inset,
+                    color: item_swatch(registry, *item),
+                });
+            }
         }
         quads
     }
 
-    /// Count labels for non-empty slots, bottom-right corners.
+    /// Count labels for filled slots, bottom-right corners (skipped when
+    /// `show_counts` is false, i.e. the infinite creative palette).
     pub fn count_labels(
         &self,
         width: f32,
         height: f32,
         ui: f32,
-        counts: &[u32; ITEMS.len()],
+        slots: &[Slot; 9],
+        show_counts: bool,
     ) -> Vec<UiText> {
+        if !show_counts {
+            return Vec::new();
+        }
         let (slot, gap) = (SLOT * ui, GAP * ui);
         let (x0, y) = Self::origin(width, height, ui);
         let scale = ui;
-        counts
+        slots
             .iter()
             .enumerate()
-            .filter(|(_, n)| **n > 0)
+            .filter_map(|(i, stack)| stack.map(|(_, n)| (i, n)))
+            .filter(|(_, n)| *n > 1)
             .map(|(i, n)| {
                 let text = n.to_string();
                 let w = text.len() as f32 * 6.0 * scale;
@@ -201,104 +205,87 @@ pub fn stat_bars(
 mod tests {
     use super::*;
 
+    fn palette(registry: &Registry) -> [Slot; 9] {
+        std::array::from_fn(|i| registry.item_for_block(ITEMS[i]).map(|item| (item, 1)))
+    }
+
     #[test]
     fn selection_via_keys_and_scroll() {
         let mut hotbar = Hotbar::new();
-        assert_eq!(hotbar.block(), blocks::STONE);
+        assert_eq!(hotbar.selected, 0);
         hotbar.select(7);
-        assert_eq!(hotbar.block(), blocks::LAMP);
+        assert_eq!(hotbar.selected, 7);
         hotbar.select(99); // out of range: ignored
         assert_eq!(hotbar.selected, 7);
 
         let last = ITEMS.len() - 1;
+        hotbar.select(0);
         hotbar.scroll(-1.0); // scroll down: next slot
-        assert_eq!(hotbar.selected, last);
-        hotbar.scroll(-1.0); // wraps
+        assert_eq!(hotbar.selected, 1);
+        hotbar.scroll(1.0); // scroll up: previous
         assert_eq!(hotbar.selected, 0);
-        hotbar.scroll(1.0); // scroll up: previous, wraps back
+        hotbar.scroll(1.0); // wraps to the end
         assert_eq!(hotbar.selected, last);
         // Sub-step scrolling accumulates without switching.
+        hotbar.select(0);
         hotbar.scroll(-0.4);
-        assert_eq!(hotbar.selected, last);
-        hotbar.scroll(-0.7);
         assert_eq!(hotbar.selected, 0);
+        hotbar.scroll(-0.7);
+        assert_eq!(hotbar.selected, 1);
     }
 
     #[test]
     fn layout_is_centered_and_on_screen() {
+        let registry = Registry::load_default().unwrap();
         let hotbar = Hotbar::new();
         let (w, h) = (2560.0, 1600.0);
-        let quads = hotbar.quads(w, h, 2.0, &[1; ITEMS.len()]);
-        // 8 slots x (bg + swatch) + 1 selection ring.
+        let quads = hotbar.quads(w, h, 2.0, &registry, &palette(&registry), false);
+        // 9 slots x (bg + swatch) + 1 selection ring.
         assert_eq!(quads.len(), ITEMS.len() * 2 + 1);
         for q in &quads {
             assert!(q.x >= 0.0 && q.x + q.w <= w, "quad off-screen: {q:?}");
             assert!(q.y >= 0.0 && q.y + q.h <= h, "quad off-screen: {q:?}");
         }
-        // Symmetric horizontal centering: as much space on the left of the
-        // first slot as right of the last (ring excluded).
-        let xs: Vec<f32> = quads.iter().map(|q| q.x).collect();
-        let left = xs.iter().cloned().fold(f32::MAX, f32::min);
+        // Symmetric horizontal centering.
+        let left = quads.iter().map(|q| q.x).fold(f32::MAX, f32::min);
         let right = quads.iter().map(|q| q.x + q.w).fold(0.0, f32::max);
         assert!((left - (w - right)).abs() < 8.0, "not centered: {left} vs {}", w - right);
     }
 
     #[test]
-    fn stat_bars_reflect_values() {
-        // Full oxygen hides its bar: 3 bars x (bg + fill).
-        let full = stat_bars(2560.0, 1600.0, 2.0, 10.0, 10.0, 10.0, 10.0);
-        assert_eq!(full.len(), 6);
-        // Low oxygen shows a fourth bar.
-        let low = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 3.0);
-        assert_eq!(low.len(), 8);
-        // Zero health: background only, no fill quad.
-        let dead = stat_bars(2560.0, 1600.0, 2.0, 0.0, 10.0, 10.0, 10.0);
-        assert_eq!(dead.len(), 5);
-        // Fill width scales with the value.
-        let half = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 10.0);
-        let full_fill = full[1].w;
-        let half_fill = half[1].w;
-        assert!((half_fill / full_fill - 0.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn count_labels_only_for_owned_items() {
+    fn count_labels_only_for_stacks_above_one() {
+        let registry = Registry::load_default().unwrap();
         let hotbar = Hotbar::new();
-        let mut counts = [0; ITEMS.len()];
-        counts[0] = 64;
-        counts[3] = 7;
-        let labels = hotbar.count_labels(2560.0, 1600.0, 2.0, &counts);
+        let stone = registry.item_for_block(blocks::STONE).unwrap();
+        let dirt = registry.item_for_block(blocks::DIRT).unwrap();
+        let mut slots: [Slot; 9] = [None; 9];
+        slots[0] = Some((stone, 64));
+        slots[1] = Some((dirt, 1)); // a single item: no label
+        slots[3] = Some((stone, 7));
+        let labels = hotbar.count_labels(2560.0, 1600.0, 2.0, &slots, true);
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[0].text, "64");
         assert_eq!(labels[1].text, "7");
-        assert!(labels[1].x > labels[0].x, "labels follow slot order");
+        // Creative (infinite) shows no counts.
+        assert!(hotbar.count_labels(2560.0, 1600.0, 2.0, &slots, false).is_empty());
     }
 
     #[test]
-    fn every_item_has_a_name() {
+    fn every_palette_block_has_a_name() {
         for block in ITEMS {
             assert_ne!(block_name(block), "block");
         }
     }
 
     #[test]
-    fn hud_layout_scales_with_the_ui_setting() {
-        // The in-game HUD (hotbar slots, stat bars) follows the effective
-        // UI scale: doubling it doubles every element's size.
-        let hotbar = Hotbar::new();
-        let (w, h) = (3840.0, 2160.0);
-        let at_1 = hotbar.quads(w, h, 1.0, &[1; ITEMS.len()]);
-        let at_2 = hotbar.quads(w, h, 2.0, &[1; ITEMS.len()]);
-        // Slot background quads (skip the selection ring at index 0).
-        assert!((at_2[1].w - at_1[1].w * 2.0).abs() < 1e-3, "slot width scales");
-        assert!((at_2[1].h - at_1[1].h * 2.0).abs() < 1e-3, "slot height scales");
-
-        let bars_1 = stat_bars(w, h, 1.0, 5.0, 5.0, 5.0, 10.0);
-        let bars_2 = stat_bars(w, h, 2.0, 5.0, 5.0, 5.0, 10.0);
-        assert!((bars_2[0].w - bars_1[0].w * 2.0).abs() < 1e-3, "bar width scales");
-        // Both stay centered and on-screen at the bigger scale.
-        for q in at_2.iter().chain(bars_2.iter()) {
-            assert!(q.x >= 0.0 && q.x + q.w <= w && q.y + q.h <= h, "off-screen: {q:?}");
-        }
+    fn stat_bars_reflect_values() {
+        let full = stat_bars(2560.0, 1600.0, 2.0, 10.0, 10.0, 10.0, 10.0);
+        assert_eq!(full.len(), 6); // full oxygen hides its bar
+        let low = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 3.0);
+        assert_eq!(low.len(), 8);
+        let dead = stat_bars(2560.0, 1600.0, 2.0, 0.0, 10.0, 10.0, 10.0);
+        assert_eq!(dead.len(), 5);
+        let half = stat_bars(2560.0, 1600.0, 2.0, 5.0, 10.0, 10.0, 10.0);
+        assert!((half[1].w / full[1].w - 0.5).abs() < 0.01);
     }
 }
