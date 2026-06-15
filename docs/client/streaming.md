@@ -5,7 +5,8 @@ around the camera. The server generates; the client meshes and draws.
 
 ## Flow
 
-1. **Subscribe**: every column within `VIEW_RADIUS (12) + 1` of the camera
+1. **Subscribe**: every column within the view radius + 1 of the camera
+   (`DEFAULT_VIEW_RADIUS` 12, adjustable via the render-distance setting, 4–24)
    that we haven't asked for → `SubscribeColumn`, nearest first. Terrain
    arrives as `Column` messages and is inserted into the mirror.
 2. **Mesh**: a column is meshed only when **all of its 3×3 neighborhood**

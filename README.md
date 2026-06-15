@@ -22,10 +22,11 @@ The game opens on a title screen — create worlds (name, seed, game mode) or pi
 | Left Shift | Descend while flying |
 | Left Ctrl | Sprint |
 | F | Toggle fly/walk |
+| F5 | Cycle camera (first / third-person back, front) |
 | Left / right click | Break / place block |
 | 1–9 / mouse wheel | Select hotbar slot |
-| C | Crafting recipe book (digits craft while open) |
-| E | Eat an apple (survival; apples drop from leaves) |
+| E or C | Open/close the inventory (carried stacks, click-to-craft list, rebindable hotbar) |
+| G | Eat an apple (survival; apples drop from leaves) |
 | F3 | Toggle the debug HUD |
 
 ## Goals

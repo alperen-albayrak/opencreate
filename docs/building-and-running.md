@@ -48,10 +48,11 @@ are both readable and tunable. Worlds open through a loading screen
 | Left Shift | Descend while flying |
 | Left Ctrl | Sprint (drains stamina when walking) |
 | F | Toggle fly/walk (creative & spectator only) |
+| F5 | Cycle camera view (first / third-person back, front) |
 | Left / right click | Break / place the targeted block |
 | 1–9 / mouse wheel | Select hotbar slot |
-| C | Open/close the crafting recipe book (digits craft while open) |
-| E | Eat an apple (survival; apples drop from leaves) |
+| E or C | Open/close the inventory screen (carried stacks, click-to-craft list, rebindable hotbar) |
+| G | Eat an apple (survival; apples drop from leaves) |
 | F3 | Toggle the debug HUD |
 
 New worlds spawn you on the nearest dry land to the origin. In survival
@@ -65,9 +66,10 @@ Pausing autosaves; quitting to title runs a final save.
   terrain is stored; everything else regenerates from the seed)
 - `level.txt` — seed, time of day, player position/look, game mode
 
-The server autosaves every 30 s and on window close. Delete the folder for
-a fresh world. The default seed is fixed in `oc-client` (`WORLD_SEED`)
-until a world-selection UI exists.
+The server autosaves every 30 s and on window close. Delete a world's
+folder for a fresh start. New worlds are created from the title screen
+(name, seed, mode, cheats); each world's seed is persisted in its
+`level.txt`.
 
 ## Dev profile note
 

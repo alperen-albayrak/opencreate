@@ -1,6 +1,6 @@
 # Status
 
-*Last updated: 2026-06-12 (worldgen v3).*
+*Last updated: 2026-06-15.*
 
 **Roadmap position:** phase 1 (engine bring-up) and phase 2 (world
 prototype) are complete; phase 3 (survival core) is well underway. The
@@ -39,12 +39,16 @@ rendering (floating origin); textured chunk; fly camera.
   fall damage, stat bars
 - Items/recipes/game-modes/creatures all data-driven (RON registry)
 - Survival inventory (gather on break, consume on place, server-validated
-  with prediction rollback), crafting via the C-key recipe book
+  with prediction rollback); the **E/C inventory screen** (paper-doll, stack
+  grid, click-to-craft recipe list, rebindable hotbar) is presentation-only —
+  storage stays a server item→count map, with no movable per-slot stacks or
+  3×3 crafting grid yet
 - Food & eating: apples drop from leaves (1-in-3, position-hashed),
-  E eats (+3 hunger, server-validated); any item with a `food:` value
+  G eats (+3 hunger, server-validated); any item with a `food:` value
   in items.ron is edible
 - Four game modes (survival/creative/adventure/spectator) as data
-- Passive creatures: server wander AI + interpolated client rendering
+- Passive creatures: cows & sheep as data-driven quadruped models
+  (server wander AI + interpolated client rendering)
 - **Menus**: title screen, world select/create/delete (name + seed +
   starting mode + cheats), pause menu with a game-mode picker and a
   cheats toggle; menus and all UI text are data (`menus.ron`,
@@ -67,6 +71,27 @@ rendering (floating origin); textured chunk; fly camera.
   sky reflection, sun glint, and — from the sampled opaque depth —
   Beer-Lambert absorption (shallow turquoise to deep blue), soft
   shorelines and in-shader occlusion
+- **Graphics stage C (sky & atmosphere)**: one `sky()` function feeds the
+  sky pass, water and fog — sun disc + glow, height/distance fog (hides
+  chunk pop-in), blocky cloud layer; **celestials**: moon with 8 phases +
+  halo, a procedural star field, and a real bright-star catalog (Orion, the
+  Big Dipper, Cassiopeia…) rotating with the day; directional dusk
+- **Far-terrain LOD**: a seed-generated blocky ring beyond the loaded
+  chunks (Voxy / Distant-Horizons style), drawn after the chunks and
+  discarded inside the loaded square; fog saturates near its edge. Toggle
+  in graphics settings
+- **Graphics stage D (lighting)**: per-vertex ambient occlusion baked into
+  the mesh (corner darkening). Cascaded sun shadows were built but
+  **shelved** — forced off, the pass kept dormant, no settings entry
+- **Graphics stage E (post & polish)**: dual-Kawase bloom pyramid,
+  auto-exposure (the eye adapts to caves and bright exits), and SSR water
+  reflections (settings toggle)
+- **Sound**: fully synthesized at startup — per-surface footsteps, dig/
+  place, eat, splash, menu clicks, looping wind/underwater ambience; master
+  volume slider; `data/sounds/*.wav` overrides the synthesis (sound packs)
+- **Underwater view**: Java-1.13 one-per-block water light plus an
+  eye-adjusting blue fog; the sky dome goes blue and clouds turn off while
+  submerged
 
 ## Known issues
 
@@ -76,6 +101,8 @@ rendering (floating origin); textured chunk; fly camera.
 
 ## Not started yet
 
-Drag-grid inventory screen, `./mods/` loader,
-texture packs/skins, dedicated server binary + QUIC, palette compression,
-LOD, GPU occlusion culling, physics grids. See [roadmap.md](roadmap.md).
+A true drag-grid / per-slot inventory with a 3×3 crafting grid (today's
+screen is display-only), image skins + a texture-pack picker (color-set
+skins and a blocky player avatar already exist), the `./mods/` loader, a
+dedicated server binary + QUIC, palette compression, GPU occlusion culling,
+and physics grids. See [roadmap.md](roadmap.md).

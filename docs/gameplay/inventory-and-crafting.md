@@ -3,10 +3,13 @@
 ## Inventory (as built)
 
 A server-authoritative multiset: item → count, living on the player's ECS
-entity. There are no slots/stacks yet — the hotbar is a fixed palette of
-the 9 placeable blocks with live counts, and non-block items (sticks)
-exist only as counts. The drag-and-drop inventory screen with a real
-3×3 crafting grid is the next UI milestone.
+entity. The **E** (or **C**) key opens an inventory screen — a paper-doll
+avatar, a 9×3 grid that *displays* your carried stacks, a click-to-craft
+recipe list, and a rebindable hotbar row (drag a block from the grid onto a
+hotbar slot to bind it). The screen is **presentation only**: storage stays
+the item → count map, so there are no movable per-slot stacks, no true 3×3
+crafting grid, and the armor slots are placeholders. A real per-slot server
+inventory arrives with the multiplayer protocol work.
 
 Client prediction keeps it snappy: pickups and consumption apply locally
 at click time, and every server `Inventory` message (sent after any
@@ -25,9 +28,10 @@ Shaped patterns match at any offset in the 3×3 grid (normalized at load);
 shapeless recipes are sorted multisets. The matcher and the
 ingredient-aggregation views live in `oc-assets` with tests.
 
-**In game**: C opens the recipe book — every recipe listed with its
-ingredient line and availability against your inventory; number keys
-craft. The wire message is `Craft { recipe-index }` (shared registry);
+**In game**: E/C open the inventory screen, whose recipe list shows every
+recipe with its ingredient line and availability against your inventory;
+**click a craftable recipe** to make it. The wire message is
+`Craft { recipe-index }` (shared registry);
 the server re-validates, consumes ingredients, adds the result, and
 resyncs the inventory — a request the client shouldn't have sent simply
 resyncs to unchanged counts.

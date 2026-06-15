@@ -35,6 +35,11 @@ the 5-second perf log watch the §11 budgets continuously.
 | `entities` | Creature mirror with snapshot interpolation |
 | `hotbar`, `craft_menu` | UI state + pure layout (heavily unit-tested) |
 | `sky` | Day/night: sun direction, ambient, sky color from time of day |
+| `inventory_screen`, `avatar` | The E/C inventory panel + the paper-doll / third-person player body (color skins) |
+| `menu`, `settings` | Title / create / pause screens and the settings sliders |
+| `audio` | Synthesized sound, with `data/sounds/*.wav` overrides |
+| `far_terrain` | Builds the coarse far-terrain LOD ring |
+| `session` | Per-world session state: input, mode, inventory, server-message handling |
 
 ## Movement feel (current numbers)
 

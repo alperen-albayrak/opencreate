@@ -12,15 +12,16 @@ everything 2D from per-frame host-visible vertex buffers:
   selection ring, stat bars, crosshair, craft panel — all quads.
 
 Layout is **pure client code with unit tests** (`hotbar.rs`,
-`craft_menu.rs`): centering, on-screen bounds, count labels, bar fill
+`craft_menu.rs`, `inventory_screen.rs`): centering, on-screen bounds, count
+labels, bar fill
 ratios and panel fitting are all asserted headlessly; the GPU side just
 draws what it's given.
 
 Current HUD stack (toggle F3): perf line (smoothed fps/frame ms), chunk
 counters, position, time of day + mode + held block, key hints; stat bars
 above the hotbar (oxygen only when submerged); 9-slot hotbar with count
-labels and dimmed empty slots; center crosshair; the C-key recipe book
-panel.
+labels and dimmed empty slots; center crosshair; the E/C inventory screen
+(recipe list, slot grid, paper-doll).
 
 Real fonts/imagery arrive with the §7.5 asset pipeline; this stack exists
 so gameplay UI never blocks on it.
