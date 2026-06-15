@@ -4,9 +4,15 @@ Passive wildlife, server-simulated, defined in `data/creatures.ron`
 (see [modding](../modding/README.md) — kinds are content, not code):
 
 ```ron
-( id: "oc:critter", name: "Critter", size: (0.6, 0.5),
-  color: (188, 142, 110), speed: 1.8 )
+( id: "oc:cow", name: "Cow", size: (0.9, 1.4),
+  color: (109, 74, 49), accent: Some((211, 200, 186)),
+  model: "quadruped", speed: 1.1 )
 ```
+
+`size` is the (width, height) collision box; `color`/`accent` tint the body
+and its face/legs; `model` selects the client mesh — cows and sheep use
+`"quadruped"` (a torso on four legs with the head out front, built from
+tinted cuboids until the asset pipeline brings real models).
 
 ## Spawning (`creatures::try_spawn`, every 60 ticks)
 

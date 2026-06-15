@@ -42,5 +42,5 @@ outgrows `oc-world/terrain.rs`), `oc-net` (QUIC, phase 4), `oc-mods`
 | oc-assets | `lib` (Registry: items, recipes + matching, modes, creatures) |
 | oc-protocol | `lib` (messages, `Transport`, `in_proc_channel`) |
 | oc-server | `lib` (tick loop, subscriptions, edits, persistence), `stats`, `falling`, `creatures` |
-| oc-renderer | `lib` (frame orchestration), `context`, `swapchain`, `depth`, `chunk_renderer`, `mesh` (greedy), `texture`, `outline`, `entity`, `ui`, `font` |
-| oc-client | `lib` (app/frame loop/edits), `streaming`, `player`, `camera`, `sky`, `hotbar`, `craft_menu`, `entities` |
+| oc-renderer | `lib` (frame orchestration), `context`, `swapchain`, `depth`, `chunk_renderer`, `mesh` (greedy), `texture`, `outline`, `entity`, `ui`, `font`; graphics stages: `hdr`, `bloom`, `exposure`, `sky_pass`, `clouds`, `far_renderer`, `shadow` (dormant) |
+| oc-client | `lib` (app/frame loop/edits), `session`, `streaming`, `player`, `camera`, `sky`, `hotbar`, `craft_menu`, `inventory_screen`, `entities`, `avatar`, `far_terrain`, `audio`, `menu`, `settings` |

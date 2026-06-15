@@ -84,7 +84,9 @@ pub struct FrameCamera {
     pub fog_distance: f32,
     /// Draw the cloud layer this frame (graphics setting).
     pub clouds: bool,
-    /// Sun shadows enabled (settings toggle).
+    /// Cascaded sun shadows. Shelved: forced `false` at every call site
+    /// (the look never convinced), so the renderer keeps the pass dormant.
+    /// There is no settings toggle yet — re-enabling awaits a better design.
     pub shadows: bool,
     /// Water reflects the scene (SSR; settings toggle).
     pub water_reflections: bool,

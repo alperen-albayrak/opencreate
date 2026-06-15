@@ -13,7 +13,7 @@ ungenerated neighbors read as air.
 ## Algorithm
 
 For each of the 6 face directions, for each of 16 slices: build a 16×16
-mask of visible faces keyed by `(texture layer, light, opacity)`, then
+mask of visible faces keyed by `(texture layer, light, opacity, AO)`, then
 greedily grow maximal rectangles (width then height). A face is visible
 unless its neighbor is opaque (water additionally hides its own kind, so
 water volumes have no internal faces). Water quads emit both windings
@@ -26,7 +26,7 @@ pseudo-random sections with varying light.
 ## Vertex format (8 bytes, decoded in `chunk.wgsl`)
 
 ```
-word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4
+word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
 word 1: texture layer:16 | light:8        (light = sky:4 | block:4)
 ```
 
@@ -34,7 +34,9 @@ Corner positions are 0..=16; `su`/`sv` are the merged quad's extents along
 the face's UV axes — the shader multiplies the corner UV by them and the
 REPEAT sampler tiles the texture per block, so merged quads look identical
 to unmerged ones. Faces carry the light of the transparent voxel they face
-into.
+into. Each vertex also packs 2 bits of ambient occlusion (corner darkening,
+0 darkest..3 open); because AO is per-corner, quads merge only along axes
+where it stays constant.
 
 ## Textures
 

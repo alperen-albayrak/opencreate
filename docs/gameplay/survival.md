@@ -14,7 +14,7 @@ The authoritative numbers (all server-enforced; see
 ## Food
 
 Breaking leaves has a 1-in-3 (position-hashed) chance of dropping an
-**apple** alongside the leaves; **E eats one** (+3 hunger, capped at 10
+**apple** alongside the leaves; **G eats one** (+3 hunger, capped at 10
 — a full belly refuses food). The HUD shows your apple count above the
 stat bars whenever you carry any. Food is data: any item with a `food:`
 value in `items.ron` is edible, so mods add foods by adding items.

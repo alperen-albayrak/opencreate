@@ -33,7 +33,8 @@ snow 9, planks 10. Properties live as methods on `BlockId`:
 
 - `is_solid()` — collides, stops raycasts (everything but air and water)
 - `is_opaque()` — hides adjacent faces in meshing (same set today)
-- `light_opacity()` — light pass-through cost: air 1, water 3, solids block
+- `light_opacity()` — light pass-through cost: air 1, water 1 (one per
+  block, Java-1.13 rule), solids block
 - `light_emission()` — lamp 15, everything else 0
 
 ## Light model

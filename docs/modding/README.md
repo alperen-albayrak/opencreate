@@ -12,9 +12,11 @@ formats from `./mods/`, so a large share of mods need zero code.
 | `data/items.ron` | Items: namespaced id, display name, optional block-state id they place, food value |
 | `data/recipes.ron` | Shaped + shapeless crafting recipes |
 | `data/gamemodes.ron` | Game modes as capability-flag bundles |
-| `data/creatures.ron` | Creature kinds: collision size, tint, speed |
+| `data/creatures.ron` | Creature kinds: collision size, body/accent tint, `model` (e.g. `quadruped`), speed |
 | `data/menus.ron` | Menu screens: entries with namespaced ids, language-key labels, named actions — mods will add buttons or replace vanilla ones by id |
 | `data/lang/*.ron` | UI strings by key; adding a language = adding a file |
+| `data/skins.ron` | Player skins as color sets (per-body-part tints) — the selected skin plus the definitions |
+| `data/sounds/*.wav` | Optional sound-pack overrides: a file replaces the synthesized clip of the same name |
 
 The repo files are embedded into the binary as built-in defaults
 (`Registry::load_default`); `Registry::load_from_dir` reads a directory —
