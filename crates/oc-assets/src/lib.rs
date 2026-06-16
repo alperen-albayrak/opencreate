@@ -34,6 +34,14 @@ pub struct ItemDef {
     /// Hunger points (0..=10 scale) restored when eaten; 0 = not food.
     #[serde(default)]
     pub food: u32,
+    /// Creative-inventory tab this item belongs to (e.g. "building",
+    /// "natural", "items"). Data-driven, so mods extend the tab set.
+    #[serde(default = "default_category")]
+    pub category: String,
+}
+
+fn default_category() -> String {
+    "misc".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +96,11 @@ pub struct GameModeDef {
     pub can_fly: bool,
     #[serde(default)]
     pub noclip: bool,
+    /// The creative item palette: a tabbed all-items picker with infinite
+    /// stacks and a trash slot. Composes with `uses_inventory: false`
+    /// (placing/breaking never consume or gather, so counts don't drop).
+    #[serde(default)]
+    pub creative_palette: bool,
 }
 
 /// Runtime creature-kind handle (index into the registry).
@@ -361,6 +374,35 @@ impl Registry {
         self.items.len()
     }
 
+    /// Distinct creative-inventory categories, in first-seen registry order.
+    pub fn categories(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for item in &self.items {
+            if !seen.contains(&item.category.as_str()) {
+                seen.push(item.category.as_str());
+            }
+        }
+        seen
+    }
+
+    /// Item ids in a category, in registry order.
+    pub fn items_in_category(&self, category: &str) -> Vec<ItemId> {
+        (0..self.items.len())
+            .filter(|&i| self.items[i].category == category)
+            .map(|i| ItemId(i as u16))
+            .collect()
+    }
+
+    /// Item ids whose name contains `query` (case-insensitive), in registry
+    /// order. An empty query matches every item.
+    pub fn search(&self, query: &str) -> Vec<ItemId> {
+        let q = query.to_lowercase();
+        (0..self.items.len())
+            .filter(|&i| q.is_empty() || self.items[i].name.to_lowercase().contains(&q))
+            .map(|i| ItemId(i as u16))
+            .collect()
+    }
+
     pub fn find(&self, string_id: &str) -> Option<ItemId> {
         self.by_string_id.get(string_id).copied()
     }
@@ -555,6 +597,23 @@ mod tests {
     fn duplicate_item_ids_are_rejected() {
         let items = r#"[(id: "oc:x", name: "X", block: None), (id: "oc:x", name: "Y", block: None)]"#;
         assert!(Registry::parse(items, "[]", MODES, "[]").is_err());
+    }
+
+    #[test]
+    fn categories_group_items_and_search_filters_by_name() {
+        let reg = registry();
+        let cats = reg.categories();
+        assert!(!cats.is_empty(), "items declare categories");
+        // Every listed category has at least one item, and the categories
+        // partition the item set.
+        let grouped: usize = cats.iter().map(|c| reg.items_in_category(c).len()).sum();
+        assert_eq!(grouped, reg.item_count(), "categories partition all items");
+
+        let stone = reg.find("oc:stone").unwrap();
+        assert!(reg.search("stone").contains(&stone));
+        assert!(reg.search("STO").contains(&stone), "search is case-insensitive");
+        assert_eq!(reg.search("").len(), reg.item_count(), "empty query matches all");
+        assert!(reg.search("zzz_nonexistent").is_empty());
     }
 
     #[test]

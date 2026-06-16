@@ -43,6 +43,10 @@ rendering (floating origin); textured chunk; fly camera.
   stacks (a configurable 9-slot hotbar + 27 main), a 3×3 crafting grid with
   a result slot, a cursor for moving/splitting/merging stacks, and a
   watching paper-doll; the server is authoritative (full resync per change)
+- **Creative inventory**: a tabbed all-items palette (category + Search tabs)
+  with infinite stacks, a trash slot on the Inventory tab, and a real
+  configurable hotbar/inventory filled from the palette; placing never
+  decreases counts
 - Food & eating: apples drop from leaves (1-in-3, position-hashed),
   G eats (+3 hunger, server-validated); any item with a `food:` value
   in items.ron is edible

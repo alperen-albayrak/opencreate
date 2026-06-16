@@ -1,16 +1,21 @@
 # Game Modes
 
 Modes are **data** (`data/gamemodes.ron`), not code: each is a namespaced
-id, a display name, and five engine capability flags. Mods add modes by
+id, a display name, and six engine capability flags. Mods add modes by
 shipping more entries — the pause menu's mode picker lists registry
 order, so modded modes join automatically.
 
-| Mode | edit blocks | uses inventory | stats & falls | flight | noclip |
-|---|---|---|---|---|---|
-| `oc:survival` | ✓ | ✓ | ✓ | – | – |
-| `oc:creative` | ✓ | – (free) | – | F toggles | – |
-| `oc:adventure` | – | – | ✓ | – | – |
-| `oc:spectator` | – | – | – | always | ✓ |
+| Mode | edit blocks | uses inventory | stats & falls | flight | noclip | creative palette |
+|---|---|---|---|---|---|---|
+| `oc:survival` | ✓ | ✓ | ✓ | – | – | – |
+| `oc:creative` | ✓ | – (free) | – | F toggles | – | ✓ |
+| `oc:adventure` | – | ✓ | ✓ | – | – | – |
+| `oc:spectator` | – | – | – | always | ✓ | ✓ |
+
+Adventure carries the **survival inventory** (openable, craftable) but can't
+break or place, so it fills only from future content (chests, drops).
+Spectator opens the **creative palette** to browse, but places nothing — it
+can't edit blocks.
 
 ## The flags (engine vocabulary)
 
@@ -20,6 +25,10 @@ order, so modded modes join automatically.
 - `has_stats` — survival stats tick and falls hurt
 - `can_fly` — F toggles flight
 - `noclip` — always flying, passes through blocks, hotbar/highlight hidden
+- `creative_palette` — the inventory screen gains a tabbed all-items palette
+  (infinite stacks) and a trash slot; the player fills a real, configurable
+  hotbar/inventory from it, and placing never consumes (composes with
+  `uses_inventory: false`)
 
 New capability *semantics* (beyond composing these flags) come through the
 phase-5 WASM behavior API, not data.

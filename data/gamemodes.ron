@@ -7,6 +7,7 @@
 //   has_stats        health/hunger/stamina/oxygen tick, falls hurt
 //   can_fly          flight can be toggled
 //   noclip           always flies, passes through blocks, hidden hotbar
+//   creative_palette tabbed all-items picker, infinite stacks, trash slot
 [
     (
         id: "oc:survival",
@@ -25,12 +26,13 @@
         has_stats: false,
         can_fly: true,
         noclip: false,
+        creative_palette: true,
     ),
     (
         id: "oc:adventure",
         name: "Adventure",
         can_edit_blocks: false,
-        uses_inventory: false,
+        uses_inventory: true,
         has_stats: true,
         can_fly: false,
         noclip: false,
@@ -43,5 +45,6 @@
         has_stats: false,
         can_fly: true,
         noclip: true,
+        creative_palette: true,
     ),
 ]

@@ -178,6 +178,18 @@ impl Inventory {
         }
     }
 
+    /// Sets the cursor to `n` of `item` from an infinite source (the
+    /// creative palette), replacing whatever the cursor held — fine because
+    /// creative items never run out.
+    pub fn give_cursor(&mut self, item: ItemId, n: u32) {
+        self.cursor = Some((item, n.min(STACK_MAX)));
+    }
+
+    /// Deletes the cursor stack (the creative trash slot).
+    pub fn trash_cursor(&mut self) {
+        self.cursor = None;
+    }
+
     /// Returns the cursor stack and any items in the crafting grid to
     /// storage (called when the screen closes), so nothing is lost.
     pub fn close(&mut self) {
@@ -500,15 +512,25 @@ impl Server {
                     }
                 }
                 ClientMessage::InventoryClick { target, right } => {
-                    // The screen only acts in modes that use the inventory;
-                    // others still get a resync (an empty, no-op inventory).
-                    if self.registry.mode(self.mode).uses_inventory {
+                    // Survival and creative both have a real inventory to
+                    // arrange; the palette + trash are creative-only. Other
+                    // modes still get a resync (an empty, no-op inventory).
+                    let mode = self.registry.mode(self.mode);
+                    let (has_inv, creative) =
+                        (mode.uses_inventory || mode.creative_palette, mode.creative_palette);
+                    if has_inv {
                         let mut entry = self.ecs.entity_mut(self.player_entity);
                         let inv = entry.get_mut::<Inventory>().expect("inventory").into_inner();
                         match target {
                             InvTarget::Storage(i) => inv.click_storage(i as usize, right),
                             InvTarget::Craft(i) => inv.click_craft(i as usize, right),
                             InvTarget::Output => inv.take_output(&self.registry),
+                            InvTarget::Palette(item) if creative => {
+                                inv.give_cursor(ItemId(item), if right { 1 } else { STACK_MAX });
+                            }
+                            InvTarget::Trash if creative => inv.trash_cursor(),
+                            // Palette/Trash outside creative: ignore.
+                            InvTarget::Palette(_) | InvTarget::Trash => {}
                         }
                     }
                     // Authoritative resync — prediction reconciles for free.
@@ -987,6 +1009,23 @@ mod craft_tests {
         inv.click_storage(5, true); // right-click: drop one back (slot 6, cursor 4)
         inv.close(); // cursor returns to storage
         assert_eq!(inv.count(stone), 10, "closing the screen loses nothing");
+    }
+
+    #[test]
+    fn creative_palette_gives_stacks_and_trash_clears() {
+        let registry = Registry::load_default().unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+        let mut inv = Inventory::default();
+
+        // The palette is an infinite source: a full stack onto the cursor.
+        inv.give_cursor(stone, STACK_MAX);
+        inv.click_storage(0, false); // drop it into storage
+        assert_eq!(inv.count(stone), STACK_MAX);
+
+        // Pick it back up and bin it.
+        inv.click_storage(0, false);
+        inv.trash_cursor();
+        assert_eq!(inv.count(stone), 0, "trash deletes the cursor stack");
     }
 
     #[test]

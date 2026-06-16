@@ -116,6 +116,11 @@ pub enum InvTarget {
     Craft(u8),
     /// The crafting result slot.
     Output,
+    /// A creative-palette item (per-load id): an infinite source — clicking
+    /// puts a stack (left) or one (right) on the cursor.
+    Palette(u16),
+    /// The creative trash slot: deletes the cursor stack.
+    Trash,
 }
 
 /// One entity's state in a snapshot.

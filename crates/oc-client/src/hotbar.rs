@@ -1,7 +1,7 @@
 //! The hotbar: the bottom row of the inventory (storage slots 0..9). Any
-//! item can be bound to any slot by dragging it there in the inventory
-//! screen; keys 1..=9 and the mouse wheel pick the active slot. Creative
-//! carries no gathered items, so it falls back to a fixed block palette.
+//! item can be placed in any slot from the inventory screen; keys 1..=9 and
+//! the mouse wheel pick the active slot. Survival fills it by gathering,
+//! creative from the item palette.
 
 use oc_assets::{ItemId, Registry};
 use oc_renderer::{UiQuad, UiText};
@@ -9,7 +9,8 @@ use oc_world::{BlockId, blocks};
 
 use crate::inventory_screen::item_swatch;
 
-/// Creative's fixed palette, in slot order (keys 1..=9).
+/// A default block set, in slot order — used by tests (the live hotbar is
+/// per-slot, filled by gathering or the creative palette).
 pub const ITEMS: [BlockId; 9] = [
     blocks::STONE,
     blocks::DIRT,

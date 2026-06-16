@@ -9,7 +9,7 @@ formats from `./mods/`, so a large share of mods need zero code.
 
 | File | Defines |
 |---|---|
-| `data/items.ron` | Items: namespaced id, display name, optional block-state id they place, food value |
+| `data/items.ron` | Items: namespaced id, display name, optional block-state id they place, food value, creative-inventory `category` |
 | `data/recipes.ron` | Shaped + shapeless crafting recipes |
 | `data/gamemodes.ron` | Game modes as capability-flag bundles |
 | `data/creatures.ron` | Creature kinds: collision size, body/accent tint, `model` (e.g. `quadruped`), speed |

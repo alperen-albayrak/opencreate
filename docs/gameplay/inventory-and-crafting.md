@@ -41,3 +41,21 @@ craft, and resyncs the whole inventory.
 
 Starter chain: 1 log → 4 planks; 2 planks (column) → 4 sticks;
 2×2 planks → 1 lamp; 2 snow → 1 stone.
+
+## Creative
+
+Creative (the `creative_palette` flag) swaps the survival screen for a tabbed
+**item palette**: category tabs (left) and a Search tab (top-right) list every
+item as an infinite source — left-click for a stack, right-click for one — and
+you drop it into your hotbar or inventory. The bottom-right **Inventory tab**
+opens the survival layout (paper-doll, 3×3 crafting grid, main grid, hotbar)
+plus a **trash** slot that deletes whatever the cursor holds. Placing never
+decreases a stack (creative is `uses_inventory: false`), so blocks are
+unlimited. Tabs and search are client-side; the palette and trash are
+server-authoritative (`InvTarget::Palette` / `Trash`). Items group into tabs
+by their `category` in `items.ron`.
+
+Modes share these two screens by flag: survival and **adventure** use the
+gathering inventory (adventure can't break/place, so its inventory fills only
+from future content); creative and **spectator** use the palette (spectator
+can browse it but can't place).

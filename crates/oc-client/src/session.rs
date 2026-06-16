@@ -40,6 +40,16 @@ pub enum CameraMode {
 
 type ClientEnd = InProcEnd<ClientMessage, ServerMessage>;
 
+/// Owned creative-screen state for one frame, borrowed into an
+/// [`inventory_screen::Creative`] at the call site.
+struct CreativeParts {
+    categories: Vec<String>,
+    active: inventory_screen::CreativeTab,
+    search: String,
+    palette: Vec<oc_assets::ItemId>,
+    scroll: usize,
+}
+
 pub struct Session {
     pub streamer: ChunkStreamer,
     far: FarTerrain,
@@ -84,6 +94,11 @@ pub struct Session {
     inv_slots: [Option<(u16, u32)>; oc_server::STORAGE_SLOTS],
     inv_craft: [Option<(u16, u32)>; oc_server::CRAFT_SLOTS],
     inv_cursor: Option<(u16, u32)>,
+    /// Creative inventory UI state — which tab, the search query, and the
+    /// palette scroll row. Client-only; the server never sees tabs.
+    creative_tab: inventory_screen::CreativeTab,
+    creative_search: String,
+    palette_scroll: usize,
     entities: EntityMirror,
 }
 
@@ -149,6 +164,9 @@ impl Session {
             inv_slots: [None; oc_server::STORAGE_SLOTS],
             inv_craft: [None; oc_server::CRAFT_SLOTS],
             inv_cursor: None,
+            creative_tab: inventory_screen::CreativeTab::Category(0),
+            creative_search: String::new(),
+            palette_scroll: 0,
             entities: EntityMirror::default(),
         })
     }
@@ -180,26 +198,30 @@ impl Session {
             .sum()
     }
 
-    /// The block the selected hotbar slot would place, if any. Survival
-    /// reads the slot's item; creative uses the fixed palette.
-    fn held_block(&self, registry: &Registry) -> Option<BlockId> {
-        if self.caps(registry).uses_inventory {
-            let (item, _) = self.inv_slots[self.hotbar.selected]?;
-            registry.block_for_item(oc_assets::ItemId(item))
-        } else {
-            Some(hotbar::ITEMS[self.hotbar.selected])
-        }
+    /// Whether the current mode has a real, arrangeable inventory: survival
+    /// gathers into it; creative fills it from the palette. Both use the
+    /// per-slot hotbar.
+    fn has_inventory(&self, registry: &Registry) -> bool {
+        let caps = self.caps(registry);
+        caps.uses_inventory || caps.creative_palette
     }
 
-    /// The nine hotbar display stacks (storage slots 0..9 in survival, the
-    /// fixed palette in creative).
+    /// The block the selected hotbar slot would place, if any.
+    fn held_block(&self, registry: &Registry) -> Option<BlockId> {
+        if !self.has_inventory(registry) {
+            return None;
+        }
+        let (item, _) = self.inv_slots[self.hotbar.selected]?;
+        registry.block_for_item(oc_assets::ItemId(item))
+    }
+
+    /// The nine hotbar display stacks (storage slots 0..9), in any mode with
+    /// a real inventory; empty otherwise.
     fn hotbar_slots(&self, registry: &Registry) -> [hotbar::Slot; 9] {
-        if self.caps(registry).uses_inventory {
+        if self.has_inventory(registry) {
             std::array::from_fn(|i| self.inv_slots[i].map(|(id, n)| (oc_assets::ItemId(id), n)))
         } else {
-            std::array::from_fn(|i| {
-                registry.item_for_block(hotbar::ITEMS[i]).map(|item| (item, 1))
-            })
+            [None; 9]
         }
     }
 
@@ -241,7 +263,10 @@ impl Session {
     /// asks the server to return the cursor + crafting grid to storage.
     pub fn toggle_inventory(&mut self) -> bool {
         self.inventory_open = !self.inventory_open;
-        if !self.inventory_open {
+        if self.inventory_open {
+            // Stop walking while the modal screen is up.
+            self.input = MoveInput::default();
+        } else {
             self.outbox.push(ClientMessage::CloseInventory);
         }
         self.inventory_open
@@ -255,14 +280,111 @@ impl Session {
         }
     }
 
-    /// A click inside the open inventory screen (framebuffer pixels). The
-    /// server is authoritative; we translate the hit slot and send it,
-    /// then the Inventory resync reflects the move.
-    pub fn inventory_click(&mut self, pos: (f32, f32), size: (f32, f32), ui: f32, right: bool) {
-        let target = match inventory_screen::hit(pos, size.0, size.1, ui) {
+    /// Owned creative-screen state for the current tab, or `None` outside
+    /// creative. Built fresh from the registry each call (cheap).
+    fn creative_parts(&self, registry: &Registry) -> Option<CreativeParts> {
+        if !self.caps(registry).creative_palette {
+            return None;
+        }
+        let categories: Vec<String> =
+            registry.categories().iter().map(|s| s.to_string()).collect();
+        let palette = match self.creative_tab {
+            inventory_screen::CreativeTab::Category(i) => categories
+                .get(i)
+                .map(|c| registry.items_in_category(c))
+                .unwrap_or_default(),
+            inventory_screen::CreativeTab::Search => registry.search(&self.creative_search),
+            inventory_screen::CreativeTab::Inventory => Vec::new(),
+        };
+        Some(CreativeParts {
+            categories,
+            active: self.creative_tab,
+            search: self.creative_search.clone(),
+            palette,
+            scroll: self.palette_scroll,
+        })
+    }
+
+    /// Whether keyboard input should feed the creative search query.
+    pub fn on_search_tab(&self, registry: &Registry) -> bool {
+        self.inventory_open
+            && self.caps(registry).creative_palette
+            && self.creative_tab == inventory_screen::CreativeTab::Search
+    }
+
+    /// Appends typed text to the search query (printable chars only).
+    pub fn search_push(&mut self, text: &str) {
+        for c in text.chars() {
+            if (c.is_alphanumeric() || c == ' ') && self.creative_search.len() < 24 {
+                self.creative_search.push(c);
+            }
+        }
+        self.palette_scroll = 0;
+    }
+
+    pub fn search_backspace(&mut self) {
+        self.creative_search.pop();
+        self.palette_scroll = 0;
+    }
+
+    /// Number of items on the active palette tab.
+    fn palette_len(&self, registry: &Registry) -> usize {
+        match self.creative_tab {
+            inventory_screen::CreativeTab::Category(i) => registry
+                .categories()
+                .get(i)
+                .map(|c| registry.items_in_category(c).len())
+                .unwrap_or(0),
+            inventory_screen::CreativeTab::Search => registry.search(&self.creative_search).len(),
+            inventory_screen::CreativeTab::Inventory => 0,
+        }
+    }
+
+    /// Mouse wheel scrolls the creative palette (one row per notch).
+    pub fn scroll_palette(&mut self, registry: &Registry, delta: f64) {
+        if !self.caps(registry).creative_palette
+            || self.creative_tab == inventory_screen::CreativeTab::Inventory
+        {
+            return;
+        }
+        let max = self.palette_len(registry).div_ceil(9).saturating_sub(1);
+        if delta > 0.0 {
+            self.palette_scroll = self.palette_scroll.saturating_sub(1);
+        } else if delta < 0.0 {
+            self.palette_scroll = (self.palette_scroll + 1).min(max);
+        }
+    }
+
+    /// A click inside the open inventory screen (framebuffer pixels). Tab
+    /// clicks switch tabs locally; every other hit is a server-authoritative
+    /// `InventoryClick` that the Inventory resync reflects.
+    pub fn inventory_click(
+        &mut self,
+        registry: &Registry,
+        pos: (f32, f32),
+        size: (f32, f32),
+        ui: f32,
+        right: bool,
+    ) {
+        let parts = self.creative_parts(registry);
+        let creative = parts.as_ref().map(|p| inventory_screen::Creative {
+            categories: &p.categories,
+            active: p.active,
+            search: &p.search,
+            palette: &p.palette,
+            scroll: p.scroll,
+        });
+        let target = match inventory_screen::hit(pos, size.0, size.1, ui, creative.as_ref()) {
             inventory_screen::Hit::Storage(i) => InvTarget::Storage(i as u8),
             inventory_screen::Hit::Craft(i) => InvTarget::Craft(i as u8),
             inventory_screen::Hit::Output => InvTarget::Output,
+            inventory_screen::Hit::Palette(item) => InvTarget::Palette(item),
+            inventory_screen::Hit::Trash => InvTarget::Trash,
+            inventory_screen::Hit::Tab(tab) => {
+                self.creative_tab = tab;
+                self.palette_scroll = 0;
+                return;
+            }
             inventory_screen::Hit::None => return,
         };
         self.outbox.push(ClientMessage::InventoryClick { target, right });
@@ -624,6 +746,14 @@ impl Session {
             let craft_items: [Option<oc_assets::ItemId>; 9] =
                 std::array::from_fn(|i| self.inv_craft[i].map(|(id, _)| oc_assets::ItemId(id)));
             let craft_result = registry.match_recipe(&craft_items);
+            let parts = self.creative_parts(registry);
+            let creative = parts.as_ref().map(|p| inventory_screen::Creative {
+                categories: &p.categories,
+                active: p.active,
+                search: &p.search,
+                palette: &p.palette,
+                scroll: p.scroll,
+            });
             let (panel_quads, panel_texts) = inventory_screen::panel(
                 registry,
                 &slots,
@@ -636,6 +766,7 @@ impl Session {
                 w,
                 h,
                 ui,
+                creative.as_ref(),
             );
             quads.extend(panel_quads);
             texts.extend(panel_texts);

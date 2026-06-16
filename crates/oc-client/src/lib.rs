@@ -514,7 +514,36 @@ impl App {
 
     fn handle_key(&mut self, code: KeyCode, pressed: bool, text: Option<&str>) {
         match &mut self.screen {
-            Screen::InGame => self.handle_game_key(code, pressed),
+            Screen::InGame => {
+                // On the creative search tab, keys feed the query instead of
+                // moving the player.
+                let searching = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.on_search_tab(&self.registry));
+                if !searching {
+                    self.handle_game_key(code, pressed);
+                } else if pressed {
+                    match code {
+                        KeyCode::Escape => {
+                            if let Some(session) = &mut self.session {
+                                session.close_inventory();
+                            }
+                            self.set_mouse_captured(true);
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(session) = &mut self.session {
+                                session.search_backspace();
+                            }
+                        }
+                        _ => {
+                            if let (Some(session), Some(t)) = (self.session.as_mut(), text) {
+                                session.search_push(t);
+                            }
+                        }
+                    }
+                }
+            }
             Screen::Paused => {
                 if code == KeyCode::Escape && pressed {
                     self.send_paused(false);
@@ -787,6 +816,17 @@ impl ApplicationHandler for App {
                     self.drag_apply();
                 }
             }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.session.as_ref().is_some_and(|s| s.inventory_open) =>
+            {
+                if let Some(session) = &mut self.session {
+                    let amount = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                    };
+                    session.scroll_palette(&self.registry, amount);
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } if self.mouse_captured => {
                 if let Some(session) = &mut self.session {
                     let amount = match delta {
@@ -807,7 +847,7 @@ impl ApplicationHandler for App {
                     {
                         if let Some(session) = &mut self.session {
                             let right = button == MouseButton::Right;
-                            session.inventory_click(self.mouse_pos, (w, h), ui, right);
+                            session.inventory_click(&self.registry, self.mouse_pos, (w, h), ui, right);
                         }
                     }
                     (Screen::InGame, _) if inventory_open => {}
