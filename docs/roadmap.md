@@ -39,6 +39,12 @@ Remaining:
 
 ## Graphics roadmap — "vibrant visuals" (runs alongside phases 3–5)
 
+> **The full forward design now lives in [world-building/rendering.md](world-building/rendering.md)** —
+> a deferred-PBR architecture targeting VV parity, part of the broader
+> [world-building/](world-building/README.md) design set (matter model,
+> temperature, atmosphere, ecology, time). The notes below record what has
+> **shipped** so far against the original forward-renderer plan.
+
 Researched against modern voxel renderers (deferred-PBR upgrades and the
 shaderpack playbook); adapted to our forward Vulkan renderer. Five
 stages, each independently shippable, every effect behind a graphics

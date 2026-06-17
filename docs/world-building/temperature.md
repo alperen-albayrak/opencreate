@@ -1,0 +1,167 @@
+# Temperature & the Deep Core
+
+**Design, not yet built.** A temperature field over the world that makes deep
+digging hot and hazardous, lets blocks glow by incandescence, and drives phase
+changes — without a full per-voxel simulation. The trick is that almost all of
+it is a **pure function**, with sparse dynamic state only where something is
+actually being heated.
+
+## The three-tier effective temperature
+
+Effective temperature decomposes into three tiers, most of it free:
+
+1. **Static base — a pure function (zero storage, never saved):**
+   ```
+   T_base(pos) = clamp(surface_temp + geothermal_gradient·depth, …, core_temp)
+                 + biome/altitude modifiers
+   ```
+   A pure function of position + `EnvDef.thermal`, like the skylight-shaft rule
+   and worldgen climate noise. Queryable anywhere instantly; recomputed like
+   terrain. Gives deep-core heat, the geothermal glow gradient, baseline player
+   heat, and fluid/gas equilibrium temperature.
+2. **Dynamic source delta — sparse, bounded, source-driven:** fire/lava/heated
+   elements add a *local* delta via a bounded flood-fill from active sources
+   within the §6.6 active area. **Reuses the block-light BFS** — same machinery
+   and cost class as lamp light. Most of the world has no source, so temperature
+   is just the base function.
+3. **Per-block stored temperature — only on actively-heated blocks** (the
+   reserved `temperature` block-state), cooling toward local ambient by Newton's
+   law. Sparse: only cells meaningfully above ambient carry state (near-ambient
+   snaps to none). **Persisted like a block edit, and frozen offline — no
+   elapsed-time catch-up** (see [time](time.md)): a block heated to 200° reloads
+   at 200° and only cools as you keep playing.
+
+```
+effective T = base(pos) + source_delta(pos) [+ stored if heated]
+```
+
+A function call plus a sparse lookup. Consumers are cheap one-shot queries
+(player hazard 1 sample/tick; buoyancy equilibrium; phase change event-driven
+when T crosses a melt/boil point) — never a global scan.
+
+## The thermal trait
+
+Thermal is a **shared trait across all three registries** (see
+[matter model](matter-model.md)), not just solid blocks. The static material
+props:
+
+| Field | Meaning |
+|---|---|
+| `heat_capacity` | thermal mass — how much energy to change temperature |
+| `conductivity` | how fast heat flows to neighbours |
+| `resistivity` | electric-heating resistance (mostly solids) |
+| `melting_point` / `boiling_point` / `ignitable` | phase-change / combustion thresholds |
+
+The temperature field samples whatever matter sits at a cell. Consequences that
+*unify* other features: **lava glows because it is a hot fluid** (same blackbody
+pipeline); **hot-air buoyancy *is* temperature** (a hot gas is less dense → rises,
+so `density` is a function of T — see [atmosphere](atmosphere.md)); conduction
+flows between any adjacent matter; and **phase transitions** move matter between
+registries (lava→obsidian, ice→water→steam — see [matter model](matter-model.md)).
+
+## Conservation of energy
+
+There are **no free or infinite sources** (a project-wide principle — see
+[energy](energy.md) for the general statement). The key distinction is
+**reservoir vs battery**:
+
+- **Reservoirs** (effectively infinite): the planet's geothermal **core**, the
+  **star** (solar), and **wind**. A geothermal→electric loop is sustainable
+  because a deep tap cools local rock that re-conducts from the vast deeper heat.
+- **Batteries** (finite stored heat): **lava** and heated blocks. Lava is a hot
+  fluid that **cools and solidifies** as it gives up heat; fuel burners deplete.
+
+Cooling is emergent from material data:
+```
+dT/dt ∝ −(T − ambient) / (heat_capacity · mass)
+```
+so **lava (huge `heat_capacity` × volume) drains slowly** while a thin metal bar
+cools fast. Phase transitions add a **latent-heat plateau**. Emergent gating:
+sustainable geothermal lives **deep, behind the heat hazard**; a surface lava
+lake is a quick *finite* battery.
+
+## Blackbody glow
+
+Any matter's `emissive = blackbody(local_temperature)` past the **Draper point
+≈ 798 K (525 °C)**, so **deep rock glows dull-red → orange before any lava
+appears** (and lava glows by the same rule). The static geothermal glow is a
+pure function of depth → **baked into `emissive` at mesh time** (free, like baked
+light); only dynamic heated blocks need a sparse emissive update. See
+[rendering](rendering.md) for the blackbody → bloom pipeline.
+
+Cross-validated by TerraFirmaCraft's heat-color ladder (`Heat.java`), a
+ready-made `temperature → color` table:
+
+| Tier | Range |
+|---|---|
+| FAINT_RED | 480–580 °C (≈ 750–850 K, straddles the Draper point) |
+| DARK_RED | 580–730 °C |
+| BRIGHT_RED | 730–930 °C |
+| ORANGE | 930–1100 °C |
+| YELLOW | 1100–1300 °C |
+| YELLOW_WHITE → WHITE | 1300–1500 °C |
+| BRILLIANT_WHITE | 1500–1600 °C |
+
+## Worked example: heat around a volcanic vent
+
+Putting the three tiers, conservation, glow, and phase change together at a
+magma vent (illustrative, game-tuned numbers):
+
+- **Tier 1 — base (free).** Deep by the vent the tuned geothermal base already
+  reads ~550 °C — past the Draper point — so the **raw rock glows FAINT_RED on
+  its own, before any lava**. This gradient is a pure function of depth, baked
+  into `emissive` at mesh time.
+- **Tier 2 — source delta (sparse).** The lava itself is a hot fluid at ~1100 °C
+  (ORANGE). A bounded flood-fill — the same BFS as lamp light — spreads a
+  falling heat delta into the surrounding rock and cavern air: nearby cells climb
+  a few hundred degrees, the air warms, and the player's [heat hazard](#player-heat-hazard)
+  starts ticking. No global field, just a local bubble around the source.
+- **Tier 3 — stored (only where heated).** Drop an iron block at the lava's edge:
+  it becomes an actively-heated block carrying a `temperature` block-state, rising
+  toward local ambient (÷ `heat_capacity`), glowing red → yellow → a lamp. Walk
+  away and it reloads at that temperature — **frozen offline, no catch-up** (see
+  [time](time.md)) — cooling only as you keep playing.
+- **Conservation — the vent is finite.** The lava lake is a *battery*: huge
+  `heat_capacity` × volume, so it drains **slowly** (`dT/dt ∝ −(T−ambient) /
+  (heat_capacity·mass)`) — but it drains. As it gives up heat it crosses its
+  freezing point and **crusts over**: fast-quenched at a water edge → **obsidian**,
+  slow-cooled → **basalt** (a cross-registry [phase transition](matter-model.md));
+  the latent-heat plateau holds it at the freezing temperature while it solidifies.
+  The vent stays hot only as long as the deeper reservoir keeps feeding it — i.e.
+  the volcano's finite lifespan in [dynamic-environment](dynamic-environment.md).
+
+## Player-heated blocks become lamps
+
+Heat a metal block by **fire/forge** (steel red ~800 K → yellow-white ~1500 K)
+or by **electric resistive heating**: `P = I²R`, where **R** = the block's
+`resistivity` × geometry and **I** = current from the reserved §6.5 power
+network. Abstract units, real ratios — heating elements are high-R materials
+(nichrome/tungsten ≫ copper) tuned to reach the Draper point at a sensible power
+level. Temperature rises with input (÷ `heat_capacity`) and cools by Newton's
+law; past the Draper point the block's `emissive` glows **and its cast light is
+derived from temperature** → it literally becomes a lamp. Needs dynamic block
+temperature + the power network; both reserved now, neither implemented.
+
+## Player heat hazard
+
+Mirrors the breathing model exactly (see [atmosphere](atmosphere.md)): a survival
+stat that takes damage outside a survivable band; **insulation gear** widens
+tolerance (same `environment + gear_modifier` shape as `breathability`). Deep
+digging gets dangerous; better suits go deeper. Plugs into `stats.rs` like
+oxygen. The hazard reads `effective T`, so it also picks up the dynamic
+[heatmap](dynamic-environment.md) (volcano warmth) for free.
+
+## Deep-core content
+
+Lava lakes, obsidian / cold-lava-stone caves, and hellish creatures are all
+`BlockDef`/`FluidDef`/creature-registry **content** — no new systems. The hot
+deep is **optional per planet**: an Earth-like world sets `EnvDef.thermal`
+(`surface_temp`, `geothermal_gradient` ~0.025 K/m scaled to block depth,
+`core_temp`); a **big airless moon omits `thermal`** → uniformly cold, no
+deep-hot zone.
+
+## See also
+
+- [matter-model.md](matter-model.md) — the thermal trait and phase transitions.
+- [time.md](time.md) — why stored heat freezes offline with no catch-up.
+- [dynamic-environment.md](dynamic-environment.md) — the coarse heatmap and volcanoes.

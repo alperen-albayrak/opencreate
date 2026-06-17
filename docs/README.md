@@ -27,6 +27,7 @@ game in Rust with its own Vulkan engine. These pages describe the project
 | [client/](client/README.md) | The game client: [chunk streaming](client/streaming.md), and the engine: [renderer](client/engine/README.md), [meshing](client/engine/meshing.md), [lighting](client/engine/lighting.md), [UI](client/engine/ui.md) |
 | [gameplay/](gameplay/README.md) | How the game plays: [game modes](gameplay/game-modes.md), [survival rules](gameplay/survival.md), [inventory & crafting](gameplay/inventory-and-crafting.md) |
 | [modding/](modding/README.md) | Data-driven content today and the phase-5 mod loader plan |
+| [world-building/](world-building/README.md) | **Forward design (mostly not built)**: the physically-grounded world model — [matter](world-building/matter-model.md), [temperature](world-building/temperature.md), [atmosphere](world-building/atmosphere.md), [fluids](world-building/fluids.md), [ecology](world-building/ecology.md), [time](world-building/time.md), [dynamic environment](world-building/dynamic-environment.md), [geology](world-building/geology.md), [rendering](world-building/rendering.md) |
 
 ## Keeping these honest
 

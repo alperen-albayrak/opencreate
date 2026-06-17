@@ -35,3 +35,4 @@ wander the grass and the sun sets on lamp-lit builds.
 - [game-modes.md](game-modes.md)
 - [survival.md](survival.md)
 - [inventory-and-crafting.md](inventory-and-crafting.md)
+- [progression.md](progression.md) — *reserved:* TFC-style recipe types & metal/tool tiers (future)
