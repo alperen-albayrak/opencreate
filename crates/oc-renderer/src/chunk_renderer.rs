@@ -125,8 +125,13 @@ impl ChunkRenderer {
                 upload_block_textures(ctx, allocator, command_pool)?;
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
+                    // NEAREST within a level keeps the crisp blocky look;
+                    // LINEAR mipmap_mode blends between levels so distant
+                    // blocks stop shimmering (trilinear-ish, Minecraft-style).
                     .mag_filter(vk::Filter::NEAREST)
                     .min_filter(vk::Filter::NEAREST)
+                    .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                    .max_lod(texture::MIP_LEVELS as f32)
                     .address_mode_u(vk::SamplerAddressMode::REPEAT)
                     .address_mode_v(vk::SamplerAddressMode::REPEAT)
                     .address_mode_w(vk::SamplerAddressMode::REPEAT),
@@ -805,11 +810,16 @@ unsafe fn upload_block_textures(
                 .image_type(vk::ImageType::TYPE_2D)
                 .format(vk::Format::R8G8B8A8_SRGB)
                 .extent(extent)
-                .mip_levels(1)
+                .mip_levels(texture::MIP_LEVELS)
                 .array_layers(texture::LAYER_COUNT)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+                // TRANSFER_SRC so each level can be blitted into the next.
+                .usage(
+                    vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::SAMPLED,
+                )
                 .initial_layout(vk::ImageLayout::UNDEFINED),
             None,
         )?;
@@ -844,13 +854,24 @@ unsafe fn upload_block_textures(
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
 
-        let subresource_range = vk::ImageSubresourceRange::default()
+        // A one-mip-level, all-layers subresource range at `base`.
+        let level_range = |base: u32| {
+            vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(base)
+                .level_count(1)
+                .layer_count(texture::LAYER_COUNT)
+        };
+        let full_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
+            .level_count(texture::MIP_LEVELS)
             .layer_count(texture::LAYER_COUNT);
+
+        // All mips UNDEFINED -> TRANSFER_DST; level 0 receives the upload,
+        // higher levels are filled by blitting down from the level above.
         let to_transfer = vk::ImageMemoryBarrier::default()
             .image(image)
-            .subresource_range(subresource_range)
+            .subresource_range(full_range)
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .src_access_mask(vk::AccessFlags::empty())
@@ -869,6 +890,7 @@ unsafe fn upload_block_textures(
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
                     .layer_count(texture::LAYER_COUNT),
             )
             .image_extent(extent);
@@ -880,9 +902,85 @@ unsafe fn upload_block_textures(
             &[copy],
         );
 
-        let to_sampled = vk::ImageMemoryBarrier::default()
+        // Generate the mip chain: blit each level into the next (halved),
+        // moving each finished source level to SHADER_READ_ONLY as we go.
+        let (mut mip_w, mut mip_h) = (texture::TEXTURE_SIZE as i32, texture::TEXTURE_SIZE as i32);
+        for level in 1..texture::MIP_LEVELS {
+            let src = level - 1;
+            let to_src = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .subresource_range(level_range(src))
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_src],
+            );
+
+            let (dst_w, dst_h) = ((mip_w / 2).max(1), (mip_h / 2).max(1));
+            let blit = vk::ImageBlit::default()
+                .src_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(src)
+                        .layer_count(texture::LAYER_COUNT),
+                )
+                .src_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D { x: mip_w, y: mip_h, z: 1 },
+                ])
+                .dst_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(level)
+                        .layer_count(texture::LAYER_COUNT),
+                )
+                .dst_offsets([
+                    vk::Offset3D { x: 0, y: 0, z: 0 },
+                    vk::Offset3D { x: dst_w, y: dst_h, z: 1 },
+                ]);
+            device.cmd_blit_image(
+                cmd,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::LINEAR,
+            );
+
+            // The source level is finished; hand it to the shader.
+            let src_done = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .subresource_range(level_range(src))
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[src_done],
+            );
+
+            (mip_w, mip_h) = (dst_w, dst_h);
+        }
+
+        // The last level was never a blit source: TRANSFER_DST -> shader.
+        let last_done = vk::ImageMemoryBarrier::default()
             .image(image)
-            .subresource_range(subresource_range)
+            .subresource_range(level_range(texture::MIP_LEVELS - 1))
             .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -894,7 +992,7 @@ unsafe fn upload_block_textures(
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[to_sampled],
+            &[last_done],
         );
 
         device.end_command_buffer(cmd)?;
@@ -909,7 +1007,7 @@ unsafe fn upload_block_textures(
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
                 .format(vk::Format::R8G8B8A8_SRGB)
-                .subresource_range(subresource_range),
+                .subresource_range(full_range),
             None,
         )?;
 

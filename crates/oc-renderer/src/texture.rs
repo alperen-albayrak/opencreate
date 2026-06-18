@@ -8,6 +8,8 @@ use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
 pub const LAYER_COUNT: u32 = 12;
+/// Mip levels for the block array: 16→8→4→2→1 = `floor(log2(16)) + 1`.
+pub const MIP_LEVELS: u32 = 5;
 
 /// Block texture array layer names, in array order (must match
 /// `build_block_textures` and `mesh::layers`). A pack overrides a layer with
