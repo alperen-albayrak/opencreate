@@ -4,6 +4,7 @@
 //! depends on the rest of the workspace (see ARCHITECTURE.md §2).
 
 pub mod coords;
+pub mod physical;
 
 pub use coords::{BlockPos, ChunkPos, SectionPos};
 
