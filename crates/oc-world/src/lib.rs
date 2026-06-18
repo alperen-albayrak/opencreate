@@ -47,6 +47,13 @@ impl BlockId {
     pub fn light_emission(self) -> u8 {
         registry::props(self).light_emission
     }
+
+    /// Per-channel block-light seed (R, G, B, each 0..=15): the block's
+    /// emission level tinted by its emissive color (hue). A warm lamp casts
+    /// warm light; non-emitters return zeros. Seeds the RGB flood-fill.
+    pub fn light_color(self) -> [u8; 3] {
+        registry::props(self).light_color
+    }
 }
 
 /// Stable numeric ids for the base-game blocks, matching `data/blocks.ron`'s

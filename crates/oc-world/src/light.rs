@@ -28,17 +28,24 @@ pub struct LightField {
     base: BlockPos,
     height: i32,
     sky: Vec<u8>,
-    block: Vec<u8>,
+    block_r: Vec<u8>,
+    block_g: Vec<u8>,
+    block_b: Vec<u8>,
     blocks: Vec<BlockId>,
 }
 
 impl LightField {
-    /// Packed light at a world position: `sky << 4 | block`. Above the
-    /// region is full sky; below is darkness.
-    pub fn get(&self, pos: BlockPos) -> u8 {
+    /// Packed light at a world position: `sky << 12 | r << 8 | g << 4 | b`
+    /// (each nibble 0..=15). Above the region is full sky; below is darkness.
+    pub fn get(&self, pos: BlockPos) -> u16 {
         match self.index(pos) {
-            Some(i) => self.sky[i] << 4 | self.block[i],
-            None if pos.y >= self.base.y + self.height => MAX_LIGHT << 4,
+            Some(i) => {
+                (self.sky[i] as u16) << 12
+                    | (self.block_r[i] as u16) << 8
+                    | (self.block_g[i] as u16) << 4
+                    | self.block_b[i] as u16
+            }
+            None if pos.y >= self.base.y + self.height => (MAX_LIGHT as u16) << 12,
             None => 0,
         }
     }
@@ -74,7 +81,9 @@ pub fn compute_light(
         base,
         height,
         sky: vec![0; volume],
-        block: vec![0; volume],
+        block_r: vec![0; volume],
+        block_g: vec![0; volume],
+        block_b: vec![0; volume],
         blocks: Vec::with_capacity(volume),
     };
     for y in 0..height {
@@ -119,18 +128,40 @@ pub fn compute_light(
     }
     bfs(&mut field.sky, &field.blocks, &mut queue, height, true);
 
-    // Block light: emissive blocks seed at their emission level.
-    for (i, block) in field.blocks.iter().enumerate() {
-        let emission = block.light_emission();
-        if emission > 0 {
-            field.block[i] = emission;
-            queue.push_back((i, emission));
+    // Block light: emissive blocks seed each channel at its tinted level (hue
+    // from the block's emissive color, reach from its emission). Sources are
+    // sparse, so three independent channel floods are cheap.
+    for (i, block) in field.blocks.iter().copied().enumerate() {
+        let [r, g, b] = block.light_color();
+        if r > 0 {
+            field.block_r[i] = r;
+        }
+        if g > 0 {
+            field.block_g[i] = g;
+        }
+        if b > 0 {
+            field.block_b[i] = b;
         }
     }
     let _ = layer;
-    bfs(&mut field.block, &field.blocks, &mut queue, height, false);
+    flood_channel(&mut field.block_r, &field.blocks, height);
+    flood_channel(&mut field.block_g, &field.blocks, height);
+    flood_channel(&mut field.block_b, &field.blocks, height);
 
     field
+}
+
+/// Seeds a block-light channel from its already-placed source levels and
+/// floods it through transparent blocks (the same attenuation as the sky BFS,
+/// without the vertical-shaft rule).
+fn flood_channel(light: &mut [u8], blocks: &[BlockId], height: i32) {
+    let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
+    for (i, &level) in light.iter().enumerate() {
+        if level > 1 {
+            queue.push_back((i, level));
+        }
+    }
+    bfs(light, blocks, &mut queue, height, false);
 }
 
 /// Propagates queued light through transparent blocks, attenuating by each
@@ -204,11 +235,14 @@ mod tests {
     }
 
     fn sky(f: &LightField, pos: BlockPos) -> u8 {
-        f.get(pos) >> 4
+        (f.get(pos) >> 12) as u8
     }
 
+    /// Block-light brightness = the brightest channel (= the emission reach;
+    /// the lamp's warm tint dims green/blue but red tracks the old value).
     fn blk(f: &LightField, pos: BlockPos) -> u8 {
-        f.get(pos) & 15
+        let l = f.get(pos);
+        (((l >> 8) & 15).max((l >> 4) & 15).max(l & 15)) as u8
     }
 
     #[test]

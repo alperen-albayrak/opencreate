@@ -44,7 +44,7 @@ struct VsOut {
 }
 
 @vertex
-fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
+fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     let w0 = packed.x;
     let pos = vec3<f32>(
         f32(w0 & 31u),
@@ -64,9 +64,11 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
         vec2<f32>(1.0, 0.0),
     );
 
-    let light = (packed.y >> 16u) & 0xFFu;
-    let sky_level = f32(light >> 4u) / 15.0;
-    let block_level = f32(light & 15u) / 15.0;
+    // word 2: sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4 (RGB block light).
+    let light = packed.z & 0xFFFFu;
+    let sky_level = f32((light >> 12u) & 15u) / 15.0;
+    // Water tints stay subtle: track the brightest block-light channel.
+    let block_level = f32(max(max((light >> 8u) & 15u, (light >> 4u) & 15u), light & 15u)) / 15.0;
     // The diffuse term follows actual sun strength (scene.sun.xyz is
     // pre-scaled by daylight), so water goes dark at night like land.
     let daylight = length(scene.sun.xyz);

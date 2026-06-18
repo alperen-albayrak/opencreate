@@ -1041,7 +1041,7 @@ unsafe fn create_pipeline(
             .input_rate(vk::VertexInputRate::VERTEX);
         let attribute = vk::VertexInputAttributeDescription::default()
             .location(0)
-            .format(vk::Format::R32G32_UINT);
+            .format(vk::Format::R32G32B32_UINT);
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(std::slice::from_ref(&binding))
             .vertex_attribute_descriptions(std::slice::from_ref(&attribute));
@@ -1120,7 +1120,7 @@ unsafe fn create_water_pipeline(
             .input_rate(vk::VertexInputRate::VERTEX);
         let attribute = vk::VertexInputAttributeDescription::default()
             .location(0)
-            .format(vk::Format::R32G32_UINT);
+            .format(vk::Format::R32G32B32_UINT);
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(std::slice::from_ref(&binding))
             .vertex_attribute_descriptions(std::slice::from_ref(&attribute));

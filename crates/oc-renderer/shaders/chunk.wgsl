@@ -2,8 +2,9 @@
 //   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
 //     (corner positions 0..=16; su/sv = greedy quad extent, tiles the UVs;
 //      ao = per-vertex ambient occlusion, 0 darkest .. 3 open)
-//   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1 |
+//   word 1: texture layer:16 | reserved:8 | underwater:1 | surface_top:1 |
 //           underwater_surface:1
+//   word 2: light:16 (sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4) | reserved:16
 
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
@@ -52,7 +53,7 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
     // Light terms, AO baked in: x = sky ambient, y = sun diffuse (the
-    // part shadows darken), z = block light.
+    // part shadows darken); z unused (block light is RGB, see block_light).
     @location(2) light_terms: vec3<f32>,
     // Caustic-plane coords: world position (mod-256 anchored) projected
     // onto the face's plane, so dapples wrap around vertical faces
@@ -64,10 +65,12 @@ struct VsOut {
     // Camera-relative world position + flat face normal (shadows).
     @location(5) world_rel: vec3<f32>,
     @location(6) @interpolate(flat) normal: vec3<f32>,
+    // RGB block (lamp) light, AO baked in — colored, day-independent.
+    @location(7) block_light: vec3<f32>,
 }
 
 @vertex
-fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
+fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     let w0 = packed.x;
     let pos = vec3<f32>(
         f32(w0 & 31u),
@@ -102,13 +105,18 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     //  - sky light scaled by the day cycle (ambient floor + sun diffuse;
     //    pc.sun.xyz is pre-scaled by daylight, so night kills the diffuse)
     //  - block light (lamps), constant through the day.
-    let light = (packed.y >> 16u) & 0xFFu;
-    let sky_level = f32(light >> 4u) / 15.0;
-    let block_level = f32(light & 15u) / 15.0;
+    // Sky visibility (scaled by the day cycle) + RGB block light, baked per
+    // vertex into word 2: sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4.
+    let light = packed.z & 0xFFFFu;
+    let sky_level = f32((light >> 12u) & 15u) / 15.0;
+    let block_rgb = vec3<f32>(
+        f32((light >> 8u) & 15u),
+        f32((light >> 4u) & 15u),
+        f32(light & 15u),
+    ) / 15.0;
 
     let ambient = scene.sun.w;
     let diffuse = max(dot(face_normal[face], scene.sun.xyz), 0.0);
-    let block_term = block_level * 0.95;
 
     // Ambient occlusion: corners boxed in by neighbors darken, which is
     // what makes block edges read as solid geometry. Kept gentle — the
@@ -120,12 +128,14 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     out.clip = pc.mvp * vec4<f32>(pos, 1.0);
     out.uv = corner_uv[corner] * extent;
     out.layer = packed.y & 0xFFFFu;
-    // Split so the fragment can shadow just the sun-diffuse part.
+    // Split so the fragment can shadow just the sun-diffuse part; block
+    // light is colored and constant through the day.
     out.light_terms = vec3<f32>(
         sky_level * ambient * ao_mul,
         sky_level * (1.0 - ambient) * diffuse * ao_mul,
-        block_term * ao_mul,
+        0.0,
     );
+    out.block_light = block_rgb * 0.95 * ao_mul;
     let world = pc.params.xyz + pos;
     if (face < 2u) {
         out.cpos = world.xz;
@@ -252,9 +262,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
     let view_dist = linearize(in.clip.z);
     let visibility = sun_visibility(in.world_rel, in.normal, view_dist);
-    // Shadow only steals the sun's diffuse; ambient and lamps remain.
-    let shade = max(in.light_terms.x + in.light_terms.y * visibility, in.light_terms.z);
-    var color = texel.rgb * shade;
+    // Shadow only steals the sun's diffuse; sky ambient and lamps remain.
+    // Block light is per-channel, so a warm lamp lifts red more than blue.
+    let sky_sun = in.light_terms.x + in.light_terms.y * visibility;
+    let lit = max(vec3<f32>(sky_sun), in.block_light);
+    var color = texel.rgb * lit;
     // Water sits at 14/16: side faces against surface water keep their
     // top sliver dry (cpos.y carries world y on side faces).
     let dry = (in.underwater & 4u) != 0u && fract(in.cpos.y) > 0.875;

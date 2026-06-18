@@ -198,6 +198,9 @@ pub struct BlockProps {
     pub opaque: bool,
     pub light_opacity: Option<u8>,
     pub light_emission: u8,
+    /// Per-channel block-light seed (R, G, B, each 0..=15): the emission level
+    /// (reach) tinted by the emissive color (hue). Seeds the RGB flood-fill.
+    pub light_color: [u8; 3],
 }
 
 /// Fallback for ids the registry doesn't know (out-of-range/stale): treated as a
@@ -207,6 +210,7 @@ const DEFAULT_PROPS: BlockProps = BlockProps {
     opaque: true,
     light_opacity: None,
     light_emission: 0,
+    light_color: [0, 0, 0],
 };
 
 /// The loaded block registry: full defs + the hot-path props table + the
@@ -226,11 +230,30 @@ impl BlockRegistry {
             if by_id.insert(d.id.clone(), BlockId(index as u16)).is_some() {
                 bail!("duplicate block id {:?}", d.id);
             }
+            // Per-channel block-light seed: the emission level (reach) tinted by
+            // the emissive color (hue). A colorless emitter floods every channel
+            // equally; a warm lamp floods red fully and blue less, so its cast
+            // light carries the source's color (the RGB-light contract).
+            let (er, eg, eb) = d.emissive;
+            let m = er.max(eg).max(eb);
+            let e = d.light_emission as f32;
+            let light_color = if d.light_emission == 0 {
+                [0, 0, 0]
+            } else if m <= 0.0 {
+                [d.light_emission; 3]
+            } else {
+                [
+                    (e * er / m).round().clamp(0.0, 15.0) as u8,
+                    (e * eg / m).round().clamp(0.0, 15.0) as u8,
+                    (e * eb / m).round().clamp(0.0, 15.0) as u8,
+                ]
+            };
             props.push(BlockProps {
                 solid: d.solid,
                 opaque: d.opaque,
                 light_opacity: d.light_opacity,
                 light_emission: d.light_emission,
+                light_color,
             });
         }
         Ok(Self { defs, props, by_id })
@@ -377,5 +400,17 @@ mod tests {
             assert_eq!(legacy.decode_id(n), BlockId(n));
             assert_eq!(legacy.encode_id(BlockId(n)), n);
         }
+    }
+
+    #[test]
+    fn emissive_blocks_cast_tinted_light() {
+        // The lamp emits 15 with a warm emissive (1.0, 0.87, 0.59): red floods
+        // fully, green and blue progressively less — the hue of its cast light.
+        let lc = blocks::LAMP.light_color();
+        assert_eq!(lc[0], 15, "red reaches the full emission level");
+        assert!(lc[1] < lc[0] && lc[1] >= 12, "green is slightly dimmer: {lc:?}");
+        assert!(lc[2] < lc[1], "blue is the dimmest channel: {lc:?}");
+        // Non-emitters cast no light.
+        assert_eq!(blocks::STONE.light_color(), [0, 0, 0]);
     }
 }

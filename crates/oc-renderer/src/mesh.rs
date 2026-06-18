@@ -8,15 +8,17 @@ use glam::IVec3;
 use oc_core::SECTION_SIZE;
 use oc_world::{BlockId, blocks};
 
-/// One packed vertex, 8 bytes (decoded in `chunk.wgsl`):
+/// One packed vertex, 12 bytes (decoded in `chunk.wgsl`):
 ///   word 0: x:5 | y:5 | z:5 | face:3 | corner:2 | (su-1):4 | (sv-1):4 | ao:2
 ///     (corner positions 0..=16; su/sv = quad extent along the UV axes;
 ///      ao = 0 darkest .. 3 open, per vertex)
-///   word 1: texture layer:16 | light:8 | underwater:1 | surface_top:1 |
+///   word 1: texture layer:16 | (reserved):8 | underwater:1 | surface_top:1 |
 ///           underwater_surface:1
+///   word 2: light:16 (sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4) | (reserved):16
+///     (per-vertex baked sky visibility + RGB block light)
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct PackedVertex(pub u32, pub u32);
+pub struct PackedVertex(pub u32, pub u32, pub u32);
 
 impl Default for ChunkMesh {
     fn default() -> Self {
@@ -143,7 +145,7 @@ const UV_AXES: [(usize, usize); 6] = [(0, 2), (0, 2), (0, 1), (0, 1), (2, 1), (2
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FaceKey {
     layer: u32,
-    light: u8,
+    light: u16,
     /// Non-opaque (water) faces are emitted double-sided.
     opaque: bool,
     /// Solid face submerged in water: the chunk shader plays caustics
@@ -195,11 +197,12 @@ fn face_visible(block: BlockId, neighbor: BlockId) -> bool {
 /// blocks for cross-section face culling; ungenerated neighbors should
 /// sample as air.
 ///
-/// `light` returns the packed light (`sky << 4 | block`, 0..=15 each) of the
-/// transparent voxel a face is emitted into; same coordinate convention.
+/// `light` returns the packed light (`sky << 12 | r << 8 | g << 4 | b`, each
+/// nibble 0..=15) of the transparent voxel a face is emitted into; same
+/// coordinate convention.
 pub fn mesh_section(
     sample: impl Fn(IVec3) -> BlockId,
-    light: impl Fn(IVec3) -> u8,
+    light: impl Fn(IVec3) -> u16,
 ) -> SectionMeshes {
     let mut meshes = SectionMeshes::default();
     let n = SECTION_SIZE as usize;
@@ -359,11 +362,11 @@ fn emit_quad(
             | (q.sv as u32 - 1) << 24
             | (ao[corner] as u32) << 28;
         let w1 = key.layer
-            | (key.light as u32) << 16
             | (key.underwater as u32) << 24
             | (key.surface_top as u32) << 25
             | (key.underwater_surface as u32) << 26;
-        vertices.push(PackedVertex(w0, w1));
+        let w2 = key.light as u32;
+        vertices.push(PackedVertex(w0, w1, w2));
     }
     // Corners 0/3 and 1/2 are the quad's diagonals (corner1 flips U,
     // corner2 flips V relative to corner0). Split along the brighter
@@ -388,7 +391,7 @@ mod tests {
 
     /// Reconstructs per-cell faces from the greedy quads: maps
     /// (face, block cell) -> (layer, light). Every 4 vertices = one quad.
-    fn coverage(meshes: &SectionMeshes) -> HashMap<(usize, IVec3), (u32, u8)> {
+    fn coverage(meshes: &SectionMeshes) -> HashMap<(usize, IVec3), (u32, u16)> {
         let mut map = HashMap::new();
         for quad in meshes
             .solid
@@ -401,7 +404,7 @@ mod tests {
             let su = ((w0 >> 20) & 15) as i32 + 1;
             let sv = ((w0 >> 24) & 15) as i32 + 1;
             let layer = quad[0].1 & 0xFFFF;
-            let light = (quad[0].1 >> 16) as u8;
+            let light = (quad[0].2 & 0xFFFF) as u16;
 
             // Min corner of the quad across all four vertices.
             let mut min = IVec3::splat(i32::MAX);
@@ -430,8 +433,8 @@ mod tests {
     /// Reference: per-cell visibility straight from the samplers.
     fn reference(
         sample: impl Fn(IVec3) -> BlockId,
-        light: impl Fn(IVec3) -> u8,
-    ) -> HashMap<(usize, IVec3), (u32, u8)> {
+        light: impl Fn(IVec3) -> u16,
+    ) -> HashMap<(usize, IVec3), (u32, u16)> {
         let mut map = HashMap::new();
         for y in 0..SECTION_SIZE {
             for z in 0..SECTION_SIZE {
@@ -507,7 +510,7 @@ mod tests {
                     _ => BlockId::AIR,
                 }
             };
-            let light = move |pos: IVec3| (hash(pos, salt ^ 99) % 256) as u8;
+            let light = move |pos: IVec3| (hash(pos, salt ^ 99) % 256) as u16;
             let mesh = mesh_section(sample, light);
             assert_eq!(
                 coverage(&mesh),
@@ -671,7 +674,7 @@ mod tests {
         let mesh = mesh_section(blocks_at, |local| field.get(local));
         let cov = coverage(&mesh);
 
-        let sky_of = |x: i32, z: i32| cov[&(0, IVec3::new(x, 0, z))].1 >> 4;
+        let sky_of = |x: i32, z: i32| cov[&(0, IVec3::new(x, 0, z))].1 >> 12;
         assert_eq!(sky_of(1, 1), 15, "open floor is fully sky-lit");
         let shaded = sky_of(7, 7);
         assert!(shaded < 13, "floor under the roof should be shaded, got {shaded}");
