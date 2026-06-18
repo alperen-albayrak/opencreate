@@ -16,6 +16,7 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [build-dependencies]
 naga = { version = "29", features = ["wgsl-in", "spv-out"] }

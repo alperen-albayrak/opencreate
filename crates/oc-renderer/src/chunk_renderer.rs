@@ -793,7 +793,7 @@ unsafe fn upload_block_textures(
 ) -> Result<(vk::Image, Allocation, vk::ImageView)> {
     unsafe {
         let device = &ctx.device;
-        let pixels = texture::build_block_textures();
+        let pixels = texture::load_block_textures();
         let extent = vk::Extent3D {
             width: texture::TEXTURE_SIZE,
             height: texture::TEXTURE_SIZE,

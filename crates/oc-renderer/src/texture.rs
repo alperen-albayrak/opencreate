@@ -1,8 +1,21 @@
-//! Procedural placeholder block textures, until the asset pipeline (§7.5)
-//! provides real ones.
+//! Block textures: procedural defaults, overridable by PNG files in a
+//! resource pack (the §7.5 overlay stack). A pack drops
+//! `data/textures/block/<name>.png` to replace a layer; missing or invalid
+//! files fall back to the procedural default (the proven audio.rs / skins.ron
+//! pattern).
+
+use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
 pub const LAYER_COUNT: u32 = 12;
+
+/// Block texture array layer names, in array order (must match
+/// `build_block_textures` and `mesh::layers`). A pack overrides a layer with
+/// `data/textures/block/<name>.png`.
+pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
+    "grass_top", "dirt", "stone", "grass_side", "sand", "water", "log_side",
+    "log_top", "leaves", "lamp", "snow", "planks",
+];
 
 /// RGBA pixels for the block texture array. Layer order must match
 /// `mesh::layers`: grass top, dirt, stone, grass side, sand, water,
@@ -42,6 +55,47 @@ pub fn build_block_textures() -> Vec<u8> {
         }
     }
     pixels
+}
+
+/// Builds the block texture array, overlaying any per-layer PNG overrides from
+/// `data/textures/block/` on top of the procedural defaults. Each override must
+/// be `TEXTURE_SIZE`² RGBA; anything else logs a warning and keeps the default.
+pub fn load_block_textures() -> Vec<u8> {
+    let mut pixels = build_block_textures();
+    let layer_bytes = (TEXTURE_SIZE * TEXTURE_SIZE * 4) as usize;
+    for (layer, name) in LAYER_NAMES.iter().enumerate() {
+        if let Some(rgba) = load_override(&format!("data/textures/block/{name}.png")) {
+            let start = layer * layer_bytes;
+            pixels[start..start + layer_bytes].copy_from_slice(&rgba);
+        }
+    }
+    pixels
+}
+
+/// Loads a 16×16 RGBA PNG override if present and valid, else `None`.
+fn load_override(path: &str) -> Option<Vec<u8>> {
+    if !Path::new(path).exists() {
+        return None;
+    }
+    match image::open(path) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            if rgba.width() != TEXTURE_SIZE || rgba.height() != TEXTURE_SIZE {
+                tracing::warn!(
+                    path,
+                    width = rgba.width(),
+                    height = rgba.height(),
+                    "block texture override is not {TEXTURE_SIZE}² — ignoring"
+                );
+                return None;
+            }
+            Some(rgba.into_raw())
+        }
+        Err(e) => {
+            tracing::warn!(path, error = %e, "failed to decode block texture override");
+            None
+        }
+    }
 }
 
 fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
@@ -90,5 +144,42 @@ mod tests {
         assert!(water[2] > 150 && water[2] > water[0], "water not blue: {water:?}");
         let leaves = avg(8);
         assert!(leaves[1] > leaves[0], "leaves not green: {leaves:?}");
+    }
+
+    #[test]
+    fn png_override_loads_and_rejects_wrong_size() {
+        let dir = std::env::temp_dir().join(format!("oc-tex-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A correct 16×16 RGBA PNG decodes to the layer's raw bytes.
+        let ok = dir.join("ok.png");
+        image::RgbaImage::from_pixel(TEXTURE_SIZE, TEXTURE_SIZE, image::Rgba([10, 20, 30, 255]))
+            .save(&ok)
+            .unwrap();
+        let bytes = load_override(ok.to_str().unwrap()).expect("16x16 png loads");
+        assert_eq!(bytes.len(), (TEXTURE_SIZE * TEXTURE_SIZE * 4) as usize);
+        assert_eq!(&bytes[0..4], &[10, 20, 30, 255]);
+
+        // A wrong-sized PNG is rejected (falls back to procedural).
+        let bad = dir.join("bad.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 255])).save(&bad).unwrap();
+        assert!(load_override(bad.to_str().unwrap()).is_none());
+
+        // A missing file is simply no override.
+        assert!(load_override(dir.join("missing.png").to_str().unwrap()).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn array_size_is_stable_with_no_overrides() {
+        // With no pack present (test CWD has no data/textures/block/), the
+        // overlay loader equals the procedural baseline, same total size.
+        let array = load_block_textures();
+        assert_eq!(
+            array.len(),
+            (TEXTURE_SIZE * TEXTURE_SIZE * 4 * LAYER_COUNT) as usize
+        );
     }
 }
