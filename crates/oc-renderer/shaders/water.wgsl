@@ -8,18 +8,31 @@
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
     mvp: mat4x4<f32>,
-    // xyz: direction toward the sun, pre-scaled by daylight; w: ambient.
-    sun: vec4<f32>,
-    // Sky/horizon color this frame (rgb) — the reflection environment.
-    sky: vec4<f32>,
-    // xyz: chunk origin camera-relative (view vector); w: time in seconds.
+    // xyz: chunk origin camera-relative (view vector); w: unused.
     rel: vec4<f32>,
-    // xyz: chunk origin mod 256 (shimmer phase anchor); w: distance at
-    // which fog saturates, in blocks.
+    // xyz: chunk origin mod 256 (shimmer phase anchor); w: unused.
     wave_origin: vec4<f32>,
 }
 
 var<immediate> pc: PushConstants;
+
+// Per-frame scene/environment data (set 2); mirrors `scene::SceneData`.
+// sun, the reflection-environment color (sky_horizon), time, and fog
+// distance used to ride in push constants.
+struct Scene {
+    // xyz: direction toward the sun, pre-scaled by daylight; w: ambient.
+    sun: vec4<f32>,
+    // rgb: distance-fog (horizon) color; w: fog saturation distance, blocks.
+    fog: vec4<f32>,
+    // rgb: sky/horizon reflection environment color; w: celestial angle.
+    sky_horizon: vec4<f32>,
+    sky_zenith: vec4<f32>,
+    sky_away: vec4<f32>,
+    sky_sun: vec4<f32>,
+    // x: time (seconds); y: base ambient floor.
+    params: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> scene: Scene;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -54,11 +67,11 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let light = (packed.y >> 16u) & 0xFFu;
     let sky_level = f32(light >> 4u) / 15.0;
     let block_level = f32(light & 15u) / 15.0;
-    // The diffuse term follows actual sun strength (pc.sun.xyz is
+    // The diffuse term follows actual sun strength (scene.sun.xyz is
     // pre-scaled by daylight), so water goes dark at night like land.
-    let daylight = length(pc.sun.xyz);
+    let daylight = length(scene.sun.xyz);
     let shade = max(
-        sky_level * (pc.sun.w + (1.0 - pc.sun.w) * 0.6 * daylight),
+        sky_level * (scene.sun.w + (1.0 - scene.sun.w) * 0.6 * daylight),
         block_level * 0.95,
     );
 
@@ -212,7 +225,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // mirrors the sunset. (Stage C's sky() function enriches this.)
     let reflect_dir = reflect(to_fragment, normal);
     let sky_follow = clamp(fresnel * 2.2, 0.25, 1.0);
-    let sky_env = mix(vec3(0.22, 0.42, 0.72), pc.sky.rgb, sky_follow);
+    let sky_env = mix(vec3(0.22, 0.42, 0.72), scene.sky_horizon.rgb, sky_follow);
     var sky_reflect = sky_env * (0.55 + 0.45 * max(reflect_dir.y, 0.0)) * in.shade;
     // SSR: top faces march the depth buffer for real scene reflections
     // (trees, mountains, clouds on the far shore); the sky fallback
@@ -230,25 +243,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Sun glint: the ONLY place the ripple acts — a tight specular off
     // the rippled normal breaks into the pixel-sparkle sun path, fading
-    // with distance (far water is a calm mirror). pc.sun.xyz is
+    // with distance (far water is a calm mirror). scene.sun.xyz is
     // pre-scaled by daylight, so the glint dies at night.
-    let daylight = length(pc.sun.xyz);
+    let daylight = length(scene.sun.xyz);
     var glint = 0.0;
     if (daylight > 0.01 && in.face == 0u) {
         let view_dist = length(pc.rel.xyz + in.local);
         let ripple_fade = 1.0 - smoothstep(24.0, 64.0, view_dist);
-        let t = pc.rel.w;
+        let t = scene.params.x;
         let rippled = ripple_normal(pc.wave_origin.xz + in.local.xz, t);
         let glint_normal = normalize(mix(normal, rippled, ripple_fade));
         let glint_dir = reflect(to_fragment, glint_normal);
-        let sun_dir = pc.sun.xyz / daylight;
+        let sun_dir = scene.sun.xyz / daylight;
         glint = pow(max(dot(glint_dir, sun_dir), 0.0), 500.0) * 0.95 * daylight * in.shade;
     }
 
     var color = mix(base, sky_reflect, fresnel) + vec3(glint);
     // The same horizon fog as terrain, so far water melts into the sky.
-    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.wave_origin.w, 2.0));
-    color = mix(color, pc.sky.rgb, fog_amount);
+    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / scene.fog.w, 2.0));
+    color = mix(color, scene.sky_horizon.rgb, fog_amount);
     // Coverage: transparent over shallow bottoms, near-solid when deep or
     // at grazing angles. The waterline itself stays crisp — water meets
     // terrain at block boundaries, so the mesh edge IS the shoreline; a

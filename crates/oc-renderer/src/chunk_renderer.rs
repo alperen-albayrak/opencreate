@@ -35,18 +35,15 @@ impl GpuBuffer {
     }
 }
 
-/// Push constants for the chunk pipeline; must match `chunk.wgsl`.
+/// Push constants for the chunk pipeline; must match `chunk.wgsl`. 96 bytes.
+/// The per-frame sun/fog/time now live in the scene UBO (set 2); only
+/// genuinely per-draw data remains here.
 #[repr(C)]
 #[derive(Clone, Copy)]
-/// Exactly 128 bytes — the guaranteed push-constant minimum.
 struct ChunkPush {
     mvp: Mat4,
-    /// xyz: direction toward the sun; w: ambient light level.
-    sun: Vec4,
-    /// xyz: chunk origin mod 256 (caustic phase); w: time in seconds.
+    /// xyz: chunk origin mod 256 (caustic phase); w: unused.
     params: Vec4,
-    /// rgb: fog (horizon) color; w: fog saturation distance, blocks.
-    fog: Vec4,
     /// xyz: chunk origin camera-relative (shadow lookups); w: unused.
     rel: Vec4,
 }
@@ -57,11 +54,9 @@ struct ChunkPush {
 #[derive(Clone, Copy)]
 struct WaterPush {
     mvp: Mat4,
-    sun: Vec4,
-    sky: Vec4,
-    /// xyz: chunk origin camera-relative; w: time (seconds).
+    /// xyz: chunk origin camera-relative (view vector); w: unused.
     rel: Vec4,
-    /// xyz: chunk origin mod 256 (wave-phase anchor).
+    /// xyz: chunk origin mod 256 (wave-phase anchor); w: unused.
     wave_origin: Vec4,
 }
 
@@ -120,6 +115,7 @@ impl ChunkRenderer {
         water_pass: vk::RenderPass,
         command_pool: vk::CommandPool,
         shadow_layout: vk::DescriptorSetLayout,
+        scene_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         unsafe {
             let device = &ctx.device;
@@ -199,7 +195,7 @@ impl ChunkRenderer {
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<ChunkPush>() as u32);
-            let chunk_sets = [descriptor_set_layout, shadow_layout];
+            let chunk_sets = [descriptor_set_layout, shadow_layout, scene_layout];
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&chunk_sets)
@@ -314,7 +310,7 @@ impl ChunkRenderer {
             let water_push = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<WaterPush>() as u32);
-            let water_set_layouts = [descriptor_set_layout, water_depth_layout];
+            let water_set_layouts = [descriptor_set_layout, water_depth_layout, scene_layout];
             let water_pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&water_set_layouts)
@@ -457,10 +453,8 @@ impl ChunkRenderer {
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
         camera_pos: DVec3,
-        sun: Vec4,
-        time: f32,
-        fog: Vec4,
         shadow_set: vk::DescriptorSet,
+        scene_set: vk::DescriptorSet,
     ) -> u32 {
         unsafe {
             if self.chunks.is_empty() {
@@ -474,7 +468,7 @@ impl ChunkRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set, shadow_set],
+                &[self.descriptor_set, shadow_set, scene_set],
                 &[],
             );
 
@@ -504,9 +498,7 @@ impl ChunkRenderer {
                 );
                 let push = ChunkPush {
                     mvp: view_proj * Mat4::from_translation(rel),
-                    sun,
-                    params: phase.extend(time),
-                    fog,
+                    params: phase.extend(0.0),
                     rel: rel.extend(0.0),
                 };
                 device.cmd_push_constants(
@@ -605,13 +597,10 @@ impl ChunkRenderer {
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
         camera_pos: DVec3,
-        sun: Vec4,
-        sky: Vec4,
-        time: f32,
-        fog_distance: f32,
         slot: usize,
         extent: vk::Extent2D,
         reflections: bool,
+        scene_set: vk::DescriptorSet,
     ) {
         unsafe {
             if self.chunks.is_empty() {
@@ -652,7 +641,7 @@ impl ChunkRenderer {
                         vk::PipelineBindPoint::GRAPHICS,
                         self.water_pipeline_layout,
                         0,
-                        &[self.descriptor_set, self.water_sets[slot]],
+                        &[self.descriptor_set, self.water_sets[slot], scene_set],
                         &[],
                     );
                     bound = true;
@@ -669,10 +658,8 @@ impl ChunkRenderer {
                 );
                 let push = WaterPush {
                     mvp: view_proj * Mat4::from_translation(rel),
-                    sun,
-                    sky,
-                    rel: rel.extend(time),
-                    wave_origin: wave.extend(fog_distance),
+                    rel: rel.extend(0.0),
+                    wave_origin: wave.extend(0.0),
                 };
                 device.cmd_push_constants(
                     cmd,

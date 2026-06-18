@@ -36,7 +36,6 @@ pub struct FarTile {
 #[derive(Clone, Copy)]
 struct FarPush {
     mvp: Mat4,
-    fog: Vec4,
     params: Vec4,
     /// Loaded-chunk square, camera-relative: (min x, min z, max x, max z).
     cut: Vec4,
@@ -57,13 +56,18 @@ pub struct FarRenderer {
 }
 
 impl FarRenderer {
-    pub unsafe fn new(ctx: &VulkanContext, render_pass: vk::RenderPass) -> Result<Self> {
+    pub unsafe fn new(
+        ctx: &VulkanContext,
+        render_pass: vk::RenderPass,
+        scene_layout: vk::DescriptorSetLayout,
+    ) -> Result<Self> {
         unsafe {
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<FarPush>() as u32);
             let pipeline_layout = ctx.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&scene_layout))
                     .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
@@ -150,15 +154,23 @@ impl FarRenderer {
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
         camera_pos: DVec3,
-        fog: Vec4,
         daylight: f32,
         cut: Vec4,
+        scene_set: vk::DescriptorSet,
     ) {
         unsafe {
             if self.tiles.is_empty() {
                 return;
             }
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[scene_set],
+                &[],
+            );
             for tile in self.tiles.values() {
                 let rel = (tile.origin - camera_pos).as_vec3();
                 // Coarse cull: skip tiles fully behind the camera plane.
@@ -172,7 +184,6 @@ impl FarRenderer {
                 device.cmd_bind_index_buffer(cmd, tile.index.buffer, 0, vk::IndexType::UINT32);
                 let push = FarPush {
                     mvp: view_proj * Mat4::from_translation(rel),
-                    fog,
                     params: Vec4::new(daylight, rel.x, rel.z, rel.y),
                     cut,
                 };

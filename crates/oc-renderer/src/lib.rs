@@ -16,6 +16,7 @@ mod hdr;
 mod mesh;
 mod font;
 mod outline;
+mod scene;
 mod shadow;
 mod sky_pass;
 mod swapchain;
@@ -39,6 +40,7 @@ use exposure::ExposurePass;
 use far_renderer::FarRenderer;
 use hdr::{HdrTarget, TonemapPass};
 use outline::OutlineRenderer;
+use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
 use sky_pass::SkyPass;
 use swapchain::Swapchain;
@@ -128,6 +130,8 @@ pub struct Renderer {
     /// World render resolution as a fraction of the window.
     resolution_scale: f32,
     scale_dirty: bool,
+    /// Per-frame scene/environment UBO, bound by the world passes.
+    scene: SceneUbo,
     chunks: ChunkRenderer,
     entity: EntityRenderer,
     outline: OutlineRenderer,
@@ -202,6 +206,7 @@ impl Renderer {
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
             tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
             let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
+            let scene = SceneUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let chunks = ChunkRenderer::new(
                 &ctx,
                 &mut allocator,
@@ -209,13 +214,14 @@ impl Renderer {
                 hdr.water_pass,
                 command_pool,
                 shadow.descriptor_layout,
+                scene.layout(),
             )?;
             chunks.bind_water_inputs(&ctx.device, hdr.depth.view, hdr.scene_copy_view);
             let entity = EntityRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
             let outline = OutlineRenderer::new(&ctx, &mut allocator, hdr.render_pass)?;
-            let sky = SkyPass::new(&ctx, hdr.render_pass)?;
+            let sky = SkyPass::new(&ctx, hdr.render_pass, scene.layout())?;
             let clouds_layer = CloudLayer::new(&ctx, &mut allocator, hdr.render_pass)?;
-            let far = FarRenderer::new(&ctx, hdr.render_pass)?;
+            let far = FarRenderer::new(&ctx, hdr.render_pass, scene.layout())?;
             let ui =
                 UiRenderer::new(&ctx, &mut allocator, render_pass, command_pool, FRAMES_IN_FLIGHT)?;
 
@@ -245,6 +251,7 @@ impl Renderer {
                 tonemap,
                 resolution_scale: 1.0,
                 scale_dirty: false,
+                scene,
                 chunks,
                 entity,
                 outline,
@@ -433,15 +440,28 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
             let fog = Vec4::from_array(camera.sky_color).truncate().extend(camera.fog_distance);
+            // Fill this frame's scene/environment UBO once; the world passes
+            // read sun/fog/sky/time from it instead of per-draw push constants.
+            let scene_data = SceneData {
+                sun: camera.sun,
+                fog,
+                sky_horizon: Vec4::from_array(camera.sky_color)
+                    .truncate()
+                    .extend(camera.sky_angle),
+                sky_zenith: Vec4::from_array(camera.sky_zenith),
+                sky_away: Vec4::from_array(camera.sky_away),
+                sky_sun: Vec4::from_array(camera.sky_sun),
+                params: Vec4::new(camera.time, 0.0, 0.0, 0.0),
+            };
+            self.scene.update(slot, &scene_data);
+            let scene_set = self.scene.set(slot);
             self.chunks_drawn = self.chunks.record(
                 device,
                 cmd,
                 camera.view_proj,
                 camera.position,
-                camera.sun,
-                camera.time,
-                fog,
                 self.shadow.descriptor_sets[slot],
+                scene_set,
             );
             // Far terrain ring: after the chunks, depth keeps detail on top.
             if camera.far_terrain {
@@ -451,9 +471,9 @@ impl Renderer {
                     cmd,
                     camera.view_proj,
                     camera.position,
-                    fog,
                     camera.sun.w + (1.0 - camera.sun.w) * daylight * 0.8,
                     Vec4::from_array(camera.far_cut),
+                    scene_set,
                 );
             }
             self.entity
@@ -462,20 +482,9 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
-            // The sky dome shades only pixels no geometry wrote. The
-            // scalars ride in the w slots; see SkyPush.
-            let horizon = Vec4::from_array(camera.sky_color)
-                .truncate()
-                .extend(camera.sky_angle);
-            self.sky.record(
-                device,
-                cmd,
-                camera.view_proj,
-                Vec4::from_array(camera.sky_sun),
-                horizon,
-                Vec4::from_array(camera.sky_away),
-                Vec4::from_array(camera.sky_zenith),
-            );
+            // The sky dome shades only pixels no geometry wrote. Its colors
+            // come from the scene UBO (filled above).
+            self.sky.record(device, cmd, camera.view_proj, scene_set);
             if camera.clouds {
                 self.clouds_layer.record(
                     device,
@@ -589,13 +598,10 @@ impl Renderer {
                 cmd,
                 camera.view_proj,
                 camera.position,
-                camera.sun,
-                Vec4::from_array(camera.sky_color),
-                camera.time,
-                camera.fog_distance,
                 slot,
                 world_extent,
                 camera.water_reflections,
+                scene_set,
             );
             device.cmd_end_render_pass(cmd);
 
@@ -723,6 +729,7 @@ impl Drop for Renderer {
             let _ = device.device_wait_idle();
             let mut allocator = self.allocator.take().expect("allocator alive");
 
+            self.scene.destroy(device, &mut allocator);
             self.chunks.destroy(device, &mut allocator);
             self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);

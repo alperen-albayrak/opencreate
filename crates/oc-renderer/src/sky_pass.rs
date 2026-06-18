@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use ash::vk;
-use glam::{Mat4, Vec4};
+use glam::Mat4;
 
 use crate::chunk_renderer::as_bytes;
 use crate::context::VulkanContext;
@@ -17,14 +17,6 @@ const SKY_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sky.spv"));
 #[derive(Clone, Copy)]
 struct SkyPush {
     inv_view_proj: Mat4,
-    /// xyz: unscaled sun direction; w: daylight.
-    sun: Vec4,
-    /// rgb: toward-sun horizon; w: celestial angle, radians.
-    horizon: Vec4,
-    /// rgb: anti-sun horizon; w: moon phase 0..1.
-    away: Vec4,
-    /// rgb: zenith; w: star visibility 0..1.
-    zenith: Vec4,
 }
 
 pub struct SkyPass {
@@ -33,7 +25,11 @@ pub struct SkyPass {
 }
 
 impl SkyPass {
-    pub unsafe fn new(ctx: &VulkanContext, render_pass: vk::RenderPass) -> Result<Self> {
+    pub unsafe fn new(
+        ctx: &VulkanContext,
+        render_pass: vk::RenderPass,
+        scene_layout: vk::DescriptorSetLayout,
+    ) -> Result<Self> {
         unsafe {
             let device = &ctx.device;
             let push_range = vk::PushConstantRange::default()
@@ -41,6 +37,7 @@ impl SkyPass {
                 .size(size_of::<SkyPush>() as u32);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&scene_layout))
                     .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
@@ -110,20 +107,21 @@ impl SkyPass {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         view_proj: Mat4,
-        sun: Vec4,
-        horizon: Vec4,
-        away: Vec4,
-        zenith: Vec4,
+        scene_set: vk::DescriptorSet,
     ) {
         unsafe {
             let push = SkyPush {
                 inv_view_proj: view_proj.inverse(),
-                sun,
-                horizon,
-                away,
-                zenith,
             };
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[scene_set],
+                &[],
+            );
             device.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,

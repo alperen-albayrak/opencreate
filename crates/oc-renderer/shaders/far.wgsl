@@ -5,8 +5,6 @@
 struct PushConstants {
     // proj * view * translate(tile_origin - camera), camera-relative.
     mvp: mat4x4<f32>,
-    // rgb: fog (horizon) color; w: distance where fog saturates, blocks.
-    fog: vec4<f32>,
     // x: daylight (sun strength + ambient floor); yzw: tile origin
     // minus camera (x, z, y) — yes, y rides in w.
     params: vec4<f32>,
@@ -16,6 +14,19 @@ struct PushConstants {
 }
 
 var<immediate> pc: PushConstants;
+
+// Per-frame scene/environment data (set 0 here); mirrors `scene::SceneData`.
+struct Scene {
+    sun: vec4<f32>,
+    // rgb: distance-fog (horizon) color; w: fog saturation distance, blocks.
+    fog: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_zenith: vec4<f32>,
+    sky_away: vec4<f32>,
+    sky_sun: vec4<f32>,
+    params: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> scene: Scene;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -67,8 +78,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let cos_view = max(-view.y, 0.0);
         let fresnel = 0.02 + 0.58 * pow(1.0 - cos_view, 4.0);
         let toward_sky = clamp(0.35 + fresnel * 1.5, 0.0, 1.0);
-        color = mix(in.color.rgb, pc.fog.rgb, toward_sky);
+        color = mix(in.color.rgb, scene.fog.rgb, toward_sky);
     }
-    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / pc.fog.w, 2.0));
-    return vec4<f32>(mix(color, pc.fog.rgb, fog_amount), 1.0);
+    let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / scene.fog.w, 2.0));
+    return vec4<f32>(mix(color, scene.fog.rgb, fog_amount), 1.0);
 }

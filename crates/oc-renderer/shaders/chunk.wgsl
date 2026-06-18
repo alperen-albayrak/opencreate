@@ -8,18 +8,30 @@
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
     mvp: mat4x4<f32>,
-    // xyz: direction toward the sun (normalized); w: ambient light level.
-    sun: vec4<f32>,
-    // xyz: chunk origin mod 256 (caustic phase anchor); w: time, seconds.
+    // xyz: chunk origin mod 256 (caustic phase anchor); w: unused.
     params: vec4<f32>,
-    // rgb: fog (horizon) color; w: distance where fog saturates, blocks.
-    fog: vec4<f32>,
     // xyz: chunk origin camera-relative (shadow lookups); w: unused.
     rel: vec4<f32>,
 }
 
 // `immediate` is WGSL/naga's name for Vulkan push constants.
 var<immediate> pc: PushConstants;
+
+// Per-frame scene/environment data (set 2), shared by all world passes.
+// Mirrors `scene::SceneData`; std140 vec4 layout.
+struct Scene {
+    // xyz: direction toward the sun (scaled by daylight); w: ambient level.
+    sun: vec4<f32>,
+    // rgb: distance-fog (horizon) color; w: fog saturation distance, blocks.
+    fog: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    sky_zenith: vec4<f32>,
+    sky_away: vec4<f32>,
+    sky_sun: vec4<f32>,
+    // x: time (seconds); y: base ambient floor; z, w: reserved.
+    params: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> scene: Scene;
 
 // Sun shadow cascades (set 1, written per frame).
 struct ShadowData {
@@ -94,8 +106,8 @@ fn vs_main(@location(0) packed: vec2<u32>) -> VsOut {
     let sky_level = f32(light >> 4u) / 15.0;
     let block_level = f32(light & 15u) / 15.0;
 
-    let ambient = pc.sun.w;
-    let diffuse = max(dot(face_normal[face], pc.sun.xyz), 0.0);
+    let ambient = scene.sun.w;
+    let diffuse = max(dot(face_normal[face], scene.sun.xyz), 0.0);
     let block_term = block_level * 0.95;
 
     // Ambient occlusion: corners boxed in by neighbors darken, which is
@@ -249,16 +261,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if ((in.underwater & 1u) == 1u && !dry) {
         // Sun dapples on submerged surfaces; daylight-gated (pc.sun.xyz
         // is pre-scaled by daylight) and scene-lit so caves stay dark.
-        let daylight = length(pc.sun.xyz);
+        let daylight = length(scene.sun.xyz);
         // Caustics are a near-field effect too: gone past ~100 blocks.
         let dist_fade = 1.0 - smoothstep(40.0, 110.0, view_dist);
-        let dapple = caustic(in.cpos, pc.params.w) * daylight * dist_fade;
+        let dapple = caustic(in.cpos, scene.params.x) * daylight * dist_fade;
         // Slightly green-cyan dapples, like sunlight through water —
         // kept faint: a shimmer on the sand, not a pattern painted on it.
         color *= vec3(1.0) + vec3(0.30, 0.44, 0.38) * dapple;
     }
     // Horizon fog, same curve as water: far terrain melts into the sky;
     // underwater the client passes a short distance and deep blue color.
-    let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / pc.fog.w, 2.0));
-    return vec4<f32>(mix(color, pc.fog.rgb, fog_amount), 1.0);
+    let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / scene.fog.w, 2.0));
+    return vec4<f32>(mix(color, scene.fog.rgb, fog_amount), 1.0);
 }

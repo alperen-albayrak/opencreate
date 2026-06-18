@@ -10,17 +10,26 @@ struct PushConstants {
     // Inverse of the camera-relative view-projection (no translation):
     // unprojects a clip position into a world-space view direction.
     inv_view_proj: mat4x4<f32>,
-    // xyz: direction toward the sun (unscaled); w: daylight 0..1.
-    sun: vec4<f32>,
-    // rgb: horizon color on the sun's side; w: celestial angle, radians.
-    horizon: vec4<f32>,
-    // rgb: horizon color opposite the sun; w: moon phase 0..1.
-    away: vec4<f32>,
-    // rgb: zenith color; w: star visibility 0..1.
-    zenith: vec4<f32>,
 }
 
 var<immediate> pc: PushConstants;
+
+// Per-frame scene/environment data (set 0); mirrors `scene::SceneData`. The
+// sky colors that used to ride in push constants live here now.
+struct Scene {
+    sun: vec4<f32>,
+    fog: vec4<f32>,
+    // rgb: horizon color on the sun's side; w: celestial angle, radians.
+    sky_horizon: vec4<f32>,
+    // rgb: zenith color; w: star visibility 0..1.
+    sky_zenith: vec4<f32>,
+    // rgb: horizon color opposite the sun; w: moon phase 0..1.
+    sky_away: vec4<f32>,
+    // xyz: direction toward the sun (unscaled); w: daylight 0..1.
+    sky_sun: vec4<f32>,
+    params: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> scene: Scene;
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
@@ -127,8 +136,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let world = pc.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
     let dir = normalize(world.xyz / world.w);
 
-    let daylight = pc.sun.w;
-    let sun_dir = pc.sun.xyz;
+    let daylight = scene.sky_sun.w;
+    let sun_dir = scene.sky_sun.xyz;
 
     // The horizon color depends on where you look: toward the low sun it
     // keeps the warm light, opposite it the dark rises first — dusk and
@@ -138,18 +147,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let f = dot(normalize(dir.xz), normalize(sun_dir.xz)) * 0.5 + 0.5;
         toward = f * f;
     }
-    let horizon = mix(pc.away.rgb, pc.horizon.rgb, toward);
+    let horizon = mix(scene.sky_away.rgb, scene.sky_horizon.rgb, toward);
 
     // Horizon-to-zenith gradient; below the horizon, settle darker.
     let up = clamp(dir.y, -1.0, 1.0);
-    var color = mix(horizon, pc.zenith.rgb, pow(max(up, 0.0), 0.65));
+    var color = mix(horizon, scene.sky_zenith.rgb, pow(max(up, 0.0), 0.65));
     color = mix(color, horizon * 0.35, smoothstep(0.0, -0.3, up));
 
     // Stars fade in at dusk and sit behind everything else. They live on
     // the rotating celestial sphere: undo the day's spin about +Z.
-    let stars_vis = pc.zenith.w;
+    let stars_vis = scene.sky_zenith.w;
     if (stars_vis > 0.001 && up > 0.0) {
-        let a = -pc.horizon.w;
+        let a = -scene.sky_horizon.w;
         let c = cos(a);
         let s = sin(a);
         let cel = vec3(dir.x * c - dir.y * s, dir.x * s + dir.y * c, dir.z);
@@ -189,12 +198,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let r = length(p);
             // Phase = how far the shadow disc has slid off the lit one:
             // 0 new, 0.5 full, then back. 8 steps over the cycle.
-            let slide = sin(pc.away.w * 3.14159265) * 2.4;
+            let slide = sin(scene.sky_away.w * 3.14159265) * 2.4;
             let shadow = length(p - vec2(slide, 0.0));
             let lit = (1.0 - smoothstep(0.92, 1.0, r)) * smoothstep(1.0, 1.15, shadow);
             color += vec3(1.05, 1.02, 0.92) * lit * night;
             // Halo: the sky brightens near the moon, fading with distance.
-            let illum = 0.15 + 0.85 * sin(pc.away.w * 3.14159265);
+            let illum = 0.15 + 0.85 * sin(scene.sky_away.w * 3.14159265);
             let halo = pow(max(cos_moon, 0.0), 350.0) * 0.22 * illum;
             color += vec3(0.55, 0.6, 0.7) * halo * night;
         }
