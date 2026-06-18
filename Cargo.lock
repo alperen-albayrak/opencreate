@@ -1777,6 +1777,8 @@ dependencies = [
  "anyhow",
  "glam 0.30.10",
  "oc-core",
+ "ron",
+ "serde",
  "zstd",
 ]
 

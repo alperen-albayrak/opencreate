@@ -1,0 +1,50 @@
+// Block definitions (ARCHITECTURE.md §3). Order is the stable base-game id
+// order (air = 0 … planks = 10) — `oc-world::blocks` consts and the save
+// format's legacy palette depend on it (locked by a unit test in registry.rs).
+// Every field defaults, so a block lists only what differs. Most fields are
+// reserved (parsed now, consumed by later PBR / thermal / gameplay features).
+//
+// `textures` indexes the block texture array; layer order must match
+// `oc-renderer::texture::build_block_textures`:
+//   0 grass-top · 1 dirt · 2 stone · 3 grass-side · 4 sand · 5 water
+//   6 log-side · 7 log-top · 8 leaves · 9 lamp · 10 snow · 11 planks
+[
+    // Air lets light through (cost 1); not solid, not opaque, not rendered.
+    (id: "oc:air", name: "Air", light_opacity: Some(1)),
+
+    (id: "oc:stone", name: "Stone",
+        solid: true, opaque: true, color: (125, 125, 125), textures: All(2)),
+
+    (id: "oc:dirt", name: "Dirt",
+        solid: true, opaque: true, color: (134, 96, 67), textures: All(1)),
+
+    (id: "oc:grass", name: "Grass Block",
+        solid: true, opaque: true, color: (106, 170, 64),
+        textures: Sided(top: 0, bottom: 1, side: 3)),
+
+    (id: "oc:sand", name: "Sand",
+        solid: true, opaque: true, color: (219, 209, 160), textures: All(4)),
+
+    // Water: a fluid — not solid, not opaque, lets light through at cost 1.
+    (id: "oc:water", name: "Water",
+        light_opacity: Some(1), color: (54, 106, 224), textures: All(5)),
+
+    (id: "oc:log", name: "Log",
+        solid: true, opaque: true, color: (104, 82, 50),
+        textures: Sided(top: 7, bottom: 7, side: 6)),
+
+    (id: "oc:leaves", name: "Leaves",
+        solid: true, opaque: true, color: (58, 134, 52), textures: All(8)),
+
+    // Lamp: full-strength light source. `emissive` is reserved for the
+    // blackbody/PBR glow (Stages E/G); harmless until then.
+    (id: "oc:lamp", name: "Lamp",
+        solid: true, opaque: true, light_emission: 15,
+        emissive: (1.0, 0.87, 0.59), color: (255, 222, 150), textures: All(9)),
+
+    (id: "oc:snow", name: "Snow",
+        solid: true, opaque: true, color: (238, 242, 248), textures: All(10)),
+
+    (id: "oc:planks", name: "Planks",
+        solid: true, opaque: true, color: (172, 136, 84), textures: All(11)),
+]

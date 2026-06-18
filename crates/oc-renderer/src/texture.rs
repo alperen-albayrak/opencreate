@@ -51,22 +51,10 @@ fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
 
 /// Representative color of a block for UI swatches (hotbar icons until
 /// the asset pipeline brings real item icons). sRGB 0..1 with alpha.
+/// The color is data now (`BlockDef.color`); unknown blocks read magenta.
 pub fn block_swatch(block: oc_world::BlockId) -> [f32; 4] {
-    use oc_world::blocks;
-    let rgb: [u32; 3] = match block {
-        blocks::GRASS => [106, 170, 64],
-        blocks::DIRT => [134, 96, 67],
-        blocks::STONE => [125, 125, 125],
-        blocks::SAND => [219, 209, 160],
-        blocks::WATER => [54, 106, 224],
-        blocks::LOG => [104, 82, 50],
-        blocks::LEAVES => [58, 134, 52],
-        blocks::LAMP => [255, 222, 150],
-        blocks::SNOW => [238, 242, 248],
-        blocks::PLANKS => [172, 136, 84],
-        _ => [255, 0, 255],
-    };
-    [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]
+    let (r, g, b) = oc_world::registry::def(block).map_or((255, 0, 255), |d| d.color);
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
 }
 
 /// Small deterministic integer hash (xorshift-style) for texture grain.

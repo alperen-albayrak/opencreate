@@ -10,3 +10,5 @@ oc-core.workspace = true
 glam.workspace = true
 zstd.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+ron.workspace = true

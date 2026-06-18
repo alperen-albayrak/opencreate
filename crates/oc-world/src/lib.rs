@@ -7,6 +7,7 @@
 pub mod light;
 pub mod physics;
 pub mod raycast;
+pub mod registry;
 pub mod section;
 pub mod store;
 pub mod terrain;
@@ -28,34 +29,30 @@ impl BlockId {
 
     /// Solid blocks collide and stop raycasts; water does neither.
     pub fn is_solid(self) -> bool {
-        !self.is_air() && self != blocks::WATER
+        registry::props(self).solid
     }
 
     /// Opaque blocks fully cover adjacent faces in meshing.
     pub fn is_opaque(self) -> bool {
-        !self.is_air() && self != blocks::WATER
+        registry::props(self).opaque
     }
 
     /// Cost of light passing through this block, or `None` if it blocks
     /// light entirely.
     pub fn light_opacity(self) -> Option<u8> {
-        match self {
-            blocks::AIR => Some(1),
-            // One level per block, like Java 1.13+ — the old cost of 3
-            // turned everything below ~5 blocks pitch black.
-            blocks::WATER => Some(1),
-            _ => None,
-        }
+        registry::props(self).light_opacity
     }
 
     /// Light level (0..=15) this block emits.
     pub fn light_emission(self) -> u8 {
-        if self == blocks::LAMP { 15 } else { 0 }
+        registry::props(self).light_emission
     }
 }
 
-/// Hardcoded blocks until the data-driven registry (§3) exists. Properties
-/// live on [`BlockId`] methods for now.
+/// Stable numeric ids for the base-game blocks, matching `data/blocks.ron`'s
+/// order. Properties are now data (see [`registry`]); these consts stay as
+/// convenient handles for worldgen and code that places known blocks. A unit
+/// test in [`registry`] locks the order against the string ids.
 pub mod blocks {
     use super::BlockId;
 

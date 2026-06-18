@@ -24,6 +24,7 @@ use oc_assets::{ItemId, ModeId, Registry};
 use oc_core::{ChunkPos, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, InvTarget, ServerMessage, Transport};
 use oc_world::World;
+use oc_world::registry::BlockPalette;
 use oc_world::store::{FolderStore, WorldStore};
 use oc_world::world::{GeneratedColumn, generate_column_data};
 use tracing::{info, warn};
@@ -323,6 +324,10 @@ struct LevelMeta {
     mode: String,
     /// Whether commands/game-mode changes are allowed (§ cheats).
     cheats: bool,
+    /// Block palette: on-disk column ids index into this list of string ids
+    /// (`format_version: 2`). Empty for pre-registry saves → adopt the current
+    /// registry order on load.
+    block_palette: Vec<String>,
 }
 
 struct Server {
@@ -340,6 +345,9 @@ struct Server {
     fall: FallTracker,
     last_sent_stats: Option<Stats>,
     store: Arc<FolderStore>,
+    /// The world's block palette string ids (persisted in `level.txt`), kept so
+    /// every save re-writes the table the stored column ids index into.
+    block_palette: Vec<String>,
     level_path: PathBuf,
     seed: u64,
     day_fraction: f64,
@@ -363,9 +371,21 @@ impl Server {
         config: ServerConfig,
         mut transport: Box<dyn Transport<ServerMessage, ClientMessage>>,
     ) -> Result<Self> {
-        let store = Arc::new(FolderStore::open(&config.save_dir)?);
         let level_path = config.save_dir.join("level.txt");
         let level = load_level(&level_path);
+
+        // The world's block palette (the string↔numeric save table): a loaded
+        // world keeps its saved order; a new or pre-registry (v1) world adopts
+        // the current registry order, which the next save persists.
+        let block_palette = level
+            .as_ref()
+            .map(|l| l.block_palette.clone())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(oc_world::registry::palette_strings);
+        let store = Arc::new(FolderStore::open(
+            &config.save_dir,
+            Arc::new(BlockPalette::from_strings(block_palette.clone())),
+        )?);
 
         let registry = Registry::load_default()?;
         let seed = level.as_ref().map_or(config.seed, |l| l.seed);
@@ -423,6 +443,7 @@ impl Server {
             fall: FallTracker::default(),
             last_sent_stats: None,
             store,
+            block_palette,
             level_path,
             seed,
             day_fraction,
@@ -866,6 +887,7 @@ impl Server {
             pitch: self.player_pitch,
             mode: self.registry.mode(self.mode).id.clone(),
             cheats: self.cheats,
+            block_palette: self.block_palette.clone(),
         };
         if let Err(e) = save_level(&self.level_path, &meta) {
             warn!("saving level metadata: {e:#}");
@@ -944,12 +966,22 @@ fn load_level(path: &Path) -> Option<LevelMeta> {
         // Saves from before the flag existed had free mode switching:
         // default them to cheats-on so nothing is taken away.
         cheats: get("cheats").map_or(true, |c| c == "true"),
+        // Pre-registry (v1) saves have no palette; an empty list makes the
+        // loader adopt the current registry order.
+        block_palette: get("block_palette")
+            .map(|s| {
+                s.split(',')
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.to_string())
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
 fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
     let text = format!(
-        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\ncheats={}\n",
+        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\ncheats={}\nblock_palette={}\n",
         meta.seed,
         meta.day_fraction,
         meta.position.x,
@@ -959,6 +991,7 @@ fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
         meta.pitch,
         meta.mode,
         meta.cheats,
+        meta.block_palette.join(","),
     );
     let tmp = path.with_extension("txt.tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;

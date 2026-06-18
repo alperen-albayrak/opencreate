@@ -106,7 +106,11 @@ const FACE_CORNERS: [[IVec3; 4]; 6] = [
     ],
 ];
 
-/// Texture array layers (must match the order in `texture::build_block_textures`).
+/// Texture array layers (must match the order in `texture::build_block_textures`
+/// and the `textures:` indices in `data/blocks.ron`). Now that layers are data,
+/// these constants document the array order and back the meshing test + the
+/// unknown-block fallback.
+#[allow(dead_code)]
 mod layers {
     pub const GRASS_TOP: u32 = 0;
     pub const DIRT: u32 = 1;
@@ -123,25 +127,10 @@ mod layers {
 }
 
 fn face_texture(block: BlockId, face: usize) -> u32 {
-    match block {
-        blocks::GRASS => match face {
-            0 => layers::GRASS_TOP,
-            1 => layers::DIRT,
-            _ => layers::GRASS_SIDE,
-        },
-        blocks::DIRT => layers::DIRT,
-        blocks::SAND => layers::SAND,
-        blocks::WATER => layers::WATER,
-        blocks::LOG => match face {
-            0 | 1 => layers::LOG_TOP,
-            _ => layers::LOG_SIDE,
-        },
-        blocks::LEAVES => layers::LEAVES,
-        blocks::LAMP => layers::LAMP,
-        blocks::SNOW => layers::SNOW,
-        blocks::PLANKS => layers::PLANKS,
-        _ => layers::STONE,
-    }
+    // Per-face texture layers are data now (`BlockDef.textures`); the layer
+    // indices in `blocks.ron` match the `layers` constants below. Unknown
+    // blocks fall back to stone.
+    oc_world::registry::def(block).map_or(layers::STONE, |d| d.textures.layer(face))
 }
 
 /// Per face: (uv.x axis, uv.y axis) in block space — the axes whose corner

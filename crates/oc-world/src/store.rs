@@ -9,15 +9,23 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use oc_core::ChunkPos;
 
+use crate::registry::{self, BlockPalette};
 use crate::world::{ColumnSpan, GeneratedColumn};
-use crate::{BlockId, Section};
+use crate::Section;
 
 /// On-disk format version, bumped on layout changes.
-const FORMAT_VERSION: u32 = 1;
+///
+/// - v1: raw hardcoded block ids 0..=10 per voxel.
+/// - v2: ids are *palette-local* (indices into the world's [`BlockPalette`],
+///   stored in the level header); remapped to runtime ids on load via stable
+///   string ids, so registry reorders / mods never corrupt saves. v1 columns
+///   load through the built-in [`registry::LEGACY_PALETTE`] and re-save as v2.
+const FORMAT_VERSION: u32 = 2;
 const SECTION_VOLUME: usize = 16 * 16 * 16;
 
 /// A column's voxel data, decoupled from any live `World`.
@@ -28,8 +36,9 @@ pub struct StoredColumn {
 }
 
 impl StoredColumn {
-    /// Serializes to the uncompressed binary layout (see `decode`).
-    fn encode(&self) -> Vec<u8> {
+    /// Serializes to the uncompressed binary layout (see `decode`), writing the
+    /// current [`FORMAT_VERSION`] with block ids remapped to `palette`-local ids.
+    fn encode(&self, palette: &BlockPalette) -> Vec<u8> {
         let mut out = Vec::with_capacity(16 + self.sections.len() * (4 + SECTION_VOLUME * 2));
         out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         out.extend_from_slice(&self.span.min_section_y.to_le_bytes());
@@ -38,18 +47,24 @@ impl StoredColumn {
         for (y, section) in &self.sections {
             out.extend_from_slice(&y.to_le_bytes());
             for block in section.raw() {
-                out.extend_from_slice(&block.0.to_le_bytes());
+                out.extend_from_slice(&palette.encode_id(*block).to_le_bytes());
             }
         }
         out
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self> {
+    /// Decodes a column, remapping stored ids to runtime [`BlockId`]s. v2 ids go
+    /// through `world_palette`; v1 ids (legacy 0..=10) through the built-in
+    /// [`registry::LEGACY_PALETTE`].
+    fn decode(bytes: &[u8], world_palette: &BlockPalette) -> Result<Self> {
         let mut cursor = Reader { bytes, at: 0 };
         let version = cursor.u32()?;
-        if version != FORMAT_VERSION {
-            bail!("unsupported column format version {version}");
-        }
+        let palette: &BlockPalette = match version {
+            // `&*` derefs the LazyLock to `&BlockPalette`.
+            1 => &*registry::LEGACY_PALETTE,
+            2 => world_palette,
+            _ => bail!("unsupported column format version {version}"),
+        };
         let span = ColumnSpan {
             min_section_y: cursor.i32()?,
             max_section_y: cursor.i32()?,
@@ -60,7 +75,7 @@ impl StoredColumn {
             let y = cursor.i32()?;
             let mut voxels = Vec::with_capacity(SECTION_VOLUME);
             for _ in 0..SECTION_VOLUME {
-                voxels.push(BlockId(cursor.u16()?));
+                voxels.push(palette.decode_id(cursor.u16()?));
             }
             sections.push((y, Section::from_raw(&voxels)));
         }
@@ -120,15 +135,18 @@ pub trait WorldStore: Send + Sync {
 /// One zstd-compressed file per column in a folder.
 pub struct FolderStore {
     columns_dir: PathBuf,
+    /// The world's block palette; resolves on-disk ids ↔ runtime ids.
+    palette: Arc<BlockPalette>,
 }
 
 impl FolderStore {
-    /// Opens (creating if needed) the save at `root`.
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
+    /// Opens (creating if needed) the save at `root`, using `palette` (the
+    /// world's saved string↔id table) to remap block ids on load/save.
+    pub fn open(root: impl Into<PathBuf>, palette: Arc<BlockPalette>) -> Result<Self> {
         let columns_dir = root.into().join("columns");
         fs::create_dir_all(&columns_dir)
             .with_context(|| format!("creating save dir {}", columns_dir.display()))?;
-        Ok(Self { columns_dir })
+        Ok(Self { columns_dir, palette })
     }
 
     fn path(&self, chunk: ChunkPos) -> PathBuf {
@@ -146,12 +164,12 @@ impl WorldStore for FolderStore {
         };
         let bytes = zstd::decode_all(&compressed[..])
             .with_context(|| format!("decompressing {}", path.display()))?;
-        StoredColumn::decode(&bytes).map(Some)
+        StoredColumn::decode(&bytes, &self.palette).map(Some)
     }
 
     fn save_column(&self, chunk: ChunkPos, column: &StoredColumn) -> Result<()> {
         let path = self.path(chunk);
-        let compressed = zstd::encode_all(&column.encode()[..], 3)?;
+        let compressed = zstd::encode_all(&column.encode(&self.palette)[..], 3)?;
         // Atomic write (§9): never leave a half-written column behind.
         let tmp = path.with_extension("ocz.tmp");
         {
@@ -179,7 +197,25 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        (FolderStore::open(&dir).unwrap(), dir)
+        let palette = Arc::new(BlockPalette::current());
+        (FolderStore::open(&dir, palette).unwrap(), dir)
+    }
+
+    /// Serialize a column the way the old `format_version: 1` writer did: raw
+    /// hardcoded block ids 0..=10, no palette. Used to exercise the migration.
+    fn encode_v1(col: &StoredColumn) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&col.span.min_section_y.to_le_bytes());
+        out.extend_from_slice(&col.span.max_section_y.to_le_bytes());
+        out.extend_from_slice(&(col.sections.len() as u32).to_le_bytes());
+        for (y, section) in &col.sections {
+            out.extend_from_slice(&y.to_le_bytes());
+            for block in section.raw() {
+                out.extend_from_slice(&block.0.to_le_bytes());
+            }
+        }
+        out
     }
 
     #[test]
@@ -212,5 +248,39 @@ mod tests {
         let (store, dir) = temp_store();
         assert!(store.load_column(ChunkPos::new(99, 99)).unwrap().is_none());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn v1_columns_migrate_to_v2_losslessly() {
+        let palette = BlockPalette::current();
+        let chunk = ChunkPos::new(1, 2);
+
+        let mut world = World::new(42);
+        world.generate_column(chunk);
+        let edit = IVec3::new(chunk.x * 16 + 3, 100, chunk.z * 16 + 4);
+        assert!(world.set_block(edit, blocks::LAMP));
+        let col = world.export_column(chunk).expect("column exists");
+
+        // Decode old v1 bytes (routed through the legacy palette)...
+        let v1 = encode_v1(&col);
+        let migrated = StoredColumn::decode(&v1, &palette).unwrap();
+        // ...re-encode as v2 (the migration on next save)...
+        let v2 = migrated.encode(&palette);
+        assert_eq!(
+            u32::from_le_bytes(v2[0..4].try_into().unwrap()),
+            FORMAT_VERSION,
+            "re-encoded column is v2"
+        );
+        // ...and the v2 round-trip preserves the edit and terrain.
+        let reloaded = StoredColumn::decode(&v2, &palette).unwrap();
+        let mut restored = World::new(42);
+        restored.insert_column(reloaded.into_generated(chunk));
+        assert_eq!(restored.block(edit), blocks::LAMP);
+        let (x, z) = (chunk.x * 16 + 8, chunk.z * 16 + 8);
+        let h = world.surface_height(x, z);
+        assert_eq!(
+            restored.block(IVec3::new(x, h, z)),
+            world.block(IVec3::new(x, h, z))
+        );
     }
 }
