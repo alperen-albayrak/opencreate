@@ -1,0 +1,31 @@
+// Fluids (ARCHITECTURE §3 + the matter model). Water is the first entry; oil,
+// lava, milk, mud, blood … are content. Rendering (color/absorption/fog) and
+// physics (density/viscosity/buoyancy) are data. Stable string ids.
+//
+// Swim constants (submerged_gravity/sink/swim/factor) are transcribed verbatim
+// from player.rs so the buoyancy rewire reproduces today's feel exactly.
+[
+    (id: "oc:water", name: "Water",
+        // Underwater tint (matches sky.rs's blue fog); Beer–Lambert ~30:3:1
+        // (physical.rs WATER_ABSORPTION) so red dies first, blue survives.
+        color: (0.09, 0.30, 0.55),
+        opacity: 0.8,
+        absorption: (0.45, 0.05, 0.014),
+        fog_distance: 72.0,
+        ior: 1.333,
+        light_opacity: Some(1),
+        density: 1.0,
+        viscosity: 0.1,
+        submerged_gravity: 10.0,
+        sink_speed: 3.5,
+        swim_up_speed: 4.5,
+        swim_speed_factor: 0.55,
+        breathability: 0,
+        oxygen_content: 12,
+        heat_capacity: 4.18,
+        conductivity: 0.6,
+        boiling_point: Some(373.0),
+        melting_point: Some(273.0),
+        // Freezes to ice, boils to steam (cross-registry; ice lands later).
+        phase_transition: Some((freeze: Some("oc:ice"), boil: Some("oc:steam")))),
+]

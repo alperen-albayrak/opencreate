@@ -1,0 +1,30 @@
+// Gas components (ARCHITECTURE §3 + the matter model). Air is a *mixture* of
+// these (see data/dimensions/*.ron `atmosphere_composition`), not one gas.
+// `density` is the molar mass (g/mol) so layering/buoyancy fall out of it
+// (heavy sinks, light rises; air ≈ 29). Most fields are reserved for the
+// §6.6 gas-volume sim. Stable string ids; order is not load-bearing.
+[
+    (id: "oc:o2", name: "Oxygen",
+        density: 32.0, breathable: true, heat_capacity: 0.918, conductivity: 0.026),
+
+    (id: "oc:n2", name: "Nitrogen",
+        density: 28.0, heat_capacity: 1.04, conductivity: 0.026),
+
+    (id: "oc:co2", name: "Carbon Dioxide",
+        density: 44.0, heat_capacity: 0.844, conductivity: 0.017),
+
+    (id: "oc:h2o_vapour", name: "Water Vapour",
+        density: 18.0, heat_capacity: 1.86, conductivity: 0.018,
+        phase_transition: Some((boil: Some("oc:water")))),
+
+    // Hot water vapour: condenses back to water as it cools.
+    (id: "oc:steam", name: "Steam",
+        density: 18.0, heat_capacity: 2.08, conductivity: 0.025, light_emission: 0,
+        fog_color: (0.9, 0.9, 0.92), phase_transition: Some((boil: Some("oc:water")))),
+
+    (id: "oc:methane", name: "Methane",
+        density: 16.0, flammable: true, heat_capacity: 2.22, conductivity: 0.034),
+
+    (id: "oc:toxic", name: "Toxic Gas",
+        density: 40.0, toxic: true, color: (0.45, 0.55, 0.2), fog_color: (0.4, 0.5, 0.2)),
+]

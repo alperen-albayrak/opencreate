@@ -1,0 +1,31 @@
+// The overworld — Earth-like, the default dimension. Values transcribed 1:1
+// from the code they replace: gravity from player.rs, the sky colors from
+// sky.rs, and an Earth-like geothermal profile. Other planets/moons are
+// sibling .ron files that override only what differs.
+EnvDef(
+    id: "oc:overworld",
+    name: "Overworld",
+    gravity: 28.0,
+    terminal_fall_speed: 60.0,
+    jump_speed: 8.4,
+    atmosphere: (
+        sky_day: (0.47, 0.71, 0.99),
+        sky_dusk: (0.82, 0.52, 0.31),
+        sky_night: (0.012, 0.018, 0.05),
+        zenith_day: (0.18, 0.42, 0.86),
+        zenith_night: (0.004, 0.007, 0.022),
+        ambient_night: 0.16,
+        ambient_day_gain: 0.32,
+        sun_tilt: 0.25,
+        underwater_color: (0.09, 0.30, 0.55),
+        underwater_fog_near: 24.0,
+        underwater_fog_far: 72.0,
+    ),
+    // Earth: ~78% N₂, ~21% O₂, ~1% trace, at 101.3 kPa.
+    atmosphere_composition: (
+        pressure_kpa: 101.3,
+        mix: {"oc:n2": 0.78, "oc:o2": 0.21, "oc:co2": 0.01},
+    ),
+    // A cored planet: warm surface, hot deep (Stage-G base heat map).
+    thermal: Some((surface_temp: 14.0, geothermal_gradient: 0.025, core_temp: 1200.0)),
+)
