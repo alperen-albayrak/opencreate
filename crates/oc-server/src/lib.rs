@@ -580,7 +580,8 @@ impl Server {
                             InvTarget::Craft(i) => inv.click_craft(i as usize, right),
                             InvTarget::Output => inv.take_output(&self.registry),
                             InvTarget::Palette(item) if creative => {
-                                inv.give_cursor(ItemId(item), if right { 1 } else { STACK_MAX });
+                                // Left click grabs a single item; right click a full stack.
+                                inv.give_cursor(ItemId(item), if right { STACK_MAX } else { 1 });
                             }
                             InvTarget::Trash if creative => inv.trash_cursor(),
                             // Palette/Trash outside creative: ignore.
@@ -1311,6 +1312,51 @@ mod tests {
             Some((want.0, STACK_MAX)),
             "slot 3 holds a full stack of the picked block's item"
         );
+    }
+
+    #[test]
+    fn creative_palette_left_click_grabs_one_right_click_a_stack() {
+        let dir = temp_dir("palette-click");
+        let (mut client, server_end) = in_proc_channel();
+        let _handle = start(
+            ServerConfig {
+                seed: 1,
+                save_dir: dir,
+                default_mode: Some("oc:creative".into()),
+                cheats: Some(true),
+            },
+            server_end,
+        )
+        .unwrap();
+        wait_for(&mut client, |m| match m {
+            ServerMessage::Welcome { spawn, .. } => Some(spawn),
+            _ => None,
+        });
+
+        let registry = Registry::load_default().unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+
+        // Left click (right = false): a single item on the cursor.
+        client
+            .send(ClientMessage::InventoryClick { target: InvTarget::Palette(stone.0), right: false })
+            .unwrap();
+        let cursor = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { cursor, .. } if cursor.is_some() => Some(cursor),
+            _ => None,
+        });
+        assert_eq!(cursor, Some((stone.0, 1)), "left click grabs one item");
+
+        // Right click (right = true): a full stack on the cursor.
+        client
+            .send(ClientMessage::InventoryClick { target: InvTarget::Palette(stone.0), right: true })
+            .unwrap();
+        let cursor = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { cursor, .. } if cursor.map(|(_, n)| n) == Some(STACK_MAX) => {
+                Some(cursor)
+            }
+            _ => None,
+        });
+        assert_eq!(cursor, Some((stone.0, STACK_MAX)), "right click grabs a full stack");
     }
 
     #[test]
