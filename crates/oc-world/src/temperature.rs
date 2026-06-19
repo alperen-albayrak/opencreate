@@ -83,17 +83,20 @@ mod tests {
     fn temperature_follows_the_curve_and_clamps_at_the_ends() {
         let env = env_registry::overworld();
         let surface = base(IVec3::new(0, SEA_LEVEL, 0), env);
-        // 50 °C hazard onset at -256; the hellish caves are authored hot
-        // (666 °C) at -352, held flat below as the "core".
+        // 50 °C hazard onset at -256; the glow begins at the Draper point
+        // (525 °C) at the hellish top (-352) and ramps gently to 666 °C deep
+        // (-640), held flat below — so the glow fades in smoothly, no hard line.
         let hazard = base(IVec3::new(0, -256, 0), env);
-        let hellish = base(IVec3::new(0, -352, 0), env);
+        let hellish_top = base(IVec3::new(0, -352, 0), env);
+        let deep = base(IVec3::new(0, -640, 0), env);
         let below = base(IVec3::new(0, -100_000, 0), env);
         let high = base(IVec3::new(0, 320, 0), env);
         assert!((surface - 24.0).abs() < 0.01, "sea level ≈ 24 °C: {surface}");
         assert!((hazard - 50.0).abs() < 1.0, "50 °C hazard onset at -256: {hazard}");
-        assert!((hellish - 666.0).abs() < 1.0, "hellish ≈ 666 °C at -352: {hellish}");
-        assert_eq!(below, hellish, "clamps to the deepest point below it");
-        assert!(hazard > surface && hellish > hazard, "deeper is hotter");
+        assert!((hellish_top - 525.0).abs() < 1.0, "Draper point at -352: {hellish_top}");
+        assert!((deep - 666.0).abs() < 1.0, "666 °C deep at -640: {deep}");
+        assert_eq!(below, deep, "clamps to the deepest point below it");
+        assert!(hazard > surface && hellish_top > hazard && deep > hellish_top, "deeper is hotter");
         assert!(high < surface, "high altitude is colder: {high} vs {surface}");
     }
 

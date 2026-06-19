@@ -37,7 +37,8 @@ EnvDef(
         (y:  320.0, temp: -27.2),  // high peaks (≈0.16 °C/block lapse, held above)
         (y:    0.0, temp:  24.0),  // sea level
         (y: -256.0, temp:  50.0),  // hazard onset
-        (y: -352.0, temp:  666.0), // hellish caves (held below as the "core")
+        (y: -352.0, temp: 525.0),  // hellish caves top = Draper point: glow begins at 0
+        (y: -640.0, temp: 666.0),  // deep hellish / lava: full glow (held below)
     ]),
     // Deep vertical layers (caverns carved & filled; un-carved rock stays
     // stone). Bands run from `top` down to the next band's top, the last to the
