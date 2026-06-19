@@ -15,15 +15,8 @@ const WALK_SPEED: f64 = 4.3; // blocks per second
 const SPRINT_MULTIPLIER: f64 = 1.6;
 const FLY_SPEED: f64 = 12.0;
 const FLY_FAST_MULTIPLIER: f64 = 4.0;
-const GRAVITY: f64 = 28.0; // blocks per second²
-const JUMP_SPEED: f64 = 8.4; // ≈ 1.25 blocks of jump height
-const TERMINAL_FALL_SPEED: f64 = 60.0;
-
-// Water: drag and buoyancy slow everything down; Space swims up.
-const SWIM_SPEED_FACTOR: f64 = 0.55;
-const WATER_GRAVITY: f64 = 10.0;
-const SINK_SPEED: f64 = 3.5;
-const SWIM_UP_SPEED: f64 = 4.5;
+// Gravity, jump and terminal fall are the active dimension's (EnvDef);
+// water buoyancy/drag/swim-up are the fluid's (FluidDef) — read at use.
 
 /// Held movement keys, fed by the window event loop.
 #[derive(Default)]
@@ -94,10 +87,29 @@ impl Player {
             let speed = if input.fast { FLY_SPEED * FLY_FAST_MULTIPLIER } else { FLY_SPEED };
             self.velocity = wish.normalize_or_zero() * speed;
         } else {
+            // Gravity/jump from the active dimension (EnvDef); water buoyancy
+            // and swim from the fluid (FluidDef) — data, not constants.
+            let env = oc_world::env_registry::overworld();
+            let gravity = env.gravity as f64;
+            let terminal_fall = env.terminal_fall_speed as f64;
+            let jump_speed = env.jump_speed as f64;
+            let (water_gravity, sink_speed, swim_up, swim_factor) =
+                oc_world::fluid_registry::find_fluid("oc:water")
+                    .and_then(oc_world::fluid_registry::def)
+                    .map(|w| {
+                        (
+                            w.submerged_gravity as f64,
+                            w.sink_speed as f64,
+                            w.swim_up_speed as f64,
+                            w.swim_speed_factor as f64,
+                        )
+                    })
+                    .unwrap_or((10.0, 3.5, 4.5, 0.55));
+
             let in_water = aabb_in_water(world, &self.aabb());
             let mut speed = if input.fast { WALK_SPEED * SPRINT_MULTIPLIER } else { WALK_SPEED };
             if in_water {
-                speed *= SWIM_SPEED_FACTOR;
+                speed *= swim_factor;
             }
             let horizontal = wish.normalize_or_zero() * speed;
             self.velocity.x = horizontal.x;
@@ -105,14 +117,14 @@ impl Player {
             if in_water {
                 // Buoyant drag: sink slowly, swim up with Space. Jumping out
                 // at the surface works because ground contact still wins.
-                self.velocity.y = (self.velocity.y - WATER_GRAVITY * dt).max(-SINK_SPEED);
+                self.velocity.y = (self.velocity.y - water_gravity * dt).max(-sink_speed);
                 if input.up {
-                    self.velocity.y = if self.on_ground { JUMP_SPEED * 0.7 } else { SWIM_UP_SPEED };
+                    self.velocity.y = if self.on_ground { jump_speed * 0.7 } else { swim_up };
                 }
             } else {
-                self.velocity.y = (self.velocity.y - GRAVITY * dt).max(-TERMINAL_FALL_SPEED);
+                self.velocity.y = (self.velocity.y - gravity * dt).max(-terminal_fall);
                 if input.up && self.on_ground {
-                    self.velocity.y = JUMP_SPEED;
+                    self.velocity.y = jump_speed;
                 }
             }
         }

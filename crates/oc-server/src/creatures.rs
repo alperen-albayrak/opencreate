@@ -23,9 +23,8 @@ const SPAWN_RANGE: f64 = 32.0;
 /// Beyond this distance creatures despawn.
 const DESPAWN_DISTANCE: f64 = 96.0;
 
-const GRAVITY: f64 = 28.0;
 const JUMP_SPEED: f64 = 7.5;
-const TERMINAL_FALL: f64 = 60.0;
+// Gravity + terminal fall are the active dimension's (EnvDef), read per tick.
 
 #[derive(Component)]
 pub struct Creature {
@@ -143,7 +142,8 @@ pub fn tick(
         let (sin, cos) = (wander.yaw as f64).sin_cos();
         vel.0.x = -sin * speed;
         vel.0.z = -cos * speed;
-        vel.0.y = (vel.0.y - GRAVITY * dt).max(-TERMINAL_FALL);
+        let env = oc_world::env_registry::overworld();
+        vel.0.y = (vel.0.y - env.gravity as f64 * dt).max(-(env.terminal_fall_speed as f64));
 
         let aabb = Aabb::standing(pos.0, def.size.0 as f64 / 2.0, def.size.1 as f64);
         let result = move_aabb(world, aabb, vel.0 * dt);
