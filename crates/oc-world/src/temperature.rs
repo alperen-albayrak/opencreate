@@ -64,16 +64,20 @@ mod tests {
     use glam::IVec3;
 
     #[test]
-    fn deep_is_hot_surface_is_mild_high_is_cold() {
+    fn temperature_rises_with_depth_clamped_to_the_core() {
         let env = env_registry::overworld();
         let thermal = env.thermal.as_ref().unwrap();
         let surface = base(IVec3::new(0, SEA_LEVEL, 0), env);
-        let deep = base(IVec3::new(0, -64, 0), env);
+        // The survivable band ends at 50 °C; the gradient is tuned so that's
+        // reached ~200 blocks down (the rock above is safe to mine).
+        let hazard_depth = base(IVec3::new(0, SEA_LEVEL - 200, 0), env);
+        // Far enough down it saturates at the core temperature.
+        let core = base(IVec3::new(0, SEA_LEVEL - 100_000, 0), env);
         let high = base(IVec3::new(0, SEA_LEVEL + 120, 0), env);
         assert!((surface - thermal.surface_temp).abs() < 0.01, "sea level ≈ surface: {surface}");
-        // The deep rock must reach glowing temperatures (past the Draper point).
-        assert!(deep > 300.0, "the deep is hot enough to glow: {deep}");
-        assert!(deep <= thermal.core_temp, "clamped to the core: {deep}");
+        assert!((hazard_depth - 50.0).abs() < 2.0, "~50 °C at 200 deep: {hazard_depth}");
+        assert!(hazard_depth > surface, "deeper is hotter");
+        assert_eq!(core, thermal.core_temp, "clamps to the core very deep");
         assert!(high < surface, "high altitude is colder: {high} vs {surface}");
     }
 
