@@ -186,9 +186,16 @@ fn corner_ao(
 
 /// True when a face of `block` against `neighbor` is visible.
 fn face_visible(block: BlockId, neighbor: BlockId) -> bool {
-    // Opaque neighbors hide the face; water also hides its own kind (no
-    // internal faces inside a water volume).
-    !(neighbor.is_opaque() || (!block.is_opaque() && neighbor == block))
+    // A neighbour hides the face only if it's an opaque *solid* — fluids
+    // (water, lava) render but don't occlude, so a solid block keeps its face
+    // at a lava/water boundary (no holes). A fluid/transparent block still
+    // hides its own kind (no internal faces inside a volume of it).
+    !(occludes(neighbor) || (!occludes(block) && neighbor == block))
+}
+
+/// A block occludes its neighbours' faces: opaque and not a fluid.
+fn occludes(block: BlockId) -> bool {
+    block.is_opaque() && !block.is_fluid()
 }
 
 /// Meshes one section with greedy quad merging. `sample` takes

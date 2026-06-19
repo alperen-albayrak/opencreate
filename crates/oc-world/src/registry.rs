@@ -207,6 +207,10 @@ pub struct BlockProps {
     /// Per-channel block-light seed (R, G, B, each 0..=15): the emission level
     /// (reach) tinted by the emissive color (hue). Seeds the RGB flood-fill.
     pub light_color: [u8; 3],
+    /// This block is a fluid voxel (water, lava). Fluids render but do **not**
+    /// occlude their neighbours' faces, so a solid block touching lava keeps
+    /// its face (no holes at the boundary).
+    pub fluid: bool,
 }
 
 /// Fallback for ids the registry doesn't know (out-of-range/stale): treated as a
@@ -217,6 +221,7 @@ const DEFAULT_PROPS: BlockProps = BlockProps {
     light_opacity: None,
     light_emission: 0,
     light_color: [0, 0, 0],
+    fluid: false,
 };
 
 /// The loaded block registry: full defs + the hot-path props table + the
@@ -260,6 +265,7 @@ impl BlockRegistry {
                 light_opacity: d.light_opacity,
                 light_emission: d.light_emission,
                 light_color,
+                fluid: d.fluid.is_some(),
             });
         }
         Ok(Self { defs, props, by_id })

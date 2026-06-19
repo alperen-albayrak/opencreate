@@ -41,6 +41,12 @@ impl BlockId {
         registry::props(self).opaque
     }
 
+    /// A fluid voxel (water, lava). Fluids render but don't occlude neighbour
+    /// faces, so solid blocks keep their faces at a fluid boundary.
+    pub fn is_fluid(self) -> bool {
+        registry::props(self).fluid
+    }
+
     /// Cost of light passing through this block, or `None` if it blocks
     /// light entirely.
     pub fn light_opacity(self) -> Option<u8> {
