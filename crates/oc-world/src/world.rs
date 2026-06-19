@@ -31,6 +31,9 @@ pub struct GeneratedColumn {
     pub chunk: ChunkPos,
     pub span: ColumnSpan,
     pub sections: Vec<(SectionPos, Section)>,
+    /// Tier-3 stored temperatures restored from a saved column (empty for fresh
+    /// terrain); carried from the load worker into the `World` and on to clients.
+    pub temperatures: HashMap<BlockPos, f32>,
 }
 
 /// Generates one column's terrain. Pure: no world access, deterministic.
@@ -132,7 +135,7 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
             sections.push((IVec3::new(chunk.x, section_y, chunk.z), section));
         }
     }
-    GeneratedColumn { chunk, span, sections }
+    GeneratedColumn { chunk, span, sections, temperatures: HashMap::new() }
 }
 
 /// All loaded voxel data plus the generator that fills it.
@@ -213,7 +216,13 @@ impl World {
                 Some((y, Section::clone(section)))
             })
             .collect();
-        Some(crate::store::StoredColumn { span, sections })
+        let temperatures = self
+            .temperatures
+            .iter()
+            .filter(|(p, _)| block_to_chunk(**p) == chunk)
+            .map(|(p, t)| (*p, *t))
+            .collect();
+        Some(crate::store::StoredColumn { span, sections, temperatures })
     }
 
     pub fn is_generated(&self, chunk: ChunkPos) -> bool {
@@ -264,6 +273,8 @@ impl World {
         for (pos, section) in column.sections {
             self.sections.insert(pos, Arc::new(section));
         }
+        // Restore saved stored temperatures (not an edit — no dirty mark).
+        self.temperatures.extend(column.temperatures);
         self.columns.insert(column.chunk, column.span);
     }
 
