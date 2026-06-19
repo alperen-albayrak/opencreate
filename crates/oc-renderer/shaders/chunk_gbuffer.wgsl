@@ -40,6 +40,9 @@ struct Scene {
     // Temperature-vs-height curve, ascending Y, two points per vec4 as
     // (y0, temp0 °C, y1, temp1) — up to 8 points; params.w is the count.
     thermal_profile: array<vec4<f32>, 4>,
+    // Intrinsic emissive temperature (°C) per block-texture layer, 16 packed
+    // into 4 vec4 (layer L → emissive_temp[L/4][L%4]). Lava ≈ 1200; 0 = none.
+    emissive_temp: array<vec4<f32>, 4>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 
@@ -151,9 +154,14 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     out.underwater = (packed.y >> 24u) & 5u;
     out.normal = face_normal[face];
     // Absolute world Y = camera world Y (params.z) + camera-relative section
-    // origin (pc.rel) + local pos. Drives the per-vertex blackbody glow.
+    // origin (pc.rel) + local pos. Drives the per-vertex blackbody glow. Hot
+    // matter glows at the hotter of its ambient temperature and its own
+    // intrinsic emissive temperature (lava ~1200 °C, not the ambient ~666).
     let world_y = scene.params.z + pc.rel.y + pos.y;
-    out.emissive = clamp((base_temp(world_y) - 525.0) / 975.0, 0.0, 1.0);
+    let layer = packed.y & 0xFFFFu;
+    let mat_temp = scene.emissive_temp[layer / 4u][layer % 4u];
+    let temp = max(base_temp(world_y), mat_temp);
+    out.emissive = clamp((temp - 525.0) / 975.0, 0.0, 1.0);
     return out;
 }
 

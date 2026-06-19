@@ -19,6 +19,29 @@ pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
     "log_top", "leaves", "lamp", "snow", "planks", "bedrock", "lava",
 ];
 
+/// Intrinsic emissive (blackbody-glow) temperature in °C per block-texture
+/// layer, built from the registry: a fluid block (lava) stamps its texture
+/// layers with the fluid's own temperature, so the geometry pass glows lava at
+/// its real ~1200 °C (orange) instead of the ambient rock temperature (dull
+/// red). 0 = no intrinsic glow → the surface uses the ambient height curve.
+pub static EMISSIVE_TEMPS: std::sync::LazyLock<[f32; LAYER_COUNT as usize]> =
+    std::sync::LazyLock::new(|| {
+        let mut temps = [0.0f32; LAYER_COUNT as usize];
+        for i in 0u16.. {
+            let id = oc_world::BlockId(i);
+            let Some(def) = oc_world::registry::def(id) else { break };
+            if let Some(t) = oc_world::fluid_registry::for_block(id).and_then(|f| f.temperature) {
+                for face in 0..6 {
+                    let layer = def.textures.layer(face) as usize;
+                    if layer < temps.len() {
+                        temps[layer] = temps[layer].max(t);
+                    }
+                }
+            }
+        }
+        temps
+    });
+
 /// RGBA pixels for the block texture array. Layer order must match
 /// `mesh::layers`: grass top, dirt, stone, grass side, sand, water,
 /// log side, log top, leaves, lamp, snow, planks.

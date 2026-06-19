@@ -472,6 +472,12 @@ impl Renderer {
                     v.w = p.temp;
                 }
             }
+            // Per-texture-layer intrinsic emissive temperature (lava → 1200 °C),
+            // 14 layers packed into 4 vec4 for the geometry pass.
+            let mut emissive_temp = [Vec4::ZERO; 4];
+            for (i, &t) in crate::texture::EMISSIVE_TEMPS.iter().enumerate() {
+                emissive_temp[i / 4][i % 4] = t;
+            }
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -491,6 +497,7 @@ impl Renderer {
                     thermal_count as f32,
                 ),
                 thermal_profile,
+                emissive_temp,
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);

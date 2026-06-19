@@ -109,20 +109,44 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
     return mix(1.0, mix(lit, 1.0, range_fade), strength);
 }
 
-// Incandescent self-glow past the Draper point (~525 °C), HDR so hot matter
-// blooms. Color tracks the TFC heat ladder: dull red -> orange -> yellow ->
-// toward white as temperature rises. Driven by hot *matter* (rendered rock at
-// its ambient temperature, lava via its emissive) — only opaque geometry is
-// shaded here, so hot air never glows.
+// Accurate blackbody colour (normalised sRGB) from temperature — the
+// Tanner-Helland fit, identical to oc_core::physical::blackbody_rgb. Continuous
+// and granular, not stepped: dull red ~800 K, orange ~1500 K, yellow ~1900 K,
+// toward white above ~6000 K.
+fn blackbody_rgb(temp_k: f32) -> vec3<f32> {
+    let t = clamp(temp_k, 1000.0, 40000.0) / 100.0;
+    var r: f32;
+    var g: f32;
+    var b: f32;
+    if (t <= 66.0) {
+        r = 255.0;
+        g = clamp(99.4708025861 * log(t) - 161.1195681661, 0.0, 255.0);
+    } else {
+        r = clamp(329.698727446 * pow(t - 60.0, -0.1332047592), 0.0, 255.0);
+        g = clamp(288.1221695283 * pow(t - 60.0, -0.0755148492), 0.0, 255.0);
+    }
+    if (t >= 66.0) {
+        b = 255.0;
+    } else if (t <= 19.0) {
+        b = 0.0;
+    } else {
+        b = clamp(138.5177312231 * log(t - 10.0) - 305.0447927307, 0.0, 255.0);
+    }
+    return vec3<f32>(r, g, b) / 255.0;
+}
+
+// Incandescent self-glow past the Draper point (~525 °C): the matter's real
+// blackbody colour, scaled by how strongly it radiates (rises with
+// temperature), HDR so hot matter blooms. Only opaque geometry is shaded here,
+// so hot air never glows. (Per-material emissivity will scale this once it's a
+// material field; rock/lava are near-full emitters for now.)
 fn blackbody_glow(temp_c: f32) -> vec3<f32> {
-    if (temp_c < 525.0) {
+    if (temp_c <= 525.0) {
         return vec3<f32>(0.0);
     }
-    let g = clamp((temp_c - 525.0) / 775.0, 0.0, 1.0);
-    let b = clamp((temp_c - 1100.0) / 500.0, 0.0, 1.0);
-    let color = vec3<f32>(1.0, 0.55 * g + 0.1 * g * g, 0.7 * b);
-    let heat = (temp_c - 525.0) / 700.0;
-    return color * heat * heat * 2.5;
+    let color = blackbody_rgb(temp_c + 273.15);
+    let heat = clamp((temp_c - 525.0) / 775.0, 0.0, 1.0);
+    return color * heat * heat * 3.0;
 }
 
 @vertex
