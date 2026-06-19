@@ -34,11 +34,13 @@
     // conductivity 1.7 (a slow-draining heat battery). Solidifies below ~1000 °C
     // (1273 K): slow cool → basalt, fast quench at water → obsidian glass (G5).
     (id: "oc:lava", name: "Lava",
-        // Body/fog tint when submerged: deep orange, near-zero visibility.
+        // Body/fog tint when submerged: deep orange. Dense, but not blinding —
+        // you can still make out the blocks right around you (~3-4 blocks)
+        // rather than a flat orange wall at 1.5.
         color: (0.70, 0.20, 0.02),
         opacity: 1.0,
         absorption: (4.0, 4.0, 4.0),
-        fog_distance: 1.5,
+        fog_distance: 4.0,
         ior: 1.5,
         // HDR orange (≈1200 °C blackbody ×3) to drive bloom once self-glow lands.
         emissive: (3.0, 1.26, 0.0),
