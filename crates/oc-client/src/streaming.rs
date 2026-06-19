@@ -235,7 +235,7 @@ impl ChunkStreamer {
             affected.push(neighbor);
         }
 
-        let field = self.light_for(column);
+        let field = self.light_for(column, block.y);
         for pos in affected {
             if ChunkPos::new(pos.x, pos.z) != column || !self.meshed.contains_key(&column) {
                 continue; // neighbor-column sections go through the async path
@@ -273,21 +273,24 @@ impl ChunkStreamer {
         Ok(())
     }
 
-    /// Lighting for one column, computed fresh from current world data.
-    /// The Y ceiling covers the whole 3×3 neighborhood so tall neighbors
-    /// cast correct shadows.
-    fn light_for(&self, column: ChunkPos) -> LightField {
+    /// Lighting for the region around an edit at `edit_y`, computed fresh from
+    /// current world data. The Y ceiling covers the whole 3×3 neighborhood so
+    /// tall neighbors and the open sky light correctly; the floor is anchored
+    /// just below the edit, because a single block edit can't change light more
+    /// than the propagation radius (~15 blocks) below the sections being
+    /// re-meshed. In the deep world this is the difference between relighting a
+    /// ~64-block window and the whole ~960-block column on every break.
+    fn light_for(&self, column: ChunkPos, edit_y: i32) -> LightField {
         let max_y = ring(column, 1)
             .flat_map(|c| self.world.column_sections(c))
             .map(|s| (s.y + 1) * SECTION_SIZE)
             .max()
             .unwrap_or(SECTION_SIZE);
-        compute_light(
-            |pos| self.world.block(pos),
-            column,
-            BOTTOM_SECTION_Y * SECTION_SIZE,
-            max_y,
-        )
+        // Affected sections span the edit's section ±1; cover one more section
+        // below for the light that bleeds up into them.
+        let edit_section = edit_y.div_euclid(SECTION_SIZE);
+        let min_y = ((edit_section - 2) * SECTION_SIZE).max(BOTTOM_SECTION_Y * SECTION_SIZE);
+        compute_light(|pos| self.world.block(pos), column, min_y, max_y.max(min_y + SECTION_SIZE))
     }
 }
 
