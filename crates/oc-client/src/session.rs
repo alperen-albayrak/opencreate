@@ -788,12 +788,21 @@ impl Session {
         let caps = self.caps(registry);
 
         let hotbar_slots = self.hotbar_slots(registry);
-        let show_counts = caps.uses_inventory;
-        let mut texts = self.hotbar.count_labels(w, h, ui, &hotbar_slots, show_counts);
-        let mut quads = if caps.noclip {
-            Vec::new() // spectators carry nothing
+        // The HUD hotbar shows in-world only: hidden for spectators (who carry
+        // nothing) and while the inventory screen is open — that screen draws
+        // its own hotbar row (with hover tooltips), so a second copy here would
+        // just be a duplicate you couldn't read names off. Stack counts always
+        // show now (the count labels still skip single items).
+        let hud_hotbar = !caps.noclip && !self.inventory_open;
+        let mut texts = if hud_hotbar {
+            self.hotbar.count_labels(w, h, ui, &hotbar_slots, true)
         } else {
-            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, show_counts)
+            Vec::new()
+        };
+        let mut quads = if hud_hotbar {
+            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, true)
+        } else {
+            Vec::new()
         };
         if self.inventory_open {
             let slots: [Option<(oc_assets::ItemId, u32)>; 36] =
