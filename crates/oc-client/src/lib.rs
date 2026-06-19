@@ -338,6 +338,10 @@ impl App {
                         session.camera.pitch = pitch;
                     }
                 }
+                // The spawn mode arrived in the Welcome (not the GameMode
+                // handler), so normalize movement here too: a spectator starts
+                // flying instead of falling through the world.
+                session.normalize_flight(&self.registry);
                 self.session = Some(session);
                 self.apply_settings();
                 self.screen = Screen::InGame;

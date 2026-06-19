@@ -445,6 +445,10 @@ impl Server {
         let player_entity = ecs.spawn((Stats::full(), Inventory::default())).id();
 
         let (gen_tx, gen_rx) = channel();
+        // Spectator (noclip) spawns flying so it never falls through the world;
+        // every other mode spawns walking. The client normalizes this on its
+        // side too, but the authoritative state should be correct from tick 0.
+        let flying = registry.mode(mode).noclip;
         Ok(Self {
             transport,
             world,
@@ -453,7 +457,7 @@ impl Server {
             player_entity,
             spawn: world_spawn,
             sprinting: false,
-            flying: false,
+            flying,
             mode,
             fall: FallTracker::default(),
             last_sent_stats: None,

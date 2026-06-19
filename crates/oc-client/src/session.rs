@@ -191,6 +191,21 @@ impl Session {
         registry.mode(self.mode)
     }
 
+    /// Forces the player's movement mode to match the current game mode's
+    /// capabilities. Applied whenever the mode is set — at spawn and on every
+    /// change — so a noclip mode (spectator) is always flying and never falls
+    /// through the world into the void, a mode that cannot fly
+    /// (survival/adventure) is always walking, and a fly-capable mode
+    /// (creative) keeps whatever the player last toggled.
+    pub fn normalize_flight(&mut self, registry: &Registry) {
+        let caps = registry.mode(self.mode);
+        if caps.noclip {
+            self.player.flying = true;
+        } else if !caps.can_fly {
+            self.player.flying = false;
+        }
+    }
+
     /// Total of an item (per-load id) across the storage slots.
     fn item_count(&self, item: u16) -> u32 {
         self.inv_slots
@@ -481,13 +496,15 @@ impl Session {
 
     /// Integrates everything the server sent since last frame.
     fn drain_server_messages(&mut self, renderer: &mut Renderer, registry: &Registry) -> Result<()> {
-        let Some(transport) = &mut self.transport else {
-            return Ok(());
-        };
         loop {
-            let msg = transport
-                .try_recv()
-                .map_err(|_| anyhow::anyhow!("server disconnected"))?;
+            // Re-borrow the transport only for the receive, so the match arms
+            // below have full access to `self` (e.g. normalize_flight).
+            let msg = match &mut self.transport {
+                Some(transport) => transport
+                    .try_recv()
+                    .map_err(|_| anyhow::anyhow!("server disconnected"))?,
+                None => return Ok(()),
+            };
             match msg {
                 Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
                 Some(ServerMessage::BlockChanged { pos, block }) => {
@@ -503,13 +520,8 @@ impl Session {
                 }
                 Some(ServerMessage::GameMode(mode)) => {
                     self.mode = ModeId(mode);
-                    let caps = registry.mode(self.mode);
-                    info!(mode = caps.id, "game mode changed");
-                    if caps.noclip {
-                        self.player.flying = true;
-                    } else if !caps.can_fly {
-                        self.player.flying = false;
-                    }
+                    info!(mode = registry.mode(self.mode).id, "game mode changed");
+                    self.normalize_flight(registry);
                 }
                 Some(ServerMessage::Entities(snapshot)) => {
                     self.entities.apply(snapshot, Instant::now());
