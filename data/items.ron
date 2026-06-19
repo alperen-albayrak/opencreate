@@ -12,6 +12,9 @@
     (id: "oc:lamp",   name: "Lamp",        block: Some(8),  category: "functional"),
     (id: "oc:snow",   name: "Snow",        block: Some(9),  category: "natural"),
     (id: "oc:planks", name: "Planks",      block: Some(10), category: "building"),
+    (id: "oc:bedrock",name: "Bedrock",     block: Some(11), category: "building"),
+    (id: "oc:water",  name: "Water",       block: Some(5),  category: "natural"),
+    (id: "oc:lava",   name: "Lava",        block: Some(12), category: "natural"),
     (id: "oc:stick",  name: "Stick",       block: None,     category: "items"),
     (id: "oc:apple",  name: "Apple",       block: None,     food: 3, category: "food"),
 ]
