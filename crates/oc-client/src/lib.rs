@@ -9,6 +9,7 @@ mod entities;
 mod far_terrain;
 mod hotbar;
 mod inventory_screen;
+mod item_icon;
 mod menu;
 mod player;
 mod session;
@@ -743,6 +744,7 @@ impl App {
                 time,
                 ui_texts: Vec::new(),
                 ui_quads: Vec::new(),
+                ui_polys: Vec::new(),
             }
         };
 

@@ -794,13 +794,14 @@ impl Session {
         // just be a duplicate you couldn't read names off. Stack counts always
         // show now (the count labels still skip single items).
         let hud_hotbar = !caps.noclip && !self.inventory_open;
+        let mut polys: Vec<oc_renderer::UiPoly> = Vec::new();
         let mut texts = if hud_hotbar {
             self.hotbar.count_labels(w, h, ui, &hotbar_slots, true)
         } else {
             Vec::new()
         };
         let mut quads = if hud_hotbar {
-            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, true)
+            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, true, &mut polys)
         } else {
             Vec::new()
         };
@@ -821,7 +822,7 @@ impl Session {
                 palette: &p.palette,
                 scroll: p.scroll,
             });
-            let (panel_quads, panel_texts) = inventory_screen::panel(
+            let (panel_quads, panel_texts, panel_polys) = inventory_screen::panel(
                 registry,
                 &slots,
                 &craft,
@@ -837,6 +838,7 @@ impl Session {
             );
             quads.extend(panel_quads);
             texts.extend(panel_texts);
+            polys.extend(panel_polys);
         }
         // Food on hand: a hint above the stat bars.
         if caps.has_stats
@@ -940,6 +942,7 @@ impl Session {
             time,
             ui_texts: texts,
             ui_quads: quads,
+            ui_polys: polys,
         }
     }
 }

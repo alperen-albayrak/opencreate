@@ -52,7 +52,7 @@ pub use far_renderer::{FarTile, FarVertex};
 pub use mesh::{ChunkMesh, SectionMeshes, mesh_section};
 pub use texture::block_swatch;
 pub use entity::EntityDraw;
-pub use ui::{UiQuad, UiText};
+pub use ui::{UiPoly, UiQuad, UiText};
 
 /// Number of frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -105,6 +105,9 @@ pub struct FrameCamera {
     pub ui_quads: Vec<UiQuad>,
     /// Positioned text runs (slot counts etc.).
     pub ui_texts: Vec<UiText>,
+    /// Filled polygons (isometric item-icon faces), drawn over the UI quads
+    /// and under the text.
+    pub ui_polys: Vec<UiPoly>,
     /// Entities to draw this frame (placeholder cuboids).
     pub entities: Vec<EntityDraw>,
 }
@@ -750,7 +753,7 @@ impl Renderer {
                 }
                 texts.extend(camera.ui_texts.iter().cloned());
                 self.ui
-                    .record(device, cmd, slot, extent, &texts, &camera.ui_quads);
+                    .record(device, cmd, slot, extent, &texts, &camera.ui_quads, &camera.ui_polys);
             }
 
             device.cmd_end_render_pass(cmd);

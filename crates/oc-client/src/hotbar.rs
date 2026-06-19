@@ -4,10 +4,10 @@
 //! creative from the item palette.
 
 use oc_assets::{ItemId, Registry};
-use oc_renderer::{UiQuad, UiText};
+use oc_renderer::{UiPoly, UiQuad, UiText};
 use oc_world::{BlockId, blocks};
 
-use crate::inventory_screen::item_swatch;
+use crate::item_icon;
 
 /// A default block set, in slot order — used by tests (the live hotbar is
 /// per-slot, filled by gathering or the creative palette).
@@ -84,10 +84,11 @@ impl Hotbar {
         registry: &Registry,
         slots: &[Slot; 9],
         _show_counts: bool,
+        polys: &mut Vec<UiPoly>,
     ) -> Vec<UiQuad> {
-        let (slot, gap, inset) = (SLOT * ui, GAP * ui, INSET * ui);
+        let (slot, gap) = (SLOT * ui, GAP * ui);
         let (x0, y) = Self::origin(width, height, ui);
-        let mut quads = Vec::with_capacity(ITEMS.len() * 2 + 1);
+        let mut quads = Vec::with_capacity(ITEMS.len() + 1);
         for (i, stack) in slots.iter().enumerate() {
             let x = x0 + i as f32 * (slot + gap);
             if i == self.selected {
@@ -102,13 +103,7 @@ impl Hotbar {
             }
             quads.push(UiQuad { x, y, w: slot, h: slot, color: [0.08, 0.08, 0.1, 0.75] });
             if let Some((item, _)) = stack {
-                quads.push(UiQuad {
-                    x: x + inset,
-                    y: y + inset,
-                    w: slot - 2.0 * inset,
-                    h: slot - 2.0 * inset,
-                    color: item_swatch(registry, *item),
-                });
+                item_icon::draw(registry, *item, (x, y, slot, slot), polys);
             }
         }
         quads
@@ -158,7 +153,6 @@ impl Hotbar {
 // Logical units: multiplied by the effective UI scale (DPI x setting).
 const SLOT: f32 = 32.0;
 const GAP: f32 = 3.0;
-const INSET: f32 = 4.0;
 const MARGIN_BOTTOM: f32 = 12.0;
 
 /// Survival stat bars drawn above the hotbar: health, hunger, stamina,
@@ -240,9 +234,11 @@ mod tests {
         let registry = Registry::load_default().unwrap();
         let hotbar = Hotbar::new();
         let (w, h) = (2560.0, 1600.0);
-        let quads = hotbar.quads(w, h, 2.0, &registry, &palette(&registry), false);
-        // 9 slots x (bg + swatch) + 1 selection ring.
-        assert_eq!(quads.len(), ITEMS.len() * 2 + 1);
+        let mut polys = Vec::new();
+        let quads = hotbar.quads(w, h, 2.0, &registry, &palette(&registry), false, &mut polys);
+        // 9 slot backgrounds + 1 selection ring; item icons go to polys.
+        assert_eq!(quads.len(), ITEMS.len() + 1);
+        assert!(!polys.is_empty(), "filled slots produce icon polys");
         for q in &quads {
             assert!(q.x >= 0.0 && q.x + q.w <= w, "quad off-screen: {q:?}");
             assert!(q.y >= 0.0 && q.y + q.h <= h, "quad off-screen: {q:?}");

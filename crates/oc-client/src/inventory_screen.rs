@@ -14,9 +14,10 @@
 //! the main grid.
 
 use oc_assets::{ItemId, Registry};
-use oc_renderer::{UiQuad, UiText, block_swatch};
+use oc_renderer::{UiPoly, UiQuad, UiText};
 
 use crate::avatar::Skin;
+use crate::item_icon;
 
 /// One slot: an item with a count, or empty.
 type Slot = Option<(ItemId, u32)>;
@@ -255,19 +256,6 @@ pub fn hit(pos: (f32, f32), width: f32, height: f32, ui: f32, creative: Option<&
     Hit::None
 }
 
-/// Item swatch: the block's color, or a fallback for pure items. Shared
-/// with the HUD hotbar.
-pub fn item_swatch(registry: &Registry, item: ItemId) -> [f32; 4] {
-    if let Some(block) = registry.block_for_item(item) {
-        return block_swatch(block);
-    }
-    match registry.item(item).name.as_str() {
-        "Apple" => [0.80, 0.18, 0.16, 1.0],
-        "Stick" => [0.48, 0.34, 0.18, 1.0],
-        _ => [0.6, 0.6, 0.62, 1.0],
-    }
-}
-
 fn slot_quad(quads: &mut Vec<UiQuad>, rect: (f32, f32, f32, f32), lit: bool) {
     let (x, y, w, h) = rect;
     quads.push(UiQuad {
@@ -279,10 +267,10 @@ fn slot_quad(quads: &mut Vec<UiQuad>, rect: (f32, f32, f32, f32), lit: bool) {
     });
 }
 
-/// Draws a stack's swatch + count inside a slot rect. `count` shown when > 1.
+/// Draws a stack's icon + count inside a slot rect. `count` shown when > 1.
 fn draw_stack(
-    quads: &mut Vec<UiQuad>,
     texts: &mut Vec<UiText>,
+    polys: &mut Vec<UiPoly>,
     rect: (f32, f32, f32, f32),
     registry: &Registry,
     stack: Slot,
@@ -292,14 +280,7 @@ fn draw_stack(
         return;
     };
     let (x, y, w, h) = rect;
-    let inset = 4.0 * ui;
-    quads.push(UiQuad {
-        x: x + inset,
-        y: y + inset,
-        w: w - 2.0 * inset,
-        h: h - 2.0 * inset,
-        color: item_swatch(registry, item),
-    });
+    item_icon::draw(registry, item, rect, polys);
     if count > 1 {
         let label = count.to_string();
         texts.push(UiText {
@@ -388,6 +369,7 @@ fn doll(
 fn draw_inventory_view(
     quads: &mut Vec<UiQuad>,
     texts: &mut Vec<UiText>,
+    polys: &mut Vec<UiPoly>,
     registry: &Registry,
     slots: &[Slot; 36],
     craft: &[Slot; 9],
@@ -407,12 +389,12 @@ fn draw_inventory_view(
     for i in 0..9 {
         let rect = craft_rect(i, w, h, ui);
         slot_quad(quads, rect, hover == Hit::Craft(i));
-        draw_stack(quads, texts, rect, registry, craft[i], ui);
+        draw_stack(texts, polys, rect, registry, craft[i], ui);
     }
     let out = output_rect(w, h, ui);
     texts.push(UiText { text: ">".into(), x: out.0 - 18.0 * ui, y: out.1 + out.3 / 2.0 - 4.0 * ui, scale: ui * 1.2 });
     slot_quad(quads, out, hover == Hit::Output);
-    draw_stack(quads, texts, out, registry, craft_result.map(|(it, n)| (it, n as u32)), ui);
+    draw_stack(texts, polys, out, registry, craft_result.map(|(it, n)| (it, n as u32)), ui);
 
     if show_trash {
         let t = trash_rect(w, h, ui);
@@ -430,13 +412,13 @@ fn draw_inventory_view(
     for i in 0..27 {
         let rect = main_rect(i, w, h, ui);
         slot_quad(quads, rect, hover == Hit::Storage(9 + i));
-        draw_stack(quads, texts, rect, registry, slots[9 + i], ui);
+        draw_stack(texts, polys, rect, registry, slots[9 + i], ui);
     }
     // Hotbar (storage 0..9); selected stays lit.
     for i in 0..9 {
         let rect = hotbar_rect(i, w, h, ui);
         slot_quad(quads, rect, hover == Hit::Storage(i) || i == selected);
-        draw_stack(quads, texts, rect, registry, slots[i], ui);
+        draw_stack(texts, polys, rect, registry, slots[i], ui);
     }
 }
 
@@ -464,6 +446,7 @@ fn draw_tabs(quads: &mut Vec<UiQuad>, texts: &mut Vec<UiText>, c: &Creative, w: 
 fn draw_palette(
     quads: &mut Vec<UiQuad>,
     texts: &mut Vec<UiText>,
+    polys: &mut Vec<UiPoly>,
     registry: &Registry,
     slots: &[Slot; 36],
     c: &Creative,
@@ -485,14 +468,7 @@ fn draw_palette(
         let item = c.palette.get(c.scroll * 9 + k).copied();
         slot_quad(quads, rect, item.is_some_and(|it| hover == Hit::Palette(it.0)));
         if let Some(it) = item {
-            let inset = 4.0 * ui;
-            quads.push(UiQuad {
-                x: rect.0 + inset,
-                y: rect.1 + inset,
-                w: rect.2 - 2.0 * inset,
-                h: rect.3 - 2.0 * inset,
-                color: item_swatch(registry, it),
-            });
+            item_icon::draw(registry, it, rect, polys);
         }
     }
 
@@ -514,7 +490,7 @@ fn draw_palette(
     for i in 0..9 {
         let rect = palette_hotbar_rect(i, w, h, ui);
         slot_quad(quads, rect, hover == Hit::Storage(i) || i == selected);
-        draw_stack(quads, texts, rect, registry, slots[i], ui);
+        draw_stack(texts, polys, rect, registry, slots[i], ui);
     }
 }
 
@@ -586,18 +562,19 @@ pub fn panel(
     height: f32,
     ui: f32,
     creative: Option<&Creative>,
-) -> (Vec<UiQuad>, Vec<UiText>) {
+) -> (Vec<UiQuad>, Vec<UiText>, Vec<UiPoly>) {
     let (px, py) = panel_origin(width, height, ui);
     let mut quads =
         vec![UiQuad { x: px, y: py, w: PANEL_W * ui, h: PANEL_H * ui, color: [0.05, 0.05, 0.08, 0.93] }];
     let mut texts = Vec::new();
+    let mut polys = Vec::new();
     let hover = hit(mouse, width, height, ui, creative);
 
     match creative {
         None => {
             texts.push(UiText { text: "INVENTORY  [E] CLOSE".into(), x: px + PAD * ui, y: py + PAD * ui, scale: ui });
             draw_inventory_view(
-                &mut quads, &mut texts, registry, slots, craft, craft_result, selected, skin, mouse,
+                &mut quads, &mut texts, &mut polys, registry, slots, craft, craft_result, selected, skin, mouse,
                 hover, width, height, ui, false,
             );
         }
@@ -605,11 +582,11 @@ pub fn panel(
             draw_tabs(&mut quads, &mut texts, c, width, height, ui);
             if c.active == CreativeTab::Inventory {
                 draw_inventory_view(
-                    &mut quads, &mut texts, registry, slots, craft, craft_result, selected, skin,
+                    &mut quads, &mut texts, &mut polys, registry, slots, craft, craft_result, selected, skin,
                     mouse, hover, width, height, ui, true,
                 );
             } else {
-                draw_palette(&mut quads, &mut texts, registry, slots, c, selected, hover, width, height, ui);
+                draw_palette(&mut quads, &mut texts, &mut polys, registry, slots, c, selected, hover, width, height, ui);
             }
         }
     }
@@ -618,7 +595,7 @@ pub fn panel(
     if let Some((item, count)) = cursor {
         let size = SLOT * 0.8 * ui;
         let (cx, cy) = (mouse.0 - size / 2.0, mouse.1 - size / 2.0);
-        quads.push(UiQuad { x: cx, y: cy, w: size, h: size, color: item_swatch(registry, item) });
+        item_icon::draw(registry, item, (cx, cy, size, size), &mut polys);
         if count > 1 {
             let label = count.to_string();
             texts.push(UiText {
@@ -639,7 +616,7 @@ pub fn panel(
         tooltip(&mut quads, &mut texts, registry.item_name(item), mouse, width, height, ui);
     }
 
-    (quads, texts)
+    (quads, texts, polys)
 }
 
 #[cfg(test)]
@@ -724,13 +701,13 @@ mod tests {
         let craft: [Slot; 9] = [None; 9];
         let skin = crate::avatar::load_skin();
 
-        let (q, t) = panel(&registry, &slots, &craft, Some((stone, 5)), None, 0, &skin, (0.0, 0.0), 1600.0, 1000.0, 1.0, None);
+        let (q, t, _p) = panel(&registry, &slots, &craft, Some((stone, 5)), None, 0, &skin, (0.0, 0.0), 1600.0, 1000.0, 1.0, None);
         assert!(q.len() > 50);
         assert!(t.iter().any(|x| x.text == "64"));
 
         let palette = registry.items_in_category("building");
         let c = Creative { categories: &cats(), active: CreativeTab::Category(0), search: "", palette: &palette, scroll: 0 };
-        let (qc, tc) = panel(&registry, &slots, &craft, None, None, 0, &skin, (0.0, 0.0), 1600.0, 1000.0, 1.0, Some(&c));
+        let (qc, tc, _pc) = panel(&registry, &slots, &craft, None, None, 0, &skin, (0.0, 0.0), 1600.0, 1000.0, 1.0, Some(&c));
         assert!(qc.len() > 20);
         assert!(tc.iter().any(|x| x.text == "FIND"), "tab labels render");
     }
@@ -749,16 +726,16 @@ mod tests {
         let name = registry.item_name(stone);
 
         // Empty cursor over a filled slot: the localized name shows as a tooltip.
-        let (_q, t) = panel(&registry, &slots, &craft, None, None, 0, &skin, mouse, w, h, ui, None);
+        let (_q, t, _p) = panel(&registry, &slots, &craft, None, None, 0, &skin, mouse, w, h, ui, None);
         assert!(t.iter().any(|x| x.text == name), "tooltip shows {name:?}");
 
         // Carrying a stack: no tooltip (it would hide the dragged item).
-        let (_q2, t2) =
+        let (_q2, t2, _p2) =
             panel(&registry, &slots, &craft, Some((stone, 1)), None, 0, &skin, mouse, w, h, ui, None);
         assert!(!t2.iter().any(|x| x.text == name), "no tooltip while dragging");
 
         // Over empty space: no tooltip.
-        let (_q3, t3) =
+        let (_q3, t3, _p3) =
             panel(&registry, &slots, &craft, None, None, 0, &skin, (1.0, 1.0), w, h, ui, None);
         assert!(!t3.iter().any(|x| x.text == name), "no tooltip over empty space");
     }
