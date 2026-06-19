@@ -740,6 +740,14 @@ impl Session {
             // sun-lit one (water) dims with daylight.
             sky = sky::submerged(&sky, glam::Vec3::new(r, g, b), fluid.light_emission > 0);
         }
+        // The far-terrain ring extends the *surface* horizon; well below ground
+        // (deep caves, the hellish/lava zone) the distant surface can't be seen,
+        // so the ring would just float in the dark — suppress it there.
+        let surface = self.streamer.world().generator().surface_height(
+            render_pos.x.floor() as i32,
+            render_pos.z.floor() as i32,
+        );
+        let underground = (render_pos.y.floor() as i32) < surface - 6;
         let caps = self.caps(registry);
 
         let hotbar_slots = self.hotbar_slots(registry);
@@ -847,7 +855,7 @@ impl Session {
             // works; the quality fix is Step 4. Default off until then.
             shadows: false,
             water_reflections,
-            far_terrain: far_terrain && !underwater,
+            far_terrain: far_terrain && !underwater && !underground,
             far_cut: {
                 // The loaded-chunk square, camera-relative: the far ring
                 // discards inside it (real terrain renders there).
