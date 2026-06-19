@@ -261,7 +261,10 @@ impl App {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_else(random_seed);
-            self.start_session(&menu::sanitize_name(&name), seed, None, Some(true));
+            // OC_MODE=<id> picks the starting game mode (e.g. oc:creative for
+            // free-fly verification); cheats on so it can be switched in-game.
+            let mode = std::env::var("OC_MODE").ok();
+            self.start_session(&menu::sanitize_name(&name), seed, mode, Some(true));
         }
         self.last_frame = Instant::now();
         Ok(())
