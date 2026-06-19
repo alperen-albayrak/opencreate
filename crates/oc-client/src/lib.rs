@@ -9,6 +9,7 @@ mod entities;
 mod far_terrain;
 mod hotbar;
 mod inventory_screen;
+mod item_icon;
 mod menu;
 mod player;
 mod session;
@@ -233,9 +234,13 @@ impl App {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // Dev hook: OC_TITLE overrides the window title so several instances
+        // (e.g. two parallel branches) are easy to tell apart. Defaults to the
+        // normal title, so ordinary play is unchanged.
+        let title = std::env::var("OC_TITLE").unwrap_or_else(|_| "OpenCreate".to_string());
         let window = event_loop.create_window(
             WindowAttributes::default()
-                .with_title("OpenCreate")
+                .with_title(title)
                 .with_inner_size(LogicalSize::new(1280, 720)),
         )?;
         let size = window.inner_size();
@@ -338,6 +343,10 @@ impl App {
                         session.camera.pitch = pitch;
                     }
                 }
+                // The spawn mode arrived in the Welcome (not the GameMode
+                // handler), so normalize movement here too: a spectator starts
+                // flying instead of falling through the world.
+                session.normalize_flight(&self.registry);
                 self.session = Some(session);
                 self.apply_settings();
                 self.screen = Screen::InGame;
@@ -735,6 +744,7 @@ impl App {
                 time,
                 ui_texts: Vec::new(),
                 ui_quads: Vec::new(),
+                ui_polys: Vec::new(),
             }
         };
 
@@ -863,6 +873,11 @@ impl ApplicationHandler for App {
                     (Screen::InGame, MouseButton::Right) => {
                         if let Some(session) = &mut self.session {
                             session.place_clicked = true;
+                        }
+                    }
+                    (Screen::InGame, MouseButton::Middle) => {
+                        if let Some(session) = &mut self.session {
+                            session.pick_clicked = true;
                         }
                     }
                     (Screen::Settings(screen), MouseButton::Left) => {

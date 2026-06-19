@@ -37,4 +37,19 @@
     "worlds.delete": "Delete",
     "worlds.delete_confirm": "Click again to delete",
     "worlds.empty": "No worlds yet - create one",
+
+    // Item display names (keyed by item id). A new language adds these same
+    // keys with translated values; the built-in items.ron `name` is the
+    // English fallback if a key is missing.
+    "item.oc:stone": "Stone",
+    "item.oc:dirt": "Dirt",
+    "item.oc:grass": "Grass Block",
+    "item.oc:sand": "Sand",
+    "item.oc:log": "Log",
+    "item.oc:leaves": "Leaves",
+    "item.oc:lamp": "Lamp",
+    "item.oc:snow": "Snow",
+    "item.oc:planks": "Planks",
+    "item.oc:stick": "Stick",
+    "item.oc:apple": "Apple",
 }

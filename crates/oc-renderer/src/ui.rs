@@ -11,8 +11,10 @@ use crate::font;
 
 const UI_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ui.spv"));
 
-/// Maximum glyphs per frame; longer HUD text is truncated.
-const MAX_GLYPHS: usize = 1024;
+/// Maximum UI primitives (glyphs + quads + polys) per frame; excess is
+/// truncated. Item icons add several polys per inventory slot, so this is
+/// generous.
+const MAX_GLYPHS: usize = 4096;
 /// Drop-shadow offset in pixels.
 const SHADOW_OFFSET: f32 = 2.0;
 
@@ -47,6 +49,16 @@ pub struct UiQuad {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    pub color: [f32; 4],
+}
+
+/// A solid-colored quad with four arbitrary corners (framebuffer pixels), for
+/// the angled faces of isometric item icons. Corner order is top-left,
+/// top-right, bottom-left, bottom-right; it triangulates as (TL,TR,BL) +
+/// (BL,TR,BR), so any convex quad given in that order fills correctly.
+#[derive(Debug, Clone, Copy)]
+pub struct UiPoly {
+    pub corners: [[f32; 2]; 4],
     pub color: [f32; 4],
 }
 
@@ -200,6 +212,7 @@ impl UiRenderer {
         extent: vk::Extent2D,
         texts: &[UiText],
         quads: &[UiQuad],
+        polys: &[UiPoly],
     ) {
         unsafe {
             let mut glyphs = Vec::new();
@@ -208,11 +221,13 @@ impl UiRenderer {
             }
             let glyph_count = glyphs.len().min(MAX_GLYPHS);
             let quad_count = quads.len().min(MAX_GLYPHS - glyph_count);
-            if glyph_count + quad_count == 0 {
+            let poly_count = polys.len().min(MAX_GLYPHS - glyph_count - quad_count);
+            if glyph_count + quad_count + poly_count == 0 {
                 return;
             }
 
-            let mut vertices = Vec::with_capacity((glyph_count + quad_count) * 6);
+            let mut vertices =
+                Vec::with_capacity((glyph_count + quad_count + poly_count) * 6);
             let mut emit = |x: f32, y: f32, w: f32, h: f32, uv: (f32, f32, f32, f32)| {
                 let (u0, v0, u1, v1) = uv;
                 let a = UiVertex { pos: [x, y], uv: [u0, v0] };
@@ -227,6 +242,17 @@ impl UiRenderer {
             let solid = font::solid_uv();
             for q in &quads[..quad_count] {
                 emit(q.x, q.y, q.w, q.h, solid);
+            }
+            // Arbitrary-corner filled quads (icon faces). `emit`'s borrow of
+            // `vertices` has ended, so push directly. Corner order TL,TR,BL,BR.
+            let (su0, sv0, su1, sv1) = solid;
+            for p in &polys[..poly_count] {
+                let c = p.corners;
+                let a = UiVertex { pos: c[0], uv: [su0, sv0] };
+                let b = UiVertex { pos: c[1], uv: [su1, sv0] };
+                let cc = UiVertex { pos: c[2], uv: [su0, sv1] };
+                let d = UiVertex { pos: c[3], uv: [su1, sv1] };
+                vertices.extend_from_slice(&[a, b, cc, cc, b, d]);
             }
 
             let (buffer, allocation) = &mut self.vertex_buffers[slot];
@@ -264,6 +290,14 @@ impl UiRenderer {
                 draw(
                     UiPush { screen, offset: [0.0, 0.0], color: q.color },
                     ((glyph_count + i) * 6) as u32,
+                    6,
+                );
+            }
+            // Icon faces on top of the panel quads, still under the text.
+            for (i, p) in polys[..poly_count].iter().enumerate() {
+                draw(
+                    UiPush { screen, offset: [0.0, 0.0], color: p.color },
+                    ((glyph_count + quad_count + i) * 6) as u32,
                     6,
                 );
             }

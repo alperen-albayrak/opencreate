@@ -66,6 +66,8 @@ pub struct Session {
     /// Click edges captured by the event loop, consumed by the next frame.
     pub break_clicked: bool,
     pub place_clicked: bool,
+    /// Middle-click "pick block" edge (creative/spectator).
+    pub pick_clicked: bool,
     /// Time of day in [0, 1); locally advanced, corrected by server Time.
     pub day_fraction: f64,
     /// Connection to the (embedded) server; None after shutdown.
@@ -153,6 +155,7 @@ impl Session {
             hotbar: Hotbar::new(),
             break_clicked: false,
             place_clicked: false,
+            pick_clicked: false,
             day_fraction,
             transport: Some(transport),
             server: Some(server),
@@ -189,6 +192,21 @@ impl Session {
     /// Capability flags of the current mode.
     pub fn caps<'r>(&self, registry: &'r Registry) -> &'r GameModeDef {
         registry.mode(self.mode)
+    }
+
+    /// Forces the player's movement mode to match the current game mode's
+    /// capabilities. Applied whenever the mode is set — at spawn and on every
+    /// change — so a noclip mode (spectator) is always flying and never falls
+    /// through the world into the void, a mode that cannot fly
+    /// (survival/adventure) is always walking, and a fly-capable mode
+    /// (creative) keeps whatever the player last toggled.
+    pub fn normalize_flight(&mut self, registry: &Registry) {
+        let caps = registry.mode(self.mode);
+        if caps.noclip {
+            self.player.flying = true;
+        } else if !caps.can_fly {
+            self.player.flying = false;
+        }
     }
 
     /// Total of an item (per-load id) across the storage slots.
@@ -429,6 +447,22 @@ impl Session {
     /// Applies an edit locally (prediction) and tells the server. The
     /// server's BlockChanged echo is a no-op when it matches.
     fn apply_block_edits(&mut self, renderer: &mut Renderer, registry: &Registry) -> Result<()> {
+        // Pick block (middle click): copy the looked-at block into the selected
+        // hotbar slot. Allowed wherever the creative palette is (creative +
+        // spectator), independent of block editing — so it runs before the
+        // can-edit gate. The server is authoritative and resyncs the inventory.
+        if std::mem::take(&mut self.pick_clicked)
+            && self.caps(registry).creative_palette
+            && let Some(hit) = self.target()
+        {
+            let block = self.streamer.world().block(hit.block);
+            if !block.is_air() {
+                self.outbox.push(ClientMessage::PickBlock {
+                    pos: hit.block,
+                    slot: self.hotbar.selected as u8,
+                });
+            }
+        }
         if !self.caps(registry).can_edit_blocks {
             self.break_clicked = false;
             self.place_clicked = false;
@@ -481,13 +515,15 @@ impl Session {
 
     /// Integrates everything the server sent since last frame.
     fn drain_server_messages(&mut self, renderer: &mut Renderer, registry: &Registry) -> Result<()> {
-        let Some(transport) = &mut self.transport else {
-            return Ok(());
-        };
         loop {
-            let msg = transport
-                .try_recv()
-                .map_err(|_| anyhow::anyhow!("server disconnected"))?;
+            // Re-borrow the transport only for the receive, so the match arms
+            // below have full access to `self` (e.g. normalize_flight).
+            let msg = match &mut self.transport {
+                Some(transport) => transport
+                    .try_recv()
+                    .map_err(|_| anyhow::anyhow!("server disconnected"))?,
+                None => return Ok(()),
+            };
             match msg {
                 Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
                 Some(ServerMessage::BlockChanged { pos, block }) => {
@@ -503,13 +539,8 @@ impl Session {
                 }
                 Some(ServerMessage::GameMode(mode)) => {
                     self.mode = ModeId(mode);
-                    let caps = registry.mode(self.mode);
-                    info!(mode = caps.id, "game mode changed");
-                    if caps.noclip {
-                        self.player.flying = true;
-                    } else if !caps.can_fly {
-                        self.player.flying = false;
-                    }
+                    info!(mode = registry.mode(self.mode).id, "game mode changed");
+                    self.normalize_flight(registry);
                 }
                 Some(ServerMessage::Entities(snapshot)) => {
                     self.entities.apply(snapshot, Instant::now());
@@ -757,12 +788,22 @@ impl Session {
         let caps = self.caps(registry);
 
         let hotbar_slots = self.hotbar_slots(registry);
-        let show_counts = caps.uses_inventory;
-        let mut texts = self.hotbar.count_labels(w, h, ui, &hotbar_slots, show_counts);
-        let mut quads = if caps.noclip {
-            Vec::new() // spectators carry nothing
+        // The HUD hotbar shows in-world only: hidden for spectators (who carry
+        // nothing) and while the inventory screen is open — that screen draws
+        // its own hotbar row (with hover tooltips), so a second copy here would
+        // just be a duplicate you couldn't read names off. Stack counts always
+        // show now (the count labels still skip single items).
+        let hud_hotbar = !caps.noclip && !self.inventory_open;
+        let mut polys: Vec<oc_renderer::UiPoly> = Vec::new();
+        let mut texts = if hud_hotbar {
+            self.hotbar.count_labels(w, h, ui, &hotbar_slots, true)
         } else {
-            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, show_counts)
+            Vec::new()
+        };
+        let mut quads = if hud_hotbar {
+            self.hotbar.quads(w, h, ui, registry, &hotbar_slots, true, &mut polys)
+        } else {
+            Vec::new()
         };
         if self.inventory_open {
             let slots: [Option<(oc_assets::ItemId, u32)>; 36] =
@@ -781,7 +822,7 @@ impl Session {
                 palette: &p.palette,
                 scroll: p.scroll,
             });
-            let (panel_quads, panel_texts) = inventory_screen::panel(
+            let (panel_quads, panel_texts, panel_polys) = inventory_screen::panel(
                 registry,
                 &slots,
                 &craft,
@@ -797,6 +838,7 @@ impl Session {
             );
             quads.extend(panel_quads);
             texts.extend(panel_texts);
+            polys.extend(panel_polys);
         }
         // Food on hand: a hint above the stat bars.
         if caps.has_stats
@@ -900,6 +942,7 @@ impl Session {
             time,
             ui_texts: texts,
             ui_quads: quads,
+            ui_polys: polys,
         }
     }
 }

@@ -40,6 +40,10 @@ pub const STORAGE_SLOTS: usize = 36;
 pub const CRAFT_SLOTS: usize = 9;
 /// Maximum items in a single stack.
 pub const STACK_MAX: u32 = 99;
+/// How far the eye may be from a picked block's center (anti-cheat for the
+/// pick-block action). Generous vs the client's 6.0 reach: the block center
+/// can sit up to a half-diagonal beyond the ray endpoint.
+const PICK_REACH: f64 = 7.0;
 
 /// One slot: an item with a count, or empty.
 type Stack = Option<(ItemId, u32)>;
@@ -189,6 +193,14 @@ impl Inventory {
     /// Deletes the cursor stack (the creative trash slot).
     pub fn trash_cursor(&mut self) {
         self.cursor = None;
+    }
+
+    /// Replaces a storage slot's contents outright (pick-block in creative-
+    /// style modes, where items are free). Out-of-range indices are ignored.
+    pub fn set_slot(&mut self, index: usize, stack: Stack) {
+        if let Some(s) = self.slots.get_mut(index) {
+            *s = stack;
+        }
     }
 
     /// Returns the cursor stack and any items in the crafting grid to
@@ -445,6 +457,10 @@ impl Server {
         let player_entity = ecs.spawn((Stats::full(), Inventory::default())).id();
 
         let (gen_tx, gen_rx) = channel();
+        // Spectator (noclip) spawns flying so it never falls through the world;
+        // every other mode spawns walking. The client normalizes this on its
+        // side too, but the authoritative state should be correct from tick 0.
+        let flying = registry.mode(mode).noclip;
         Ok(Self {
             transport,
             world,
@@ -453,7 +469,7 @@ impl Server {
             player_entity,
             spawn: world_spawn,
             sprinting: false,
-            flying: false,
+            flying,
             mode,
             fall: FallTracker::default(),
             last_sent_stats: None,
@@ -524,6 +540,7 @@ impl Server {
                     self.flying = flying;
                 }
                 ClientMessage::SetBlock { pos, block } => self.handle_set_block(pos, block)?,
+                ClientMessage::PickBlock { pos, slot } => self.handle_pick_block(pos, slot)?,
                 ClientMessage::SetGameMode(mode) => {
                     // Changing mode is a cheat (§ permissions): the world
                     // must allow cheats (singleplayer) / the player must
@@ -563,7 +580,8 @@ impl Server {
                             InvTarget::Craft(i) => inv.click_craft(i as usize, right),
                             InvTarget::Output => inv.take_output(&self.registry),
                             InvTarget::Palette(item) if creative => {
-                                inv.give_cursor(ItemId(item), if right { 1 } else { STACK_MAX });
+                                // Left click grabs a single item; right click a full stack.
+                                inv.give_cursor(ItemId(item), if right { STACK_MAX } else { 1 });
                             }
                             InvTarget::Trash if creative => inv.trash_cursor(),
                             // Palette/Trash outside creative: ignore.
@@ -607,6 +625,42 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// "Pick block" (creative/spectator middle-click): copies the block the
+    /// player is looking at into a chosen hotbar slot. Server-authoritative —
+    /// validates the mode, the reach (eye → block center), and that the block
+    /// has an item form, then resyncs the inventory. Any failed check is a
+    /// silent no-op (the client's hotbar simply doesn't change).
+    fn handle_pick_block(&mut self, pos: oc_core::BlockPos, slot: u8) -> Result<(), Disconnected> {
+        // Only the creative-style modes (creative + spectator) may pick.
+        if !self.registry.mode(self.mode).creative_palette {
+            return Ok(());
+        }
+        let slot = slot as usize;
+        if slot >= HOTBAR_SLOTS {
+            return Ok(());
+        }
+        // Reach: the eye must be within PICK_REACH of the block's center, so a
+        // client can't pick blocks across the map.
+        let eye = self.player_position + glam::DVec3::new(0.0, EYE_HEIGHT, 0.0);
+        let center = pos.as_dvec3() + glam::DVec3::splat(0.5);
+        if eye.distance(center) > PICK_REACH {
+            return Ok(());
+        }
+        let block = self.world.block(pos);
+        if block.is_air() {
+            return Ok(());
+        }
+        let Some(item) = self.registry.item_for_block(block) else {
+            return Ok(());
+        };
+        let mut entry = self.ecs.entity_mut(self.player_entity);
+        entry
+            .get_mut::<Inventory>()
+            .expect("inventory")
+            .set_slot(slot, Some((item, STACK_MAX)));
+        self.send_inventory()
     }
 
     /// Applies a block edit under survival rules: breaking yields the
@@ -1208,6 +1262,132 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn creative_pick_block_fills_the_selected_hotbar_slot() {
+        let dir = temp_dir("pick");
+        let (mut client, server_end) = in_proc_channel();
+        let _handle = start(
+            ServerConfig {
+                seed: 77,
+                save_dir: dir.clone(),
+                default_mode: Some("oc:creative".into()),
+                cheats: Some(true),
+            },
+            server_end,
+        )
+        .unwrap();
+
+        let spawn = wait_for(&mut client, |m| match m {
+            ServerMessage::Welcome { spawn, .. } => Some(spawn),
+            _ => None,
+        });
+        let spawn_chunk = block_to_chunk(spawn.floor().as_ivec3());
+        client.send(ClientMessage::SubscribeColumn(spawn_chunk)).unwrap();
+        let column = wait_for(&mut client, |m| match m {
+            ServerMessage::Column(c) if c.chunk == spawn_chunk => Some(c),
+            _ => None,
+        });
+
+        // A solid, item-backed block in the spawn column.
+        let registry = Registry::load_default().unwrap();
+        let (pick_pos, pick_block) = column
+            .sections
+            .iter()
+            .find_map(|(pos, section)| {
+                for y in 0..16 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            let b = section.get(IVec3::new(x, y, z));
+                            if b.is_solid() && registry.item_for_block(b).is_some() {
+                                return Some((
+                                    IVec3::new(
+                                        spawn_chunk.x * 16 + x,
+                                        pos.y * 16 + y,
+                                        spawn_chunk.z * 16 + z,
+                                    ),
+                                    b,
+                                ));
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .expect("an item-backed solid block in the spawn column");
+        let want = registry.item_for_block(pick_block).unwrap();
+
+        // Stand right next to the block so the server's reach check passes.
+        let near = pick_pos.as_dvec3() + glam::DVec3::new(0.5, 0.5, 1.4);
+        client
+            .send(ClientMessage::PlayerState {
+                position: near,
+                yaw: 0.0,
+                pitch: 0.0,
+                sprinting: false,
+                flying: true,
+            })
+            .unwrap();
+
+        // Pick the block into hotbar slot 3; the inventory resync fills it.
+        client.send(ClientMessage::PickBlock { pos: pick_pos, slot: 3 }).unwrap();
+        let slots = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { slots, .. } if slots.get(3).copied().flatten().is_some() => {
+                Some(slots)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            slots[3],
+            Some((want.0, STACK_MAX)),
+            "slot 3 holds a full stack of the picked block's item"
+        );
+    }
+
+    #[test]
+    fn creative_palette_left_click_grabs_one_right_click_a_stack() {
+        let dir = temp_dir("palette-click");
+        let (mut client, server_end) = in_proc_channel();
+        let _handle = start(
+            ServerConfig {
+                seed: 1,
+                save_dir: dir,
+                default_mode: Some("oc:creative".into()),
+                cheats: Some(true),
+            },
+            server_end,
+        )
+        .unwrap();
+        wait_for(&mut client, |m| match m {
+            ServerMessage::Welcome { spawn, .. } => Some(spawn),
+            _ => None,
+        });
+
+        let registry = Registry::load_default().unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+
+        // Left click (right = false): a single item on the cursor.
+        client
+            .send(ClientMessage::InventoryClick { target: InvTarget::Palette(stone.0), right: false })
+            .unwrap();
+        let cursor = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { cursor, .. } if cursor.is_some() => Some(cursor),
+            _ => None,
+        });
+        assert_eq!(cursor, Some((stone.0, 1)), "left click grabs one item");
+
+        // Right click (right = true): a full stack on the cursor.
+        client
+            .send(ClientMessage::InventoryClick { target: InvTarget::Palette(stone.0), right: true })
+            .unwrap();
+        let cursor = wait_for(&mut client, |m| match m {
+            ServerMessage::Inventory { cursor, .. } if cursor.map(|(_, n)| n) == Some(STACK_MAX) => {
+                Some(cursor)
+            }
+            _ => None,
+        });
+        assert_eq!(cursor, Some((stone.0, STACK_MAX)), "right click grabs a full stack");
     }
 
     #[test]
