@@ -60,19 +60,23 @@ fn profile_point(i: i32) -> vec2<f32> {
 fn base_temp(world_y: f32) -> f32 {
     let n = i32(scene.params.w);
     if (n <= 0) { return 14.0; }
-    let first = profile_point(0);
-    let last = profile_point(n - 1);
-    if (world_y <= first.x) { return first.y; }
-    if (world_y >= last.x) { return last.y; }
-    for (var i = 0; i < n - 1; i = i + 1) {
-        let a = profile_point(i);
-        let b = profile_point(i + 1);
-        if (world_y >= a.x && world_y <= b.x) {
-            let t = (world_y - a.x) / max(b.x - a.x, 0.0001);
-            return a.y + t * (b.y - a.y);
+    // Walk ascending points, carrying the previous one. The first point past
+    // `world_y` closes the bracketing segment [prev, cur]; below the deepest
+    // point we clamp to it, above the shallowest we clamp to the last `prev`.
+    // (Single forward scan — no separate first-iteration segment, which a
+    // two-lookup `pp(i)`/`pp(i+1)` loop turned into a fall-through to the cold
+    // end value for the deepest band, leaving deep rock un-glowing below -560.)
+    var prev = profile_point(0);
+    if (world_y <= prev.x) { return prev.y; }
+    for (var i = 1; i < n; i = i + 1) {
+        let cur = profile_point(i);
+        if (world_y <= cur.x) {
+            let t = (world_y - prev.x) / max(cur.x - prev.x, 0.0001);
+            return prev.y + t * (cur.y - prev.y);
         }
+        prev = cur;
     }
-    return last.y;
+    return prev.y;
 }
 
 struct VsOut {
