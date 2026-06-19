@@ -22,10 +22,16 @@ const REGEN_HUNGER_THRESHOLD: f32 = 7.0;
 /// physiology, not gameplay-tuned: sustained ambient heat past ~50 °C harms
 /// (heatstroke), deep cold past ~-60 °C harms. Insulation gear (reserved)
 /// widens the band — the same `environment + gear_modifier` shape as breathing.
-const HEAT_SAFE_MAX_C: f32 = 50.0;
-const COLD_SAFE_MIN_C: f32 = -60.0;
-/// Health/second lost at extreme exposure (≥ 300 °C outside the band).
-const MAX_TEMP_DAMAGE: f32 = 1.5;
+pub const HEAT_SAFE_MAX_C: f32 = 50.0;
+pub const COLD_SAFE_MIN_C: f32 = -60.0;
+/// Open air's thermal conductivity (W/m·K): it barely conducts, so hot air is a
+/// slow burn you can dash through, while submersion or solid contact is not.
+pub const AIR_CONDUCTIVITY: f32 = 0.025;
+/// Scales heat flux (°C-past-band × W/m·K) into health/second. Calibrated to
+/// nature's conductivity ratios: lava submersion (~1200 °C, k≈1.7) is
+/// near-instant, bare hot stone (k≈2.5) cooks in seconds, hot air alone
+/// (k≈0.025) is a slow burn, an insulator underfoot (wool k≈0.04) barely harms.
+const THERMAL_DAMAGE_COEFF: f32 = 0.0025;
 
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Stats {
@@ -48,15 +54,38 @@ pub struct StatInputs {
     pub submerged: bool,
     /// The player is sprinting (and moving).
     pub sprinting: bool,
-    /// Effective ambient temperature at the player (°C); outside the
-    /// survivable band it damages health (the heat hazard).
-    pub ambient_temp: f32,
+    /// Heat/cold damage rate (health/second), precomputed by the server from
+    /// the medium the player occupies + the blocks they touch (see
+    /// [`thermal_damage_rate`]). 0 inside the survivable band.
+    pub thermal_dps: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Alive,
     Died,
+}
+
+/// How far a temperature sits outside the survivable band (°C); 0 inside it
+/// (handles both the hot and cold edges).
+fn band_exposure(temp_c: f32) -> f32 {
+    (temp_c - HEAT_SAFE_MAX_C).max(COLD_SAFE_MIN_C - temp_c).max(0.0)
+}
+
+/// Heat/cold damage rate (health/second) by two physical paths, summed:
+/// **convection/radiation** through the medium the player occupies (air/water/
+/// lava — `medium` = its effective temperature + conductivity), and
+/// **conduction** through the solid blocks they touch (`contacts`, each an
+/// effective temperature + an already-weighted conductivity). Flux ∝ (°C past
+/// the survivable band) × conductivity — so hot *air* (k≈0.025) is a slow burn
+/// you can dash through, while bare hot stone (k≈2.5) or lava cooks fast, and an
+/// insulator underfoot (wool k≈0.04) barely harms. Pure + unit-testable; the
+/// server samples the world and calls it, the gear modifier is reserved.
+pub fn thermal_damage_rate(medium: (f32, f32), contacts: &[(f32, f32)]) -> f32 {
+    let (medium_temp, medium_k) = medium;
+    let conv = band_exposure(medium_temp) * medium_k;
+    let cond: f32 = contacts.iter().map(|&(t, k)| band_exposure(t) * k).sum();
+    (conv + cond) * THERMAL_DAMAGE_COEFF
 }
 
 /// Advances the stats by `dt` seconds. Pure, so the rules are unit-testable.
@@ -94,14 +123,12 @@ pub fn tick(stats: &mut Stats, input: StatInputs, dt: f32) -> Outcome {
         stats.health = (stats.health + HEALTH_REGEN * dt).min(MAX_STAT);
     }
 
-    // Heat hazard: damage outside the survivable band, scaled by how far
-    // outside (deep geothermal heat or a frozen world). The deep core is
-    // dangerous without insulation — the gear modifier is reserved.
-    let exposure =
-        (input.ambient_temp - HEAT_SAFE_MAX_C).max(COLD_SAFE_MIN_C - input.ambient_temp);
-    if exposure > 0.0 {
-        let severity = (exposure / 300.0).min(1.0);
-        stats.health -= MAX_TEMP_DAMAGE * severity * dt;
+    // Heat/cold hazard: the server precomputed the damage rate from the medium
+    // the player occupies + the blocks they touch (the two-path model in
+    // `thermal_damage_rate`). The deep is dangerous to stand in unprotected; the
+    // insulation-gear modifier is reserved.
+    if input.thermal_dps > 0.0 {
+        stats.health -= input.thermal_dps * dt;
     }
 
     if stats.health <= 0.0 { Outcome::Died } else { Outcome::Alive }
@@ -189,15 +216,48 @@ mod tests {
     }
 
     #[test]
-    fn extreme_heat_damages_but_comfort_is_safe() {
-        // Deep geothermal heat, well past the survivable band: lethal in
-        // seconds without insulation.
+    fn standing_on_hot_rock_is_lethal_but_hot_air_alone_is_slow() {
+        // Deep: 780 °C all around. Standing on bare hot stone (conduction) cooks
+        // you in seconds; merely floating in the hot air (no contact) is a slow
+        // burn you survive for a while — the sauna feel.
+        let on_stone = thermal_damage_rate((780.0, AIR_CONDUCTIVITY), &[(780.0, 2.5)]);
+        let in_air = thermal_damage_rate((780.0, AIR_CONDUCTIVITY), &[]);
+        assert!(in_air < on_stone * 0.1, "air burns far slower than rock contact");
+        let mut a = Stats::full();
+        assert_eq!(
+            run(&mut a, StatInputs { thermal_dps: on_stone, ..Default::default() }, 30.0),
+            Outcome::Died,
+            "standing on hot rock in the deep is lethal"
+        );
+        let mut b = Stats::full();
+        run(&mut b, StatInputs { thermal_dps: in_air, ..Default::default() }, 30.0);
+        assert!(b.health > 0.0, "hot air alone is survivable for a while: {}", b.health);
+    }
+
+    #[test]
+    fn an_insulating_floor_shields() {
+        // Same deep heat, but standing on planks (insulator) instead of stone:
+        // the low conductivity chokes the conductive path, so it barely harms.
+        let on_stone = thermal_damage_rate((780.0, AIR_CONDUCTIVITY), &[(780.0, 2.5)]);
+        let on_planks = thermal_damage_rate((780.0, AIR_CONDUCTIVITY), &[(780.0, 0.12)]);
+        assert!(on_planks < on_stone * 0.1, "an insulator shields: {on_planks} vs stone {on_stone}");
+    }
+
+    #[test]
+    fn lava_is_near_instant_and_comfort_is_safe() {
+        // Submerged in lava (the medium) and touching it: dead in a second or two.
+        let lava = thermal_damage_rate((1200.0, 1.7), &[(1200.0, 1.7)]);
         let mut hot = Stats::full();
-        let outcome = run(&mut hot, StatInputs { ambient_temp: 780.0, ..Default::default() }, 30.0);
-        assert_eq!(outcome, Outcome::Died, "the deep core is lethal unprotected");
-        // A comfortable temperature never harms (and the belly keeps it full).
-        let mut mild = Stats::full();
-        run(&mut mild, StatInputs { ambient_temp: 20.0, ..Default::default() }, 30.0);
-        assert_eq!(mild.health, MAX_STAT, "comfortable temps are safe");
+        assert_eq!(
+            run(&mut hot, StatInputs { thermal_dps: lava, ..Default::default() }, 3.0),
+            Outcome::Died,
+            "lava submersion is near-instant death"
+        );
+        // Comfortable: no exposure on either path, no damage.
+        assert_eq!(
+            thermal_damage_rate((20.0, AIR_CONDUCTIVITY), &[(20.0, 2.5)]),
+            0.0,
+            "comfortable temps never harm"
+        );
     }
 }

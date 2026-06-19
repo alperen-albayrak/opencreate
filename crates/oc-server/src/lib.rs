@@ -19,7 +19,7 @@ use anyhow::{Context as _, Result};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World as EcsWorld;
-use glam::DVec3;
+use glam::{DVec3, IVec3};
 use oc_assets::{ItemId, ModeId, Registry};
 use oc_core::{ChunkPos, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, InvTarget, ServerMessage, Transport};
@@ -813,17 +813,48 @@ impl Server {
             self.world.block(self.player_position.floor().as_ivec3()),
         )
         .is_some();
-        // Effective temperature at the eye drives the heat hazard (deep
-        // geothermal heat is dangerous; a frozen world chills). A fluid with an
-        // intrinsic temperature (lava ~1200 °C) burns when you're in it.
-        let mut ambient_temp = oc_world::temperature::effective(
-            eye.floor().as_ivec3(),
-            oc_world::env_registry::active(),
+        // Heat hazard, two physical paths (docs/world-building/temperature.md):
+        // convection/radiation through the medium the player occupies, plus
+        // conduction through the blocks they touch. Each block's effective
+        // temperature is the geothermal base (+ tier-2 source heat later),
+        // raised to a fluid's intrinsic temperature (lava ~1200 °C) when it is
+        // one. Conductivity decides the rate — hot air is a slow burn, lava and
+        // bare hot stone are not, an insulator underfoot shields.
+        let env = oc_world::env_registry::active();
+        let block_temp = |pos: IVec3, block: oc_world::BlockId| {
+            let mut t = oc_world::temperature::effective(pos, env);
+            if let Some(ft) = oc_world::fluid_registry::for_block(block).and_then(|f| f.temperature) {
+                t = t.max(ft);
+            }
+            t
+        };
+        // Medium: the fluid the eye sits in, else open air.
+        let eye_cell = eye.floor().as_ivec3();
+        let medium = (
+            block_temp(eye_cell, eye_block),
+            eye_fluid.map_or(stats::AIR_CONDUCTIVITY, |f| f.conductivity),
         );
-        if let Some(t) = eye_fluid.and_then(|f| f.temperature) {
-            ambient_temp = ambient_temp.max(t);
+        // Contact: the block underfoot (full weight) + the four at feet level
+        // (a wall you press against — half weight). Solid/lava conduct; air's
+        // conductivity is 0, so it never contributes here (the medium owns air).
+        let feet = self.player_position.floor().as_ivec3();
+        let mut contacts: Vec<(f32, f32)> = Vec::with_capacity(5);
+        for (pos, weight) in [
+            (feet - IVec3::Y, 1.0_f32),
+            (feet + IVec3::X, 0.5),
+            (feet - IVec3::X, 0.5),
+            (feet + IVec3::Z, 0.5),
+            (feet - IVec3::Z, 0.5),
+        ] {
+            let b = self.world.block(pos);
+            let k = oc_world::registry::props(b).conductivity;
+            if b.is_air() || k <= 0.0 {
+                continue;
+            }
+            contacts.push((block_temp(pos, b), k * weight));
         }
-        let inputs = StatInputs { submerged, sprinting: self.sprinting, ambient_temp };
+        let thermal_dps = stats::thermal_damage_rate(medium, &contacts);
+        let inputs = StatInputs { submerged, sprinting: self.sprinting, thermal_dps };
         let fall_damage = self
             .fall
             .tick(self.player_position.y, self.flying || feet_in_water);
