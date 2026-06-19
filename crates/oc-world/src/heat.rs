@@ -76,6 +76,53 @@ pub fn source_temp(block: BlockId) -> Option<f32> {
     crate::fluid_registry::for_block(block).and_then(|f| f.temperature)
 }
 
+// --- Tier-3 stored temperature (docs/world-building/temperature.md) ---------
+//
+// A block placed out of thermal equilibrium (a cool block dropped in the deep)
+// holds its own temperature and relaxes toward the local ambient by Newton's
+// law, stepped each server tick. Sparse — only cells meaningfully off ambient
+// carry state — and frozen offline (no ticks ⇒ no change). This is genuine
+// dynamic state: server-authoritative and synced to clients.
+
+/// Within this of the local ambient, a stored temperature is dropped: the cell
+/// has equilibrated, so it costs nothing and reverts to the pure base field.
+pub const EQUILIBRIUM_C: f32 = 2.0;
+
+/// Tunes the relaxation time constant so a stone block (heat_capacity 0.84,
+/// conductivity 2.5 ⇒ τ ≈ 2 s) visibly settles (~95 %, i.e. 3τ) in ~6 s.
+const TAU_SCALE: f32 = 6.0;
+
+/// Newton relaxation time constant (seconds) for a block: thermal inertia
+/// (`heat_capacity`) over `conductivity` — dense/insulating matter settles
+/// slowly, a conductive block fast. Falls back to stone-like values.
+fn relax_tau(block: BlockId) -> f32 {
+    let (hc, k) = crate::registry::def(block)
+        .map(|d| (d.heat_capacity, d.conductivity))
+        .unwrap_or((0.84, 2.5));
+    (hc.max(0.1) / k.max(0.05)) * TAU_SCALE
+}
+
+/// One Newton relaxation step: a stored block temperature `current` drifting
+/// toward its local `ambient` over `dt` seconds. Pure + frozen-offline (dt = 0
+/// ⇒ unchanged). The clamp guards against overshoot if dt ever exceeds τ.
+pub fn relax_step(current: f32, ambient: f32, block: BlockId, dt: f32) -> f32 {
+    let tau = relax_tau(block);
+    current + (ambient - current) * (dt / tau).clamp(0.0, 1.0)
+}
+
+/// The stored temperature a newly placed block should carry, or `None` if it is
+/// already ~ambient (a surface/cool placement — no entry, the map stays sparse).
+/// A carried block sits at the **surface (sea-level) temperature**: place it back
+/// near the surface and it's at equilibrium; place it deep and it's far below
+/// the deep ambient, so it heats up. Dimension-aware (a uniform cold moon, whose
+/// surface and deep temperatures match, tracks nothing).
+pub fn placed_stored_temp(pos: BlockPos, env: &EnvDef) -> Option<f32> {
+    let carry =
+        crate::temperature::base(IVec3::new(pos.x, crate::terrain::SEA_LEVEL, pos.z), env);
+    let ambient = crate::temperature::base(pos, env);
+    ((carry - ambient).abs() > EQUILIBRIUM_C).then_some(carry)
+}
+
 /// Fraction of a cell's delta that crosses into `block` per block travelled
 /// (combined with [`STEP_DECAY`]). Open air carries heat freely
 /// (radiation/convection); a solid conducts it in proportion to its
@@ -238,5 +285,46 @@ mod tests {
         let f = field(&[(IVec3::new(8, 8, 8), blocks::STONE)]);
         assert_eq!(f.delta(IVec3::new(8, 8, 8)), 0.0);
         assert_eq!(f.delta(IVec3::new(9, 8, 8)), 0.0);
+    }
+
+    #[test]
+    fn a_cold_block_in_the_deep_heats_up_glows_then_settles() {
+        let env = env_registry::overworld();
+        let block = crate::registry::find_block("oc:stone").unwrap();
+        let deep = IVec3::new(0, -656, 0);
+        let ambient = crate::temperature::base(deep, env); // ~1000 °C
+        let mut t = placed_stored_temp(deep, env).expect("a deep placement is tracked");
+        assert!(t < crate::temperature::DRAPER_C, "starts cool, not glowing: {t}");
+        let dt = 1.0 / 30.0; // one server tick
+        let (mut steps, mut glow_at) = (0u32, None);
+        while (t - ambient).abs() >= EQUILIBRIUM_C && steps < 30 * 60 {
+            let next = relax_step(t, ambient, block, dt);
+            assert!(next >= t, "heats monotonically toward ambient");
+            t = next;
+            steps += 1;
+            if glow_at.is_none() && t >= crate::temperature::DRAPER_C {
+                glow_at = Some(steps as f32 * dt);
+            }
+        }
+        assert!((t - ambient).abs() < EQUILIBRIUM_C, "settles near the deep ambient: {t}");
+        assert!(glow_at.expect("crosses the Draper point") < 4.0, "glows within a few seconds");
+        assert!((steps as f32 * dt) < 20.0, "fully settles in well under a minute");
+    }
+
+    #[test]
+    fn relaxation_is_frozen_when_not_ticked() {
+        let block = crate::registry::find_block("oc:stone").unwrap();
+        assert_eq!(relax_step(200.0, 1000.0, block, 0.0), 200.0, "dt=0 ⇒ unchanged (frozen offline)");
+    }
+
+    #[test]
+    fn placed_block_is_tracked_only_when_out_of_equilibrium() {
+        let env = env_registry::overworld();
+        assert!(placed_stored_temp(IVec3::new(0, -656, 0), env).is_some(), "deep is tracked");
+        assert_eq!(
+            placed_stored_temp(IVec3::new(0, crate::terrain::SEA_LEVEL, 0), env),
+            None,
+            "a surface placement is at equilibrium — no entry"
+        );
     }
 }

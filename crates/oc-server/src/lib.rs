@@ -515,6 +515,9 @@ impl Server {
                 if self.tick_creatures(tick_duration.as_secs_f64()).is_err() {
                     break;
                 }
+                if self.tick_stored_heat(tick_duration.as_secs_f32()).is_err() {
+                    break;
+                }
             }
 
             if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
@@ -734,6 +737,14 @@ impl Server {
                 });
             if allowed && self.world.set_block(pos, block) {
                 self.transport.send(ServerMessage::BlockChanged { pos, block })?;
+                // Tier-3: a block placed out of thermal equilibrium (a cool block
+                // dropped in the deep) starts tracking its own temperature and
+                // relaxes toward the local ambient — heating up and glowing.
+                if let Some(t) =
+                    oc_world::heat::placed_stored_temp(pos, oc_world::env_registry::active())
+                {
+                    self.world.set_temperature(pos, t);
+                }
             } else {
                 // Rejected: re-assert the authoritative state.
                 self.transport
@@ -947,6 +958,32 @@ impl Server {
                 stamina: current.stamina,
                 oxygen: current.oxygen,
             })?;
+        }
+        Ok(())
+    }
+
+    /// Relaxes the sparse set of out-of-equilibrium block temperatures (tier-3)
+    /// toward their local ambient by Newton's law — a placed cool block heating
+    /// up in the deep. Cells within `EQUILIBRIUM_C` of ambient drop out (cost
+    /// nothing). Server-authoritative; syncing the glow to clients is step 3.
+    fn tick_stored_heat(&mut self, dt: f32) -> Result<(), Disconnected> {
+        let env = oc_world::env_registry::active();
+        let mut updated: Vec<(oc_core::BlockPos, f32)> = Vec::new();
+        let mut settled: Vec<oc_core::BlockPos> = Vec::new();
+        for (pos, current) in self.world.temperatures().collect::<Vec<_>>() {
+            let ambient = oc_world::temperature::base(pos, env);
+            let next = oc_world::heat::relax_step(current, ambient, self.world.block(pos), dt);
+            if (next - ambient).abs() < oc_world::heat::EQUILIBRIUM_C {
+                settled.push(pos);
+            } else {
+                updated.push((pos, next));
+            }
+        }
+        for (pos, t) in updated {
+            self.world.set_temperature(pos, t);
+        }
+        for pos in settled {
+            self.world.remove_temperature(pos);
         }
         Ok(())
     }

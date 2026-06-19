@@ -147,6 +147,11 @@ pub struct World {
     /// Columns edited since they were generated/loaded; these (and only
     /// these) need saving — pristine terrain regenerates from the seed.
     dirty: HashSet<ChunkPos>,
+    /// Tier-3 stored temperature (°C) on the sparse set of blocks currently out
+    /// of thermal equilibrium — a placed block heating toward the deep ambient.
+    /// Server-authoritative dynamic state, ticked by the server and persisted
+    /// with its column; empty for most of the world (see [`crate::heat`]).
+    temperatures: HashMap<BlockPos, f32>,
 }
 
 impl World {
@@ -156,7 +161,34 @@ impl World {
             sections: HashMap::new(),
             columns: HashMap::new(),
             dirty: HashSet::new(),
+            temperatures: HashMap::new(),
         }
+    }
+
+    /// Stored temperature (°C) at a block, if it is tracked as out of
+    /// equilibrium (else the cell is at its pure base temperature).
+    pub fn temperature(&self, pos: BlockPos) -> Option<f32> {
+        self.temperatures.get(&pos).copied()
+    }
+
+    /// Tracks (or updates) a block's stored temperature; marks its column dirty
+    /// so the value is saved.
+    pub fn set_temperature(&mut self, pos: BlockPos, temp: f32) {
+        self.temperatures.insert(pos, temp);
+        self.dirty.insert(block_to_chunk(pos));
+    }
+
+    /// Drops a block's stored temperature (it equilibrated, or the block was
+    /// replaced); marks its column dirty if anything was removed.
+    pub fn remove_temperature(&mut self, pos: BlockPos) {
+        if self.temperatures.remove(&pos).is_some() {
+            self.dirty.insert(block_to_chunk(pos));
+        }
+    }
+
+    /// All tracked `(position, °C)` pairs — the server's relaxation tick set.
+    pub fn temperatures(&self) -> impl Iterator<Item = (BlockPos, f32)> + '_ {
+        self.temperatures.iter().map(|(&p, &t)| (p, t))
     }
 
     pub fn is_dirty(&self, chunk: ChunkPos) -> bool {
@@ -253,6 +285,9 @@ impl World {
             return false;
         }
         let chunk = block_to_chunk(pos);
+        // Any edit supersedes a stored temperature at this cell (the block
+        // changed); the server re-tracks it if the new block is off-ambient.
+        self.temperatures.remove(&pos);
         let Some(span) = self.columns.get_mut(&chunk) else {
             return false;
         };
@@ -281,6 +316,7 @@ impl World {
         for y in span.min_section_y..=span.max_section_y {
             self.sections.remove(&IVec3::new(chunk.x, y, chunk.z));
         }
+        self.temperatures.retain(|p, _| block_to_chunk(*p) != chunk);
         self.dirty.remove(&chunk);
     }
 }
