@@ -28,17 +28,21 @@ EnvDef(
         mix: {"oc:n2": 0.78, "oc:o2": 0.21, "oc:co2": 0.01},
     ),
     // Temperature-vs-height curve (°C at world Y, piecewise-linear, clamped
-    // beyond the ends). Earth-like and gentle: ~0.16 °C/block lapse above sea
-    // level, ~0.18 °C/block geothermal below it, so the survivable band (50 °C)
-    // is reached ~200 blocks down and the rock above is safe to mine. The
-    // glowing, lethal heat deeper comes from real lava (~1200 °C) in the deep
-    // layers, not from faking a steep gradient here.
+    // beyond the ends). Earth-like and gentle above: ~0.16 °C/block lapse, the
+    // survivable band (50 °C hazard onset) ~256 blocks down, rock above safe to
+    // mine. Below the hellish top (-352) the geothermal gradient steepens into
+    // the molten layer: rock past the Draper point glows, ramping smoothly from
+    // dull-red (525 °C) to near-molten orange (1000 °C) where it meets the lava
+    // lake (-656). So the deep reads as one continuous incandescent gradient
+    // brightening toward the lava — no banding, drawn by the per-vertex emissive
+    // term in the geometry pass. Real lava is hotter still (~1200 °C).
     thermal: (profile: [
-        (y:  320.0, temp: -27.2),  // high peaks (≈0.16 °C/block lapse, held above)
-        (y:    0.0, temp:  24.0),  // sea level
-        (y: -256.0, temp:  50.0),  // hazard onset
-        (y: -352.0, temp: 525.0),  // hellish caves top = Draper point: glow begins at 0
-        (y: -640.0, temp: 666.0),  // deep hellish / lava: full glow (held below)
+        (y:  320.0, temp:  -27.2),  // high peaks (≈0.16 °C/block lapse, held above)
+        (y:    0.0, temp:   24.0),  // sea level
+        (y: -256.0, temp:   50.0),  // hazard onset
+        (y: -352.0, temp:  525.0),  // hellish caves top = Draper point: glow begins at 0
+        (y: -560.0, temp:  780.0),  // mid hellish: steady orange glow
+        (y: -656.0, temp: 1000.0),  // lava-lake boundary: near-molten rock (held below)
     ]),
     // Deep vertical layers (caverns carved & filled; un-carved rock stays
     // stone). Bands run from `top` down to the next band's top, the last to the
