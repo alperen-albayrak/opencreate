@@ -51,20 +51,26 @@ pub struct MoveResult {
     pub hit: [bool; 3],
 }
 
-/// True if any voxel the box overlaps is water (for swimming physics).
-pub fn aabb_in_water(world: &World, aabb: &Aabb) -> bool {
+/// The fluid any voxel the box overlaps embodies (water, lava, …), for
+/// buoyancy/swim physics — via the block→fluid link, not a water hardcode.
+pub fn aabb_fluid(world: &World, aabb: &Aabb) -> Option<&'static crate::fluid_registry::FluidDef> {
     let lo = (aabb.min + SKIN).floor().as_ivec3();
     let hi = (aabb.max - SKIN).floor().as_ivec3();
     for y in lo.y..=hi.y {
         for z in lo.z..=hi.z {
             for x in lo.x..=hi.x {
-                if world.block(BlockPos::new(x, y, z)) == crate::blocks::WATER {
-                    return true;
+                if let Some(f) = crate::fluid_registry::for_block(world.block(BlockPos::new(x, y, z))) {
+                    return Some(f);
                 }
             }
         }
     }
-    false
+    None
+}
+
+/// True if the box overlaps any fluid (swimming physics).
+pub fn aabb_in_water(world: &World, aabb: &Aabb) -> bool {
+    aabb_fluid(world, aabb).is_some()
 }
 
 /// Moves `aabb` by `delta` through `world`, clamping against solid voxels.

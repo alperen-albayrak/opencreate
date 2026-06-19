@@ -5,7 +5,7 @@
 
 use glam::DVec3;
 use oc_world::World;
-use oc_world::physics::{Aabb, aabb_in_water, move_aabb};
+use oc_world::physics::{Aabb, move_aabb};
 
 const HALF_WIDTH: f64 = 0.3;
 const HEIGHT: f64 = 1.8;
@@ -87,39 +87,31 @@ impl Player {
             let speed = if input.fast { FLY_SPEED * FLY_FAST_MULTIPLIER } else { FLY_SPEED };
             self.velocity = wish.normalize_or_zero() * speed;
         } else {
-            // Gravity/jump from the active dimension (EnvDef); water buoyancy
-            // and swim from the fluid (FluidDef) — data, not constants.
+            // Gravity/jump from the active dimension (EnvDef); buoyancy and
+            // swim from whatever fluid the body is in (FluidDef) — data, not
+            // constants. Lava is dense and viscous, so you barely sink and
+            // climb out slowly (and burn, via the heat hazard).
             let env = oc_world::env_registry::active();
             let gravity = env.gravity as f64;
             let terminal_fall = env.terminal_fall_speed as f64;
             let jump_speed = env.jump_speed as f64;
-            let (water_gravity, sink_speed, swim_up, swim_factor) =
-                oc_world::fluid_registry::find_fluid("oc:water")
-                    .and_then(oc_world::fluid_registry::def)
-                    .map(|w| {
-                        (
-                            w.submerged_gravity as f64,
-                            w.sink_speed as f64,
-                            w.swim_up_speed as f64,
-                            w.swim_speed_factor as f64,
-                        )
-                    })
-                    .unwrap_or((10.0, 3.5, 4.5, 0.55));
 
-            let in_water = aabb_in_water(world, &self.aabb());
+            let fluid = oc_world::physics::aabb_fluid(world, &self.aabb());
             let mut speed = if input.fast { WALK_SPEED * SPRINT_MULTIPLIER } else { WALK_SPEED };
-            if in_water {
-                speed *= swim_factor;
+            if let Some(f) = fluid {
+                speed *= f.swim_speed_factor as f64;
             }
             let horizontal = wish.normalize_or_zero() * speed;
             self.velocity.x = horizontal.x;
             self.velocity.z = horizontal.z;
-            if in_water {
-                // Buoyant drag: sink slowly, swim up with Space. Jumping out
-                // at the surface works because ground contact still wins.
-                self.velocity.y = (self.velocity.y - water_gravity * dt).max(-sink_speed);
+            if let Some(f) = fluid {
+                // Buoyant drag: sink at the fluid's rate, swim up with Space.
+                // Jumping out at the surface works because ground contact wins.
+                self.velocity.y =
+                    (self.velocity.y - f.submerged_gravity as f64 * dt).max(-(f.sink_speed as f64));
                 if input.up {
-                    self.velocity.y = if self.on_ground { jump_speed * 0.7 } else { swim_up };
+                    self.velocity.y =
+                        if self.on_ground { jump_speed * 0.7 } else { f.swim_up_speed as f64 };
                 }
             } else {
                 self.velocity.y = (self.velocity.y - gravity * dt).max(-terminal_fall);
