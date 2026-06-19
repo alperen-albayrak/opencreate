@@ -276,9 +276,12 @@ pub fn mesh_section(
                     };
                     mask[v as usize][u as usize] = Some(FaceKey {
                         layer: face_texture(block, face),
-                        // Faces are lit (and heated) by the voxel they face into.
+                        // A face is *lit* by the voxel it faces into (light
+                        // arrives from outside), but *glows* by its own block's
+                        // temperature — incandescence comes from within, so a hot
+                        // stone shell glows on its outward faces too.
                         light: light(pos + *normal),
-                        heat: heat(pos + *normal),
+                        heat: heat(pos),
                         opaque: block.is_opaque(),
                         underwater,
                         // Top faces are always the open surface (no

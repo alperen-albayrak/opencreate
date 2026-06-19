@@ -58,6 +58,21 @@ impl LightField {
             && rel.y < self.height;
         inside.then(|| ((rel.y * WIDTH + rel.z) * WIDTH + rel.x) as usize)
     }
+
+    /// The region's minimum corner, height, and cached block snapshot. The
+    /// snapshot is laid out `((y*WIDTH + z)*WIDTH + x)` over a `WIDTH`-wide
+    /// (3-column) region — the same layout the heat field uses — so a parallel
+    /// [`crate::heat`] field can reuse this scan instead of re-sampling the
+    /// whole column (the expensive part of a deep-world mesh job).
+    pub fn base(&self) -> BlockPos {
+        self.base
+    }
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+    pub fn blocks(&self) -> &[BlockId] {
+        &self.blocks
+    }
 }
 
 /// Computes light for the 3×3 columns centered on `center`. `sample` is

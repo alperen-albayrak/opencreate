@@ -114,6 +114,18 @@ pub fn compute_heat(
         }
     }
 
+    compute_heat_in(&blocks, base, height, env)
+}
+
+/// Computes the source-heat delta over a **pre-sampled** block snapshot (laid
+/// out `((y*WIDTH + z)*WIDTH + x)`, `WIDTH` wide — the same layout a
+/// [`crate::light::LightField`] holds). Lets a caller reuse the snapshot the
+/// light field already built for the same region instead of re-sampling the
+/// whole column, which is what made a deep-world mesh job's heat pass cost
+/// 100+ ms. Seeding + flood only — the expensive scan is shared.
+pub fn compute_heat_in(blocks: &[BlockId], base: BlockPos, height: i32, env: &EnvDef) -> HeatField {
+    let volume = (WIDTH * WIDTH * height) as usize;
+    debug_assert_eq!(blocks.len(), volume, "heat snapshot must be WIDTH×WIDTH×height");
     let mut field = HeatField { base, height, delta: vec![0.0; volume] };
 
     // Seed: each source cell starts at its temperature above the local base.

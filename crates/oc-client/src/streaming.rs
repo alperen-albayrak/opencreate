@@ -17,7 +17,7 @@ use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_protocol::ClientMessage;
 use oc_renderer::{Renderer, SectionMeshes, mesh_section, quantize_heat};
-use oc_world::heat::{HeatField, compute_heat};
+use oc_world::heat::compute_heat_in;
 use oc_world::light::{LightField, compute_light};
 use oc_world::terrain::BOTTOM_SECTION_Y;
 use oc_world::world::GeneratedColumn;
@@ -226,7 +226,14 @@ impl ChunkStreamer {
         // matching tier-2 source-heat field (so placing/removing lava updates
         // the surrounding glow, attenuated by conductivity).
         let field = self.light_for(center, block.y);
-        let heat = self.heat_for(center, block.y);
+        // Reuse the light field's block snapshot for the heat flood (same
+        // region) — no second column scan.
+        let heat = compute_heat_in(
+            field.blocks(),
+            field.base(),
+            field.height(),
+            oc_world::env_registry::active(),
+        );
         // A block edit changes geometry/light only within the propagation
         // radius (~15 blocks < a section), so the affected set is exactly the
         // 3×3×3 section neighbourhood around the edit's section. Re-mesh those
@@ -310,21 +317,6 @@ impl ChunkStreamer {
         }
     }
 
-    /// Tier-2 source-heat for the region around an edit. Heat spreads only
-    /// ~12 blocks from a source, so a tight window (the edit's section ±2)
-    /// covers the affected glow; sections outside it read delta 0.
-    fn heat_for(&self, column: ChunkPos, edit_y: i32) -> HeatField {
-        let edit_section = edit_y.div_euclid(SECTION_SIZE);
-        let min_y = ((edit_section - 2) * SECTION_SIZE).max(BOTTOM_SECTION_Y * SECTION_SIZE);
-        let max_y = (edit_section + 3) * SECTION_SIZE;
-        compute_heat(
-            |pos| self.world.block(pos),
-            oc_world::env_registry::active(),
-            column,
-            min_y,
-            max_y.max(min_y + SECTION_SIZE),
-        )
-    }
 }
 
 /// Everything a worker needs to mesh one column: `Arc` snapshots of the
@@ -368,15 +360,15 @@ impl MeshJob {
             self.max_y,
             true, // full column up to the open sky
         );
-        // Tier-2 source heat over the same column, so natural lava glows the
-        // surrounding rock as soon as a column streams in (deterministic from
-        // the blocks — no server sync). Cheap where there are no sources.
-        let heat = compute_heat(
-            block_at,
+        // Tier-2 source heat over the same column, reusing the light field's
+        // block snapshot (no second full-column scan), so natural lava glows
+        // the surrounding rock as soon as a column streams in. Deterministic
+        // from the blocks — no server sync.
+        let heat = compute_heat_in(
+            light.blocks(),
+            light.base(),
+            light.height(),
             oc_world::env_registry::active(),
-            self.chunk,
-            BOTTOM_SECTION_Y * SECTION_SIZE,
-            self.max_y,
         );
         let meshes = self
             .targets
