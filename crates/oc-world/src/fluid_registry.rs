@@ -88,6 +88,11 @@ pub struct FluidDef {
     pub oxygen_content: u8,
 
     // --- thermal (shared trait) ---
+    /// Intrinsic operating temperature (°C), if the fluid holds one (lava
+    /// ~1200). Drives the heat hazard when the player is in it; `None` means it
+    /// sits at the ambient temperature (water).
+    #[serde(default)]
+    pub temperature: Option<f32>,
     #[serde(default)]
     pub heat_capacity: f32,
     #[serde(default)]

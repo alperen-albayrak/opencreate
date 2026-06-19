@@ -54,6 +54,8 @@
         swim_speed_factor: 0.2,
         breathability: 0,
         oxygen_content: 0,
+        // ~1200 °C molten basalt: lethal to stand in (heat hazard).
+        temperature: Some(1200.0),
         heat_capacity: 1.45,
         conductivity: 1.7,
         melting_point: Some(1273.0),

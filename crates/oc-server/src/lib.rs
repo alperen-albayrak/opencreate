@@ -803,16 +803,26 @@ impl Server {
             return Ok(());
         }
         let eye = self.player_position + DVec3::new(0.0, EYE_HEIGHT, 0.0);
-        let submerged =
-            self.world.block(eye.floor().as_ivec3()) == oc_world::blocks::WATER;
-        let feet_in_water = self.world.block(self.player_position.floor().as_ivec3())
-            == oc_world::blocks::WATER;
+        // Per-fluid (not water-specific): the eye/feet fluid via the block→fluid
+        // link. A non-breathable fluid (water, lava) submerges; any fluid
+        // cushions a fall.
+        let eye_block = self.world.block(eye.floor().as_ivec3());
+        let eye_fluid = oc_world::fluid_registry::for_block(eye_block);
+        let submerged = eye_fluid.is_some_and(|f| f.breathability == 0);
+        let feet_in_water = oc_world::fluid_registry::for_block(
+            self.world.block(self.player_position.floor().as_ivec3()),
+        )
+        .is_some();
         // Effective temperature at the eye drives the heat hazard (deep
-        // geothermal heat is dangerous; a frozen world chills).
-        let ambient_temp = oc_world::temperature::effective(
+        // geothermal heat is dangerous; a frozen world chills). A fluid with an
+        // intrinsic temperature (lava ~1200 °C) burns when you're in it.
+        let mut ambient_temp = oc_world::temperature::effective(
             eye.floor().as_ivec3(),
             oc_world::env_registry::active(),
         );
+        if let Some(t) = eye_fluid.and_then(|f| f.temperature) {
+            ambient_temp = ambient_temp.max(t);
+        }
         let inputs = StatInputs { submerged, sprinting: self.sprinting, ambient_temp };
         let fall_damage = self
             .fall
