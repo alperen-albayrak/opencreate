@@ -32,57 +32,67 @@ a second **moon** dimension proving per-world selection at runtime.
 **Done & committed:**
 - **G1** — tier-1 static base temperature `T_base(pos)` from `EnvDef.thermal`
   (`oc-world/src/temperature.rs`); deep = hot toward the core, altitude cools,
-  airless body = uniformly cold.
-- **G2** — blackbody glow (deferred lighting pass, past the Draper point) +
-  geothermal **cast light** (hot cells seed the block-light flood-fill) +
-  per-world **`ambient_floor`** (nothing renders pure black; overworld 0.045,
-  moon 0.02).
-- **G6** — player **heat hazard** in `stats.rs` (damage outside a survivable
-  band; creative exempt). The band is **nature's** (≈50 °C hot / −60 °C cold) —
-  physical thresholds are not gameplay-tuned.
-- **Gradient** retuned to a near-realistic **0.18 °C/block** (50 °C survivable
-  band reached ~200 blocks down), replacing a fake 480×-steep placeholder.
+  airless body = uniformly cold. The overworld curve is a long gentle descent to
+  the 50 °C onset at −512, then a steep ramp into the molten layer (see
+  [deep-world](world-building/deep-world.md)).
+- **G2** — blackbody glow past the Draper point (525 °C), **baked per-vertex** at
+  mesh time (`chunk_gbuffer.wgsl`) — deep rock glows dull-red → orange before any
+  lava — plus per-world **`ambient_floor`** (nothing renders pure black). (The
+  earlier geothermal *cast light* was removed: its 4-bit quantization banded the
+  glow; the smooth per-vertex emissive replaced it.)
+- **G3.1** — tier-2 **source heat**: a bounded, conductivity-attenuated flood-fill
+  from lava (`oc-world/src/heat.rs`, modelled on the light BFS), baked into the
+  vertex glow so rock near lava glows hotter and insulators shield. A pure
+  function of the blocks (deterministic, no sync); the client reuses the light
+  field's block snapshot to avoid a second column scan.
+- **G6** — player **heat hazard** in `stats.rs` (`thermal_damage_rate`) — two
+  physical paths summed (**convection** through the medium + **conduction** through
+  the blocks you touch), scaled by nature's conductivity ratios. The band is
+  **nature's** (≈50 °C hot / −60 °C cold); creative exempt. Verified in-game: a
+  deep survival spawn dies from heat in ~0.6 s, the surface is safe. (Also fixed:
+  a teleport/respawn no longer counts as a fall.)
 
-**Consequence:** with the realistic gradient, the current **shallow (−64)**
-world's deep is only ~26 °C — so the glow and heat hazard are **correctly
-dormant** here. They come alive from **real lava** in the deep world.
+**Now live (the deep world is built):** with the deep overworld — lava lake at
+−656, bedrock floor at −752 — the glow, source heat, and hazard are **active**:
+the descent ramps cool caves → glowing molten layer → lava, and the deep is
+lethal. A shallow or airless world keeps them correctly dormant.
 
-**Pending (blocked on content):**
-- **G3** — tier-2 *source* heat (bounded flood-fill from lava/fire). No heat
-  sources exist yet (only water as a fluid).
-- **G4** — tier-3 *stored* per-block temperature + its sparse per-section save
-  layer + Newton cooling.
-- **G5** — *phase transitions* (lava↔obsidian/basalt, ice↔water↔steam). The
-  `phase_transition` refs are reserved but `oc:lava`/`oc:ice`/`oc:obsidian`/
-  `oc:basalt` don't exist as content.
+**Pending:**
+- **G3.2** — tier-3 *stored* per-block temperature (a placed block heats up and
+  glows over seconds), its sparse per-section save layer, server-authoritative
+  sync to clients, and Newton cooling (frozen offline, no catch-up).
+- **G5** — *phase transitions* (lava↔obsidian/basalt, ice↔water↔steam) + the
+  latent-heat plateau + water cooling. Needs `oc:obsidian`/`oc:basalt`/`oc:ice`
+  content (lava/water already exist as placeable items).
 
-## The key coupling: finishing G ≈ building the deep world
+## The key coupling: the deep world is built
 
-G3 and G5 can't be built without heat-source + transition **content** (lava,
-ice, obsidian). That content is exactly the **deep-world build** described in
-[world-building/deep-world.md](world-building/deep-world.md): a deeper world
-with a lava sea and a bedrock floor, where heat and glow come from real lava.
-And **Stage H's volcanoes are lava heat sources too** — so H also wants that
-content. So the remaining work converges on one path.
+The deep-world build ([world-building/deep-world.md](world-building/deep-world.md))
+landed the lava sea + bedrock floor the heat features need, so **G3.1** (source
+heat) and **G6** (hazard) are now live. **G5** still needs its transition
+**content** (`oc:obsidian`/`oc:basalt`/`oc:ice`); and **Stage H's volcanoes** are
+lava heat sources too, so H wants the same content path — the remaining work
+still converges there.
 
 ## Remaining work, in dependency order
 
-1. **Deep-world content + worldgen** ([deep-world.md](world-building/deep-world.md)):
-   `oc:bedrock` (unbreakable) + `oc:lava` (hot ~1200 °C glowing fluid, a tier-2
-   heat source) as data → deepen the world (`BOTTOM_SECTION_Y`, −64 → ~−360) →
-   deep geology zones (rock → hot rock → lava+stone → lava sea → bedrock). This
-   **delivers G3 + G5** and activates the dormant glow/hazard from lava.
-2. **G4** — stored per-block temperature + save layer + Newton cooling.
+1. **G3.2** — tier-3 *stored* per-block temperature: server-authoritative state,
+   a sparse per-section save layer (lossless format bump), sync to clients, and
+   Newton cooling (frozen offline). Delivers "a placed block heats up and glows."
+2. **G5** — *phase transitions* + content: `oc:obsidian`/`oc:basalt`/`oc:ice`,
+   lava+water→obsidian/basalt, ice↔water↔steam, the latent-heat plateau, and
+   water as a finite coolant (the temporary survivable pocket).
 3. **Stage H** — coarse 16³ climate grid + volcanoes (lava sources) +
    global `world_age`.
 
-**Reserved (later):** a hellish layer above the lava sea; a colour-coded
-temperature-status HUD (cold/normal/warm/hot/extreme; later a real-temp readout
-of the player or looked-at object via gear).
+**Reserved (later):** a hellish layer above the lava sea (distinct content); a
+colour-coded temperature-status HUD (cold/normal/warm/hot/extreme; later a
+real-temp readout of the player or looked-at object via gear); insulation gear.
 
 ## Risk note
 
-The riskiest remaining change is **deepening the world's vertical range** — it
-touches worldgen, column save size, light range, and performance, the way the
-deferred-renderer rewrite (Stage E) touched the whole opaque path. It wants
-focused, careful work, not a tail-end rush.
+The deep-world deepening (the keystone risk — worldgen, column save size, light
+range, performance) is **done and measured fine**. The riskiest remaining change
+is now **G3.2's stored-heat persistence + sync**: a save-format bump (must stay
+lossless) and a new server→client channel for live per-block temperature. It
+wants focused, careful work, not a tail-end rush.

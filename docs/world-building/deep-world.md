@@ -1,7 +1,8 @@
 # The Deep World — Vertical Layers, Lava & the Hellish Deep
 
-**Built (terrain, thermal curve, glow); heat hazard + tier-2 source heat
-pending (G3/G6).** How the overworld is structured *downward*: a tall column of
+**Built (terrain, thermal curve, glow, tier-2 source heat, heat hazard);
+per-block stored heat + phase transitions pending (G3.2/G5).** How the overworld
+is structured *downward*: a tall column of
 rock that grows hot and hazardous with depth, opens into lava, and ends at an
 impassable floor. It applies the "use nature's values" principle to depth — a
 gentle, realistic gradient through the safe zone, **steepening into the molten
@@ -46,8 +47,8 @@ actually happens near a magma chamber.
   so it **glows dull-red → orange** by the blackbody model, brightening into the
   lava. Still tier-1 base — a per-vertex emissive, smooth and continuous.
 - **Lava (~1200 °C)**: basaltic lava's real temperature — the hottest thing
-  down there, lethal, glowing, and (once built) a **tier-2 source** radiating
-  heat into the surrounding rock and cavern air.
+  down there, lethal, glowing, and a **tier-2 source** radiating heat into the
+  surrounding rock and cavern air (a falling delta, insulators shielding).
 
 So the dramatic glow and the lethal deep are *physically honest* — a realistic
 crust gradient that steepens into a real molten layer, capped by real lava.
@@ -90,12 +91,15 @@ The build, in dependency order (see also the Phase-0 plan):
    caverns from −352 → glowing molten layer → lava lake at −656 → bedrock floor),
    layered on the existing strata model ([geology.md](geology.md)) via
    `EnvDef.layers`.
-4. **Activate the heat** — *partly done / current work.* The thermal curve + the
-   per-vertex blackbody **glow are live**; remaining: the **tier-2 source delta**
-   (lava radiating heat through rock, insulators shielding — G3) and the **player
-   heat hazard** (G6, [survival](../gameplay/survival.md)). This also unblocks
-   **phase transitions** (lava + water → obsidian/basalt; ice ↔ water ↔ steam),
-   which need `oc:obsidian`/`oc:basalt`/`oc:ice` content too.
+4. **Activate the heat** — *mostly done.* Live: the thermal curve, the per-vertex
+   blackbody **glow**, the **tier-2 source delta** (lava radiating heat through
+   rock via a bounded conductivity-attenuated flood-fill, insulators shielding —
+   G3.1), and the **player heat hazard** (two physical paths — convection through
+   the medium + conduction through the blocks you touch — G6,
+   [survival](../gameplay/survival.md)). Remaining: **per-block stored heat** (a
+   placed block heating up and glowing over time — G3.2) and **phase transitions**
+   (lava + water → obsidian/basalt; ice ↔ water ↔ steam — G5), which need
+   `oc:obsidian`/`oc:basalt`/`oc:ice` content too.
 
 Cross-refs: [temperature.md](temperature.md) (the three-tier heat model),
 [matter-model.md](matter-model.md) (cross-registry phase transitions),

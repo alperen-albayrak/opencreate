@@ -1,9 +1,11 @@
 # Temperature & the Deep Core
 
-**Design, not yet built.** A temperature field over the world that makes deep
-digging hot and hazardous, lets blocks glow by incandescence, and drives phase
-changes — without a full per-voxel simulation. The trick is that almost all of
-it is a **pure function**, with sparse dynamic state only where something is
+**Partly built.** Tiers 1–2 (static base + source heat), the blackbody glow, and
+the player heat hazard are **live**; per-block stored heat (tier 3) and phase
+transitions are the remaining work. A temperature field over the world that makes
+deep digging hot and hazardous, lets blocks glow by incandescence, and drives
+phase changes — without a full per-voxel simulation. The trick is that almost all
+of it is a **pure function**, with sparse dynamic state only where something is
 actually being heated.
 
 ## The three-tier effective temperature
@@ -19,11 +21,16 @@ Effective temperature decomposes into three tiers, most of it free:
    and worldgen climate noise. Queryable anywhere instantly; recomputed like
    terrain. Gives deep-core heat, the geothermal glow gradient, baseline player
    heat, and fluid/gas equilibrium temperature.
-2. **Dynamic source delta — sparse, bounded, source-driven:** fire/lava/heated
-   elements add a *local* delta via a bounded flood-fill from active sources
-   within the §6.6 active area. **Reuses the block-light BFS** — same machinery
-   and cost class as lamp light. Most of the world has no source, so temperature
-   is just the base function.
+2. **Dynamic source delta — sparse, bounded, source-driven (built):** lava (and
+   later fire/heated elements) adds a *local* delta via a bounded flood-fill from
+   sources — `oc-world/src/heat.rs`, modelled on the block-light BFS, the same
+   cost class as lamp light. The delta falls off per block, **attenuated by each
+   neighbour's `conductivity`** (air and stone carry it ~12 blocks, insulators
+   choke it), so it bounds itself. It is a **pure function of the blocks** (no
+   stored state, no sync): client and server each recompute it from their own
+   world copy — the client reusing the light field's block snapshot to avoid a
+   second column scan. Most of the world has no source, so temperature is just
+   the base function.
 3. **Per-block stored temperature — only on actively-heated blocks** (the
    reserved `temperature` block-state), cooling toward local ambient by Newton's
    law. Sparse: only cells meaningfully above ambient carry state (near-ambient
@@ -129,10 +136,15 @@ lake is a quick *finite* battery.
 
 Any matter's `emissive = blackbody(local_temperature)` past the **Draper point
 ≈ 798 K (525 °C)**, so **deep rock glows dull-red → orange before any lava
-appears** (and lava glows by the same rule). The static geothermal glow is a
-pure function of depth → **baked into `emissive` at mesh time** (free, like baked
-light); only dynamic heated blocks need a sparse emissive update. See
-[rendering](rendering.md) for the blackbody → bloom pipeline.
+appears** (and lava glows by the same rule). Built and **baked into the vertex at
+mesh time** (free, like baked light): the geometry shader (`chunk_gbuffer.wgsl`)
+reads the depth base temperature and **adds the tier-2 source delta**, carried
+quantized in the spare upper 16 bits of vertex word 2, so rock near lava glows
+hotter. The glow uses the **block's own** temperature — incandescence comes from
+within, so a hot stone shell glows on its outward faces — not the cell a face
+looks into (that rule is for *light*). Only tier-3 heated blocks (reserved) still
+need a dynamic re-bake. See [rendering](rendering.md) for the blackbody → bloom
+pipeline and [meshing](../client/engine/meshing.md) for the vertex layout.
 
 Cross-validated by TerraFirmaCraft's heat-color ladder (`Heat.java`), a
 ready-made `temperature → color` table:
@@ -189,30 +201,44 @@ temperature + the power network; both reserved now, neither implemented.
 
 ## Player heat hazard
 
-Mirrors the breathing model (see [atmosphere](atmosphere.md)): a survival stat that
-takes damage outside a survivable band, **insulation gear** widening tolerance
-(same `environment + gear_modifier` shape as `breathability`). Plugs into
-`stats.rs` like oxygen, and reads `effective T`, so it picks up source heat, the
-dynamic [heatmap](dynamic-environment.md) (volcano warmth), and any local cooling
-for free.
+**Built** (`oc-server/src/stats.rs`, `thermal_damage_rate`). Mirrors the breathing
+model (see [atmosphere](atmosphere.md)): a survival stat that takes damage outside
+a survivable band (**50 °C / −60 °C**, human physiology), with **insulation gear**
+(reserved) widening tolerance — the same `environment + gear_modifier` shape as
+`breathability`. It reads `effective T`, so it picks up the geothermal base, tier-2
+source heat, the dynamic [heatmap](dynamic-environment.md) (volcano warmth), and any
+local cooling for free.
 
-The player takes damage from the **effective temperature at their position even in
-open air** — but the *rate* scales with how well the surrounding medium delivers
-heat (real heat-flux physics, nature's conductivity ratios):
+Heat reaches the player by **two physical paths, summed** — real heat-flux physics,
+nature's conductivity ratios, flux ∝ (°C past the band) × conductivity:
 
 ```
-heat_dps = max(0, T_eff − T_safe) × medium_conductivity × (1 − gear_insulation)
+heat_dps = (conv + Σ contacts) × COEFF × (1 − gear_insulation)
+  conv     = band_exposure(T_medium) × medium_conductivity         // convection/radiation
+  contacts = band_exposure(T_block)  × block_conductivity × weight  // conduction
 ```
 
-| Medium | conductivity (W/m·K) | feel |
+- **Convection through the medium** the player occupies (the "effective matter at a
+  point" rule — the voxel fluid if present, else open air): air barely conducts, so
+  hot air is a slow burn; lava submersion is near-instant.
+- **Conduction through the blocks they touch** — the block underfoot (full weight)
+  plus the four at feet level (a wall, half weight): bare hot stone cooks, an
+  **insulator underfoot shields**, and air contributes nothing (k 0 — the medium
+  owns it).
+
+| Medium / block | conductivity (W/m·K) | feel |
 |---|---|---|
 | air | ~0.025 | hot air hurts *slowly* — you can dash through a hot pocket (sauna) |
 | water | ~0.6 | ~25× air — hot water is quickly dangerous |
-| rock | ~2–3 | touching hot rock is worse |
-| lava | ~1–2 | submersion is effectively instant death |
+| stone / rock | ~2.5 | standing on bare hot rock cooks you in seconds |
+| lava | ~1.7 | submersion is effectively instant death |
+| wood / leaves / snow | ~0.05–0.12 | an insulator underfoot barely conducts — it shields |
 
-The medium is the "effective matter at a point" rule (voxel fluid if present, else
-the gas/air — see [matter model](matter-model.md)). Two emergent consequences:
+`THERMAL_DAMAGE_COEFF` calibrates the scale to those ratios: lava death in ~1 s,
+bare hot deep rock in seconds, hot air alone a slow burn, an insulated floor
+survivable. Per-tick the server samples the medium + contact blocks (cheap — no
+heat flood) and applies the rate. Two emergent consequences (the coolant/warmth
+pieces land with G5 / the [heatmap](dynamic-environment.md)):
 
 - **Coolant pockets.** Water is a high-`heat_capacity`, finite **heat-sink**: poured
   into a hot cave it conducts heat out, reaches 100 °C and **boils away on the latent

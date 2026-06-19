@@ -13,6 +13,12 @@ values there are **exactly** what a global solver would produce. This
 argument breaks if light range ever exceeds 16 — see
 [conventions](../../conventions.md).
 
+The tier-2 **heat** field ([temperature](../../world-building/temperature.md)) is
+a parallel pure-function flood over the *same* 48×48×H region, so it **reuses this
+field's block snapshot** (`LightField::blocks()`) rather than re-scanning the
+column — the dominant cost of a deep mesh job — and bakes its delta into the spare
+upper 16 bits of vertex word 2, beside the light.
+
 ## Model
 
 - **Sky light**: per-column scan from the open sky; level 15 passes down

@@ -5,7 +5,7 @@ The authoritative numbers (all server-enforced; see
 
 ## Stats (0..=10, bars above the hotbar)
 
-- **Health** (red) — damaged by drowning, starvation and falls;
+- **Health** (red) — damaged by drowning, starvation, falls, and heat/cold;
   regenerates +0.5/s while hunger ≥ 7. At 0 you die: full stats, teleport
   to world spawn.
 - **Hunger** (orange) — a full belly lasts ~20 minutes; sprinting burns
@@ -26,7 +26,20 @@ value in `items.ron` is edible, so mods add foods by adding items.
 ## Falls
 
 Drops beyond 3 blocks hurt: 0.7 damage per extra block. Landing in water
-(even a splash mid-fall) or flying cancels it.
+(even a splash mid-fall) or flying cancels it. A **teleport or respawn is not a
+fall** — a single-tick jump beyond terminal velocity deals no damage.
+
+## Heat & cold
+
+Outside the survivable band (**50 °C / −60 °C**, human physiology) you take
+thermal damage, by two physical paths summed: **convection** through the medium
+you occupy (air barely conducts — hot air is a slow burn you can dash through;
+lava is near-instant) and **conduction** through the blocks you touch (bare hot
+rock cooks in seconds; an insulator underfoot — wood/leaves/snow — shields). So
+the deep is lethal once you pass the 50 °C onset (~y −512), and standing *on* hot
+rock is far worse than passing through hot air. Insulation gear (reserved) will
+widen the band. Background: [temperature](../world-building/temperature.md) and
+[deep-world](../world-building/deep-world.md).
 
 ## Water
 
