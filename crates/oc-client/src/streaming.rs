@@ -219,55 +219,47 @@ impl ChunkStreamer {
     /// fresh lighting); surrounding columns re-mesh asynchronously, since
     /// light from the edit reaches up to 15 blocks into them.
     pub fn remesh_after_edit(&mut self, renderer: &mut Renderer, block: BlockPos) -> Result<()> {
-        let section = block_to_section(block);
-        let column = block_to_chunk(block);
-        let local = block_in_section(block);
-        let mut affected = vec![section];
-        for axis in 0..3 {
-            let mut neighbor = section;
-            if local[axis] == 0 {
-                neighbor[axis] -= 1;
-            } else if local[axis] == SECTION_SIZE - 1 {
-                neighbor[axis] += 1;
-            } else {
-                continue;
+        let center = block_to_chunk(block);
+        let edit_sy = block.y.div_euclid(SECTION_SIZE);
+        // One bounded light field for the 3×3 columns around the edit.
+        let field = self.light_for(center, block.y);
+        // A block edit changes geometry/light only within the propagation
+        // radius (~15 blocks < a section), so the affected set is exactly the
+        // 3×3×3 section neighbourhood around the edit's section. Re-mesh those
+        // synchronously from the one bounded field — instead of queuing 8 whole
+        // neighbouring columns for an async full re-mesh, which in the deep
+        // world meant re-lighting + re-meshing + re-uploading ~400 sections
+        // (and a ~960-block light flood ×8) on every break.
+        for col in ring(center, 1) {
+            if !self.meshed.contains_key(&col) {
+                continue; // neighbour column not loaded/meshed
             }
-            affected.push(neighbor);
-        }
-
-        let field = self.light_for(column, block.y);
-        for pos in affected {
-            if ChunkPos::new(pos.x, pos.z) != column || !self.meshed.contains_key(&column) {
-                continue; // neighbor-column sections go through the async path
-            }
-            let base = pos * SECTION_SIZE;
-            let section = self.world.section(pos).cloned();
-            let world = &self.world;
-            let mesh = mesh_section(
-                |local: IVec3| {
-                    let inside = local.cmpge(IVec3::ZERO).all()
-                        && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
-                    if inside {
-                        section.as_ref().map_or(BlockId::AIR, |s| s.get(local))
-                    } else {
-                        world.block(base + local)
-                    }
-                },
-                |local: IVec3| field.get(base + local),
-            );
-            renderer.set_chunk(pos, &mesh)?;
-            let sections = self.meshed.get_mut(&column).expect("checked above");
-            if !sections.contains(&pos) {
-                // Placing into a previously all-air section.
-                sections.push(pos);
-            }
-        }
-
-        // Queue the 8 surrounding columns for re-mesh: their old meshes stay
-        // visible until the replacements upload, so there's no flicker.
-        for neighbor in ring(column, 1) {
-            if neighbor != column {
-                self.meshed.remove(&neighbor);
+            for sy in (edit_sy - 1)..=(edit_sy + 1) {
+                let pos = IVec3::new(col.x, sy, col.z);
+                let section = self.world.section(pos).cloned();
+                let known = self.meshed.get(&col).is_some_and(|s| s.contains(&pos));
+                if section.is_none() && !known {
+                    continue; // empty section that isn't drawn — nothing to do
+                }
+                let base = pos * SECTION_SIZE;
+                let world = &self.world;
+                let mesh = mesh_section(
+                    |local: IVec3| {
+                        let inside = local.cmpge(IVec3::ZERO).all()
+                            && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
+                        if inside {
+                            section.as_ref().map_or(BlockId::AIR, |s| s.get(local))
+                        } else {
+                            world.block(base + local)
+                        }
+                    },
+                    |local: IVec3| field.get(base + local),
+                );
+                renderer.set_chunk(pos, &mesh)?;
+                let sections = self.meshed.get_mut(&col).expect("checked above");
+                if !sections.contains(&pos) {
+                    sections.push(pos); // placed into a previously all-air section
+                }
             }
         }
         Ok(())
