@@ -18,6 +18,14 @@ const STARVATION_DAMAGE: f32 = 0.5;
 const HEALTH_REGEN: f32 = 0.5;
 /// Regeneration needs a reasonably full belly.
 const REGEN_HUNGER_THRESHOLD: f32 = 7.0;
+/// Survivable temperature band (°C) — nature's values, from human
+/// physiology, not gameplay-tuned: sustained ambient heat past ~50 °C harms
+/// (heatstroke), deep cold past ~-60 °C harms. Insulation gear (reserved)
+/// widens the band — the same `environment + gear_modifier` shape as breathing.
+const HEAT_SAFE_MAX_C: f32 = 50.0;
+const COLD_SAFE_MIN_C: f32 = -60.0;
+/// Health/second lost at extreme exposure (≥ 300 °C outside the band).
+const MAX_TEMP_DAMAGE: f32 = 1.5;
 
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Stats {
@@ -40,6 +48,9 @@ pub struct StatInputs {
     pub submerged: bool,
     /// The player is sprinting (and moving).
     pub sprinting: bool,
+    /// Effective ambient temperature at the player (°C); outside the
+    /// survivable band it damages health (the heat hazard).
+    pub ambient_temp: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +94,16 @@ pub fn tick(stats: &mut Stats, input: StatInputs, dt: f32) -> Outcome {
         stats.health = (stats.health + HEALTH_REGEN * dt).min(MAX_STAT);
     }
 
+    // Heat hazard: damage outside the survivable band, scaled by how far
+    // outside (deep geothermal heat or a frozen world). The deep core is
+    // dangerous without insulation — the gear modifier is reserved.
+    let exposure =
+        (input.ambient_temp - HEAT_SAFE_MAX_C).max(COLD_SAFE_MIN_C - input.ambient_temp);
+    if exposure > 0.0 {
+        let severity = (exposure / 300.0).min(1.0);
+        stats.health -= MAX_TEMP_DAMAGE * severity * dt;
+    }
+
     if stats.health <= 0.0 { Outcome::Died } else { Outcome::Alive }
 }
 
@@ -108,7 +129,7 @@ mod tests {
     #[test]
     fn drowning_takes_oxygen_then_health() {
         let mut s = Stats::full();
-        let underwater = StatInputs { submerged: true, sprinting: false };
+        let underwater = StatInputs { submerged: true, sprinting: false, ..Default::default() };
         run(&mut s, underwater, 5.0);
         assert!(s.oxygen < MAX_STAT && s.oxygen > 0.0, "losing air: {}", s.oxygen);
         assert_eq!(s.health, MAX_STAT, "no damage while air remains");
@@ -127,7 +148,7 @@ mod tests {
     #[test]
     fn surfacing_refills_oxygen_quickly() {
         let mut s = Stats::full();
-        run(&mut s, StatInputs { submerged: true, sprinting: false }, 8.0);
+        run(&mut s, StatInputs { submerged: true, sprinting: false, ..Default::default() }, 8.0);
         assert!(s.oxygen < 3.0);
         run(&mut s, StatInputs::default(), 3.0);
         assert_eq!(s.oxygen, MAX_STAT);
@@ -136,7 +157,7 @@ mod tests {
     #[test]
     fn sprint_drains_and_rest_restores_stamina() {
         let mut s = Stats::full();
-        run(&mut s, StatInputs { submerged: false, sprinting: true }, 4.0);
+        run(&mut s, StatInputs { submerged: false, sprinting: true, ..Default::default() }, 4.0);
         assert!(s.stamina < MAX_STAT - 4.0, "drained: {}", s.stamina);
         let drained = s.stamina;
         run(&mut s, StatInputs::default(), 10.0);
@@ -165,5 +186,18 @@ mod tests {
         assert!(s.health > 6.0, "regenerating: {}", s.health);
         run(&mut s, StatInputs::default(), 10.0);
         assert_eq!(s.health, MAX_STAT, "capped at max");
+    }
+
+    #[test]
+    fn extreme_heat_damages_but_comfort_is_safe() {
+        // Deep geothermal heat, well past the survivable band: lethal in
+        // seconds without insulation.
+        let mut hot = Stats::full();
+        let outcome = run(&mut hot, StatInputs { ambient_temp: 780.0, ..Default::default() }, 30.0);
+        assert_eq!(outcome, Outcome::Died, "the deep core is lethal unprotected");
+        // A comfortable temperature never harms (and the belly keeps it full).
+        let mut mild = Stats::full();
+        run(&mut mild, StatInputs { ambient_temp: 20.0, ..Default::default() }, 30.0);
+        assert_eq!(mild.health, MAX_STAT, "comfortable temps are safe");
     }
 }

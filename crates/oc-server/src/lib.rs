@@ -797,7 +797,13 @@ impl Server {
             self.world.block(eye.floor().as_ivec3()) == oc_world::blocks::WATER;
         let feet_in_water = self.world.block(self.player_position.floor().as_ivec3())
             == oc_world::blocks::WATER;
-        let inputs = StatInputs { submerged, sprinting: self.sprinting };
+        // Effective temperature at the eye drives the heat hazard (deep
+        // geothermal heat is dangerous; a frozen world chills).
+        let ambient_temp = oc_world::temperature::effective(
+            eye.floor().as_ivec3(),
+            oc_world::env_registry::active(),
+        );
+        let inputs = StatInputs { submerged, sprinting: self.sprinting, ambient_temp };
         let fall_damage = self
             .fall
             .tick(self.player_position.y, self.flying || feet_in_water);
