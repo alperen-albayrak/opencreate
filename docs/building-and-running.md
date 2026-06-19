@@ -50,6 +50,7 @@ are both readable and tunable. Worlds open through a loading screen
 | F | Toggle fly/walk (creative & spectator only) |
 | F5 | Cycle camera view (first / third-person back, front) |
 | Left / right click | Break / place the targeted block |
+| Middle click | Pick block — copy the looked-at block into the selected hotbar slot |
 | 1–9 / mouse wheel | Select hotbar slot |
 | E or C | Open/close the inventory screen (carried stacks, click-to-craft list, rebindable hotbar) |
 | G | Eat an apple (survival; apples drop from leaves) |

@@ -20,6 +20,14 @@ Client prediction keeps the world snappy: gathering, placing and eating
 apply locally at click time; inventory-screen moves are not predicted — they
 reconcile from the next resync.
 
+**Icons & tooltips.** Each filled slot draws the item as a small **isometric
+cube** (the block's three lit faces — `item_icon.rs`, rendered as filled UI
+polygons) with its stack count; hovering shows the item's **name in a tooltip**,
+looked up from `data/lang/en.ron` (i18n-ready — a locale or mod ships another
+`lang/*.ron`). Out in the world, **middle-click is pick-block**: it copies the
+looked-at block into the selected hotbar slot (see
+[controls](../building-and-running.md)).
+
 ## Crafting
 
 Recipes are data (`data/recipes.ron`), two shapes:
@@ -46,8 +54,8 @@ Starter chain: 1 log → 4 planks; 2 planks (column) → 4 sticks;
 
 Creative (the `creative_palette` flag) swaps the survival screen for a tabbed
 **item palette**: category tabs (left) and a Search tab (top-right) list every
-item as an infinite source — left-click for a stack, right-click for one — and
-you drop it into your hotbar or inventory. The bottom-right **Inventory tab**
+item as an infinite source — **left-click grabs one, right-click a full stack** —
+and you drop it into your hotbar or inventory. The bottom-right **Inventory tab**
 opens the survival layout (paper-doll, 3×3 crafting grid, main grid, hotbar)
 plus a **trash** slot that deletes whatever the cursor holds. Placing never
 decreases a stack (creative is `uses_inventory: false`), so blocks are

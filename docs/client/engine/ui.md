@@ -10,6 +10,10 @@ everything 2D from per-frame host-visible vertex buffers:
 - **Solid quads** (`UiQuad`): sampled from the solid glyph cell, one draw
   per quad with its color in push constants. Hotbar slots, swatches,
   selection ring, stat bars, crosshair, craft panel — all quads.
+- **Filled polygons** (`UiPoly`): flat-shaded triangulated polygons, one draw
+  per poly with its color in push constants — the **isometric item-icon cubes**
+  (a block's three lit faces, built in `item_icon.rs`). Drawn over the quads and
+  under the text.
 
 Layout is **pure client code with unit tests** (`hotbar.rs`,
 `craft_menu.rs`, `inventory_screen.rs`): centering, on-screen bounds, count
@@ -19,9 +23,11 @@ draws what it's given.
 
 Current HUD stack (toggle F3): perf line (smoothed fps/frame ms), chunk
 counters, position, time of day + mode + held block, key hints; stat bars
-above the hotbar (oxygen only when submerged); 9-slot hotbar with count
-labels and dimmed empty slots; center crosshair; the E/C inventory screen
-(per-slot grid, 3×3 crafting grid, configurable hotbar, paper-doll).
+above the hotbar (oxygen only when submerged); 9-slot hotbar with isometric
+item-icon cubes, stack counts and dimmed empty slots (**hidden while the
+inventory screen is open**); center crosshair; the E/C inventory screen
+(per-slot grid with icons + hover **name tooltips**, 3×3 crafting grid,
+configurable hotbar, paper-doll).
 
 Real fonts/imagery arrive with the §7.5 asset pipeline; this stack exists
 so gameplay UI never blocks on it.

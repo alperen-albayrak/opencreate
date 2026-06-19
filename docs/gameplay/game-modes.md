@@ -15,7 +15,8 @@ order, so modded modes join automatically.
 Adventure carries the **survival inventory** (openable, craftable) but can't
 break or place, so it fills only from future content (chests, drops).
 Spectator opens the **creative palette** to browse, but places nothing — it
-can't edit blocks.
+can't edit blocks; being always-flying, it **spawns airborne** rather than
+dropping through the world (the noclip void-spawn fix).
 
 ## The flags (engine vocabulary)
 
