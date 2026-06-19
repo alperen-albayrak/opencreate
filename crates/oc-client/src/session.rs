@@ -66,6 +66,8 @@ pub struct Session {
     /// Click edges captured by the event loop, consumed by the next frame.
     pub break_clicked: bool,
     pub place_clicked: bool,
+    /// Middle-click "pick block" edge (creative/spectator).
+    pub pick_clicked: bool,
     /// Time of day in [0, 1); locally advanced, corrected by server Time.
     pub day_fraction: f64,
     /// Connection to the (embedded) server; None after shutdown.
@@ -153,6 +155,7 @@ impl Session {
             hotbar: Hotbar::new(),
             break_clicked: false,
             place_clicked: false,
+            pick_clicked: false,
             day_fraction,
             transport: Some(transport),
             server: Some(server),
@@ -444,6 +447,22 @@ impl Session {
     /// Applies an edit locally (prediction) and tells the server. The
     /// server's BlockChanged echo is a no-op when it matches.
     fn apply_block_edits(&mut self, renderer: &mut Renderer, registry: &Registry) -> Result<()> {
+        // Pick block (middle click): copy the looked-at block into the selected
+        // hotbar slot. Allowed wherever the creative palette is (creative +
+        // spectator), independent of block editing — so it runs before the
+        // can-edit gate. The server is authoritative and resyncs the inventory.
+        if std::mem::take(&mut self.pick_clicked)
+            && self.caps(registry).creative_palette
+            && let Some(hit) = self.target()
+        {
+            let block = self.streamer.world().block(hit.block);
+            if !block.is_air() {
+                self.outbox.push(ClientMessage::PickBlock {
+                    pos: hit.block,
+                    slot: self.hotbar.selected as u8,
+                });
+            }
+        }
         if !self.caps(registry).can_edit_blocks {
             self.break_clicked = false;
             self.place_clicked = false;

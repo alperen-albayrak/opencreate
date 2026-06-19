@@ -28,6 +28,10 @@ pub enum ClientMessage {
     },
     /// Place or break (AIR) a block.
     SetBlock { pos: BlockPos, block: BlockId },
+    /// "Pick block" (creative/spectator middle-click): copy the looked-at
+    /// block into the given hotbar slot. The server validates the mode and
+    /// reach, maps the block to its item, and resyncs the inventory.
+    PickBlock { pos: BlockPos, slot: u8 },
     /// Interest management (§8): the client wants this column streamed.
     SubscribeColumn(ChunkPos),
     /// The column left the client's view; the server may unload it.

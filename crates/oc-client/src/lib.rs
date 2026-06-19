@@ -873,6 +873,11 @@ impl ApplicationHandler for App {
                             session.place_clicked = true;
                         }
                     }
+                    (Screen::InGame, MouseButton::Middle) => {
+                        if let Some(session) = &mut self.session {
+                            session.pick_clicked = true;
+                        }
+                    }
                     (Screen::Settings(screen), MouseButton::Left) => {
                         if let Some(index) = screen.slider_at(self.mouse_pos, w, h, ui) {
                             screen.drag(index, self.mouse_pos.0, w, h, ui);
