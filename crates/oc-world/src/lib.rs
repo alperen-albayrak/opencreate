@@ -78,4 +78,8 @@ pub mod blocks {
     pub const LAMP: BlockId = BlockId(8);
     pub const SNOW: BlockId = BlockId(9);
     pub const PLANKS: BlockId = BlockId(10);
+    /// The impassable world floor (unbreakable; see `registry::is_unbreakable`).
+    pub const BEDROCK: BlockId = BlockId(11);
+    /// Molten rock: opaque, glowing, non-solid; the deep world's heat source.
+    pub const LAVA: BlockId = BlockId(12);
 }

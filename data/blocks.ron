@@ -1,50 +1,90 @@
 // Block definitions (ARCHITECTURE.md §3). Order is the stable base-game id
-// order (air = 0 … planks = 10) — `oc-world::blocks` consts and the save
-// format's legacy palette depend on it (locked by a unit test in registry.rs).
-// Every field defaults, so a block lists only what differs. Most fields are
-// reserved (parsed now, consumed by later PBR / thermal / gameplay features).
+// order (air = 0 … planks = 10, then bedrock = 11, lava = 12) — `oc-world::blocks`
+// consts and the save format's legacy palette depend on the first 11; new blocks
+// only ever append (the v1→v2 legacy palette stays a prefix, locked by a test in
+// registry.rs). Every field defaults, so a block lists only what differs. Most
+// fields are reserved (parsed now, consumed by later PBR / thermal / gameplay
+// features).
 //
 // `textures` indexes the block texture array; layer order must match
 // `oc-renderer::texture::build_block_textures`:
 //   0 grass-top · 1 dirt · 2 stone · 3 grass-side · 4 sand · 5 water
 //   6 log-side · 7 log-top · 8 leaves · 9 lamp · 10 snow · 11 planks
+//   12 bedrock · 13 lava
+//
+// `conductivity` (W/m·K) and `heat_capacity` (kJ/kg·K) are nature's values:
+// insulators (wood ~0.12, leaves ~0.05, snow ~0.1) resist heat; rock conducts
+// ~2.5, water 0.6. The tier-2 heat flood-fill (G3) and Newton cooling (G4) read
+// them, so building with poor conductors shields the player from the deep heat.
 [
     // Air lets light through (cost 1); not solid, not opaque, not rendered.
     (id: "oc:air", name: "Air", light_opacity: Some(1)),
 
     (id: "oc:stone", name: "Stone",
-        solid: true, opaque: true, color: (125, 125, 125), textures: All(2)),
+        solid: true, opaque: true, color: (125, 125, 125), textures: All(2),
+        heat_capacity: 0.84, conductivity: 2.5),
 
     (id: "oc:dirt", name: "Dirt",
-        solid: true, opaque: true, color: (134, 96, 67), textures: All(1)),
+        solid: true, opaque: true, color: (134, 96, 67), textures: All(1),
+        heat_capacity: 0.8, conductivity: 0.8),
 
     (id: "oc:grass", name: "Grass Block",
         solid: true, opaque: true, color: (106, 170, 64),
-        textures: Sided(top: 0, bottom: 1, side: 3)),
+        textures: Sided(top: 0, bottom: 1, side: 3),
+        heat_capacity: 0.84, conductivity: 0.4),
 
     (id: "oc:sand", name: "Sand",
-        solid: true, opaque: true, color: (219, 209, 160), textures: All(4)),
+        solid: true, opaque: true, color: (219, 209, 160), textures: All(4),
+        heat_capacity: 0.8, conductivity: 0.3),
 
     // Water: a fluid — not solid, not opaque, lets light through at cost 1.
+    // Thermal mirrors the oc:water FluidDef (high heat capacity, poor conductor).
     (id: "oc:water", name: "Water",
-        light_opacity: Some(1), color: (54, 106, 224), textures: All(5)),
+        light_opacity: Some(1), color: (54, 106, 224), textures: All(5),
+        heat_capacity: 4.18, conductivity: 0.6),
 
     (id: "oc:log", name: "Log",
         solid: true, opaque: true, color: (104, 82, 50),
-        textures: Sided(top: 7, bottom: 7, side: 6)),
+        textures: Sided(top: 7, bottom: 7, side: 6),
+        heat_capacity: 1.7, conductivity: 0.12),
 
     (id: "oc:leaves", name: "Leaves",
-        solid: true, opaque: true, color: (58, 134, 52), textures: All(8)),
+        solid: true, opaque: true, color: (58, 134, 52), textures: All(8),
+        heat_capacity: 1.5, conductivity: 0.05),
 
-    // Lamp: full-strength light source. `emissive` is reserved for the
-    // blackbody/PBR glow (Stages E/G); harmless until then.
+    // Lamp: full-strength light source. `emissive` is the warm glow hue (also
+    // the cast-light color); harmless until the PBR self-glow path (Stages E/G).
     (id: "oc:lamp", name: "Lamp",
         solid: true, opaque: true, light_emission: 15,
-        emissive: (1.0, 0.87, 0.59), color: (255, 222, 150), textures: All(9)),
+        emissive: (1.0, 0.87, 0.59), color: (255, 222, 150), textures: All(9),
+        heat_capacity: 0.8, conductivity: 1.0),
 
     (id: "oc:snow", name: "Snow",
-        solid: true, opaque: true, color: (238, 242, 248), textures: All(10)),
+        solid: true, opaque: true, color: (238, 242, 248), textures: All(10),
+        heat_capacity: 2.0, conductivity: 0.1),
 
     (id: "oc:planks", name: "Planks",
-        solid: true, opaque: true, color: (172, 136, 84), textures: All(11)),
+        solid: true, opaque: true, color: (172, 136, 84), textures: All(11),
+        heat_capacity: 1.7, conductivity: 0.12),
+
+    // Bedrock: the impassable world floor. `hardness: -1` ⇒ unbreakable (survival
+    // can never dig past it; creative may still edit). Dense rock thermally.
+    (id: "oc:bedrock", name: "Bedrock",
+        solid: true, opaque: true, hardness: -1.0,
+        color: (62, 60, 66), textures: All(12),
+        heat_capacity: 0.9, conductivity: 2.5),
+
+    // Lava: molten rock — OPAQUE (you can't see through it; renders in the solid
+    // pass, glows by blackbody, no water effects) but NOT solid (you fall into
+    // it). Emits light 15; the emissive hue is a ~1200 °C blackbody (orange).
+    // `light_opacity` defaults to None: like stone it blocks transmitted light,
+    // it only *emits*. Poor conductor + high heat capacity → a slow-draining
+    // heat battery. Freezes to basalt (slow) or quenches to obsidian (fast, at
+    // water) — products land with G5. The fluid physics live in oc:lava (fluids.ron).
+    (id: "oc:lava", name: "Lava",
+        opaque: true, light_emission: 15,
+        emissive: (1.0, 0.42, 0.0), color: (226, 104, 26), textures: All(13),
+        heat_capacity: 1.45, conductivity: 1.7,
+        melting_point: Some(1273.0),
+        phase_transition: Some((freeze: Some("oc:basalt"), quench: Some("oc:obsidian")))),
 ]

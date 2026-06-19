@@ -628,6 +628,16 @@ impl Server {
         }
 
         if block.is_air() {
+            // Unbreakable blocks (bedrock, hardness < 0) are the world floor a
+            // survival player can never dig past. Creative-style modes (no
+            // inventory) may still edit them, matching the "build freely" intent.
+            if self.registry.mode(self.mode).uses_inventory
+                && oc_world::registry::is_unbreakable(existing)
+            {
+                self.transport
+                    .send(ServerMessage::BlockChanged { pos, block: existing })?;
+                return Ok(());
+            }
             // Breaking: always allowed (no tools yet); survival gathers.
             if !self.world.set_block(pos, block) {
                 return Ok(());
@@ -1272,6 +1282,18 @@ mod tests {
         });
         assert_eq!(echoed, mined_block, "creative placement is free");
 
+        // Creative can place bedrock (the unbreakable floor block) freely;
+        // survival's inability to break it is asserted after switching back.
+        let bedrock_pos = IVec3::new(spawn_chunk.x * 16 + 7, 200, spawn_chunk.z * 16 + 7);
+        client
+            .send(ClientMessage::SetBlock { pos: bedrock_pos, block: oc_world::blocks::BEDROCK })
+            .unwrap();
+        let placed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == bedrock_pos => Some(block),
+            _ => None,
+        });
+        assert_eq!(placed, oc_world::blocks::BEDROCK, "creative places bedrock freely");
+
         // Adventure mode cannot edit at all.
         let adventure = registry.find_mode("oc:adventure").unwrap().0;
         client.send(ClientMessage::SetGameMode(adventure)).unwrap();
@@ -1286,6 +1308,17 @@ mod tests {
         // Back to survival so persistence assertions below stay as before.
         let survival = registry.find_mode("oc:survival").unwrap().0;
         client.send(ClientMessage::SetGameMode(survival)).unwrap();
+
+        // Survival cannot break the bedrock placed above (hardness -1): the
+        // break is rejected and the authoritative bedrock re-asserted.
+        client
+            .send(ClientMessage::SetBlock { pos: bedrock_pos, block: oc_world::BlockId::AIR })
+            .unwrap();
+        let echoed = wait_for(&mut client, |m| match m {
+            ServerMessage::BlockChanged { pos, block } if pos == bedrock_pos => Some(block),
+            _ => None,
+        });
+        assert_eq!(echoed, oc_world::blocks::BEDROCK, "survival cannot break bedrock");
 
         // Time advances.
         let t1 = wait_for(&mut client, |m| match m {

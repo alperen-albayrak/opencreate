@@ -28,4 +28,34 @@
         melting_point: Some(273.0),
         // Freezes to ice, boils to steam (cross-registry; ice lands later).
         phase_transition: Some((freeze: Some("oc:ice"), boil: Some("oc:steam")))),
+
+    // Lava: molten rock (~1200 °C). Opaque, glowing, dense and viscous, lethal.
+    // Nature's values: density ~2.7× water, basaltic-melt heat capacity 1.45 and
+    // conductivity 1.7 (a slow-draining heat battery). Solidifies below ~1000 °C
+    // (1273 K): slow cool → basalt, fast quench at water → obsidian glass (G5).
+    (id: "oc:lava", name: "Lava",
+        // Body/fog tint when submerged: deep orange, near-zero visibility.
+        color: (0.70, 0.20, 0.02),
+        opacity: 1.0,
+        absorption: (4.0, 4.0, 4.0),
+        fog_distance: 1.5,
+        ior: 1.5,
+        // HDR orange (≈1200 °C blackbody ×3) to drive bloom once self-glow lands.
+        emissive: (3.0, 1.26, 0.0),
+        roughness: 0.5,
+        light_opacity: None,
+        light_emission: 15,
+        density: 2.7,
+        viscosity: 10.0,
+        // Thick and dense: you barely sink and climb out slowly (and burn).
+        submerged_gravity: 4.0,
+        sink_speed: 0.5,
+        swim_up_speed: 1.5,
+        swim_speed_factor: 0.2,
+        breathability: 0,
+        oxygen_content: 0,
+        heat_capacity: 1.45,
+        conductivity: 1.7,
+        melting_point: Some(1273.0),
+        phase_transition: Some((freeze: Some("oc:basalt"), quench: Some("oc:obsidian")))),
 ]

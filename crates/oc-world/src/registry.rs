@@ -290,6 +290,13 @@ pub fn string_id(id: BlockId) -> Option<&'static str> {
     BLOCKS.defs.get(id.0 as usize).map(|d| d.id.as_str())
 }
 
+/// True if a block can never be broken (`hardness < 0`, e.g. bedrock) — the
+/// world floor survival players can never dig past. Unknown ids are breakable.
+#[inline]
+pub fn is_unbreakable(id: BlockId) -> bool {
+    def(id).is_some_and(|d| d.hardness < 0.0)
+}
+
 /// The current registry's string ids in numeric order — the palette a freshly
 /// created (or migrated) world is saved with.
 pub fn palette_strings() -> Vec<String> {
@@ -369,6 +376,9 @@ mod tests {
         assert_eq!(find_block("oc:lamp"), Some(blocks::LAMP));
         assert_eq!(find_block("oc:snow"), Some(blocks::SNOW));
         assert_eq!(find_block("oc:planks"), Some(blocks::PLANKS));
+        // Deep-world content appends after the original 11.
+        assert_eq!(find_block("oc:bedrock"), Some(blocks::BEDROCK));
+        assert_eq!(find_block("oc:lava"), Some(blocks::LAVA));
     }
 
     #[test]
@@ -391,15 +401,38 @@ mod tests {
     }
 
     #[test]
-    fn legacy_palette_is_the_identity_for_the_base_game() {
+    fn legacy_palette_is_a_prefix_of_the_current_registry() {
         let legacy = BlockPalette::legacy();
         let current = BlockPalette::current();
-        // Same length and same mapping: disk id n → runtime BlockId(n).
-        assert_eq!(legacy.strings(), current.strings());
+        // v1 saves only knew the first 11 blocks. The registry only ever
+        // *appends* (bedrock, lava, …), so the legacy palette must stay a
+        // prefix of the current one — old disk ids 0..=10 decode/encode
+        // identically, and added blocks never corrupt a pre-v2 save.
+        assert_eq!(legacy.strings().len(), 11);
+        assert!(current.strings().len() >= 11);
+        assert_eq!(&current.strings()[..11], legacy.strings());
         for n in 0..11u16 {
             assert_eq!(legacy.decode_id(n), BlockId(n));
             assert_eq!(legacy.encode_id(BlockId(n)), n);
         }
+    }
+
+    #[test]
+    fn bedrock_is_unbreakable_and_lava_is_an_opaque_nonsolid_emitter() {
+        // Bedrock (hardness -1) can never be broken; everything else can.
+        assert!(is_unbreakable(blocks::BEDROCK));
+        assert!(!is_unbreakable(blocks::STONE));
+        assert!(!is_unbreakable(blocks::LAVA));
+        // Lava is opaque (you can't see through it → renders in the solid pass)
+        // but not solid (you fall into it), and emits full-strength light.
+        assert!(blocks::LAVA.is_opaque());
+        assert!(!blocks::LAVA.is_solid());
+        assert_eq!(blocks::LAVA.light_emission(), 15);
+        // Its cast light carries the ~1200 °C blackbody hue: red full, no blue.
+        let lc = blocks::LAVA.light_color();
+        assert_eq!(lc[0], 15, "red reaches full emission: {lc:?}");
+        assert_eq!(lc[2], 0, "no blue in lava's glow: {lc:?}");
+        assert!(lc[1] < lc[0] && lc[1] > 0, "orange (some green): {lc:?}");
     }
 
     #[test]

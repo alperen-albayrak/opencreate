@@ -7,7 +7,7 @@
 use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 12;
+pub const LAYER_COUNT: u32 = 14;
 /// Mip levels for the block array: 16→8→4→2→1 = `floor(log2(16)) + 1`.
 pub const MIP_LEVELS: u32 = 5;
 
@@ -16,7 +16,7 @@ pub const MIP_LEVELS: u32 = 5;
 /// `data/textures/block/<name>.png`.
 pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
     "grass_top", "dirt", "stone", "grass_side", "sand", "water", "log_side",
-    "log_top", "leaves", "lamp", "snow", "planks",
+    "log_top", "leaves", "lamp", "snow", "planks", "bedrock", "lava",
 ];
 
 /// RGBA pixels for the block texture array. Layer order must match
@@ -47,10 +47,19 @@ pub fn build_block_textures() -> Vec<u8> {
                     11 if y % 4 == 0 => shade([142, 110, 68], n, 8),
                     11 => shade([172, 136, 84], hash_noise(0, y as u32 / 4, layer), 14),
                     // Lamp: bright warm glow with a darker rim.
-                    _ if x == 0 || y == 0 || x == size - 1 || y == size - 1 => {
+                    9 if x == 0 || y == 0 || x == size - 1 || y == size - 1 => {
                         shade([142, 105, 55], n, 12)
                     }
-                    _ => shade([255, 222, 150], n, 12),
+                    9 => shade([255, 222, 150], n, 12),
+                    // Bedrock: dark, heavily mottled rock — visually distinct from
+                    // stone so the impassable floor reads as different.
+                    12 => shade([62, 60, 66], n, 30),
+                    // Lava: molten orange-yellow with a darker crust where the
+                    // noise dips (every 5th cell), giving a cracked surface.
+                    13 if n % 5 == 0 => shade([122, 36, 8], n, 18),
+                    13 => shade([226, 104, 26], n, 44),
+                    // Unknown layer → magenta (matches the registry's missing tint).
+                    _ => shade([255, 0, 255], n, 0),
                 };
                 pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
             }
@@ -146,6 +155,13 @@ mod tests {
         assert!(water[2] > 150 && water[2] > water[0], "water not blue: {water:?}");
         let leaves = avg(8);
         assert!(leaves[1] > leaves[0], "leaves not green: {leaves:?}");
+        let bedrock = avg(12);
+        assert!(bedrock.iter().all(|&c| c < 110), "bedrock not dark: {bedrock:?}");
+        let lava = avg(13);
+        assert!(
+            lava[0] > 150 && lava[0] > lava[1] && lava[1] > lava[2],
+            "lava not molten-orange: {lava:?}"
+        );
     }
 
     #[test]
