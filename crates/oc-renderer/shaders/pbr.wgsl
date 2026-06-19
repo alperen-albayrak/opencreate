@@ -146,7 +146,7 @@ fn blackbody_glow(temp_c: f32) -> vec3<f32> {
     }
     let color = blackbody_rgb(temp_c + 273.15);
     let heat = clamp((temp_c - 525.0) / 775.0, 0.0, 1.0);
-    return color * heat * heat * 3.0;
+    return color * pow(heat, 1.5) * 2.5;
 }
 
 @vertex
@@ -201,9 +201,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Incandescence: the surface's own blackbody glow past the Draper point,
     // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —
-    // smooth, so it never bands on depth quantization. Hot matter (hellish
-    // rock, lava) glows + blooms; cold surfaces store 0 → no glow.
-    color += blackbody_glow(525.0 + g2.a * 975.0);
+    // smooth, so it never bands on depth quantization. Modulated by albedo so
+    // the surface's texture (lava's molten/crust pattern, the rock grain) shows
+    // *in* the glow instead of being washed out by a flat bright colour — the
+    // texture is the emissive pattern. Hot matter glows + blooms; cold → 0.
+    color += albedo * blackbody_glow(525.0 + g2.a * 975.0);
 
     // Distance fog: far terrain melts into the sky, same curve as the
     // forward path (and the water pass).
