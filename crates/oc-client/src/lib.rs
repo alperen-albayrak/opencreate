@@ -233,9 +233,13 @@ impl App {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // Dev hook: OC_TITLE overrides the window title so several instances
+        // (e.g. two parallel branches) are easy to tell apart. Defaults to the
+        // normal title, so ordinary play is unchanged.
+        let title = std::env::var("OC_TITLE").unwrap_or_else(|_| "OpenCreate".to_string());
         let window = event_loop.create_window(
             WindowAttributes::default()
-                .with_title("OpenCreate")
+                .with_title(title)
                 .with_inner_size(LogicalSize::new(1280, 720)),
         )?;
         let size = window.inner_size();
