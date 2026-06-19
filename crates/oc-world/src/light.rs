@@ -129,8 +129,13 @@ pub fn compute_light(
     bfs(&mut field.sky, &field.blocks, &mut queue, height, true);
 
     // Block light: emissive blocks seed each channel at its tinted level (hue
-    // from the block's emissive color, reach from its emission). Sources are
-    // sparse, so three independent channel floods are cheap.
+    // from the block's emissive color, reach from its emission). Plus
+    // geothermal blackbody light — any cell hot enough to glow (past the
+    // Draper point, a pure function of depth) casts warm light, so the hot
+    // deep is dimly ember-lit rather than pitch black. Three independent
+    // channel floods then propagate it (sources may be sparse or dense).
+    let env = crate::env_registry::active();
+    let w = WIDTH as usize;
     for (i, block) in field.blocks.iter().copied().enumerate() {
         let [r, g, b] = block.light_color();
         if r > 0 {
@@ -142,8 +147,17 @@ pub fn compute_light(
         if b > 0 {
             field.block_b[i] = b;
         }
+
+        let pos = base + IVec3::new((i % w) as i32, (i / layer) as i32, ((i / w) % w) as i32);
+        let temp = crate::temperature::base(pos, env);
+        if temp > crate::temperature::DRAPER_C {
+            let level = (((temp - crate::temperature::DRAPER_C) / 40.0) as i32)
+                .clamp(0, MAX_LIGHT as i32) as u8;
+            field.block_r[i] = field.block_r[i].max(level);
+            field.block_g[i] = field.block_g[i].max((level as f32 * 0.45) as u8);
+            field.block_b[i] = field.block_b[i].max((level as f32 * 0.12) as u8);
+        }
     }
-    let _ = layer;
     flood_channel(&mut field.block_r, &field.blocks, height);
     flood_channel(&mut field.block_g, &field.blocks, height);
     flood_channel(&mut field.block_b, &field.blocks, height);

@@ -17,8 +17,11 @@ struct Scene {
     sky_zenith: vec4<f32>,
     sky_away: vec4<f32>,
     sky_sun: vec4<f32>,
-    // x: time; y: base ambient floor; z, w: reserved.
+    // x: time; y: base ambient floor; z: camera world Y; w: reserved.
     params: vec4<f32>,
+    // Geothermal profile: x surface °C, y gradient °C/block, z core °C, w sea
+    // level. Drives the deep-rock blackbody glow.
+    thermal: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 
@@ -106,6 +109,32 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
     return mix(1.0, mix(lit, 1.0, range_fade), strength);
 }
 
+// Tier-1 static base temperature (°C) at a world Y — mirrors
+// oc_world::temperature::base. A coreless world passes a cold no-glow profile.
+fn base_temp(world_y: f32) -> f32 {
+    let surface = scene.thermal.x;
+    let gradient = scene.thermal.y;
+    let core = scene.thermal.z;
+    let sea = scene.thermal.w;
+    let depth = max(sea - world_y, 0.0);
+    let altitude = max(world_y - sea, 0.0);
+    return min(surface + gradient * depth - 0.16 * altitude, core);
+}
+
+// Incandescent self-glow past the Draper point (~525 °C), HDR so hot rock
+// blooms. Color tracks the TFC heat ladder: dull red -> orange -> yellow ->
+// toward white as temperature rises.
+fn blackbody_glow(temp_c: f32) -> vec3<f32> {
+    if (temp_c < 525.0) {
+        return vec3<f32>(0.0);
+    }
+    let g = clamp((temp_c - 525.0) / 775.0, 0.0, 1.0);
+    let b = clamp((temp_c - 1100.0) / 500.0, 0.0, 1.0);
+    let color = vec3<f32>(1.0, 0.55 * g + 0.1 * g * g, 0.7 * b);
+    let heat = (temp_c - 525.0) / 700.0;
+    return color * heat * heat * 2.5;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     // Oversized fullscreen triangle covering the viewport.
@@ -150,8 +179,16 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     let sky_term = sky_vis * ambient * ao;
     let sun_term = sky_vis * (1.0 - ambient) * diffuse * ao * sun_vis;
-    let lit = max(vec3<f32>(sky_term + sun_term), block_light);
+    // Unconditional ambient floor (params.y, per dimension): nothing renders
+    // pure black. Added on top of sky/sun + block light, AO-modulated.
+    let floor = scene.params.y * ao;
+    let lit = max(vec3<f32>(sky_term + sun_term), block_light) + vec3<f32>(floor);
     var color = albedo * lit;
+
+    // Geothermal incandescence: deep rock self-glows past the Draper point.
+    // Absolute world Y = camera world Y (params.z) + reconstructed relative Y.
+    let world_y = scene.params.z + world_rel.y;
+    color += blackbody_glow(base_temp(world_y));
 
     // Distance fog: far terrain melts into the sky, same curve as the
     // forward path (and the water pass).

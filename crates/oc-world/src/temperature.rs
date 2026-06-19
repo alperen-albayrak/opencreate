@@ -18,6 +18,10 @@ use oc_core::BlockPos;
 use crate::env_registry::EnvDef;
 use crate::terrain::SEA_LEVEL;
 
+/// Draper point in Celsius (~798 K): matter hotter than this glows visibly,
+/// so it both self-emits (the lighting-pass blackbody glow) and casts warm
+/// light (seeded into the block-light flood-fill).
+pub const DRAPER_C: f32 = 525.0;
 /// Uniform temperature of an airless body with no geothermal profile (cold).
 pub const AIRLESS_TEMP_C: f32 = -50.0;
 /// Cooling per block of altitude above sea level (TFC-style lapse rate).

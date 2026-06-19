@@ -16,6 +16,7 @@ EnvDef(
         zenith_night: (0.004, 0.007, 0.022),
         ambient_night: 0.16,
         ambient_day_gain: 0.32,
+        ambient_floor: 0.045,
         sun_tilt: 0.25,
         underwater_color: (0.09, 0.30, 0.55),
         underwater_fog_near: 24.0,

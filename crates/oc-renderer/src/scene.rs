@@ -35,8 +35,14 @@ pub struct SceneData {
     pub sky_away: Vec4,
     /// xyz: unscaled sun direction; w: daylight 0..1.
     pub sky_sun: Vec4,
-    /// x: time (seconds); y: base ambient floor; z, w: reserved.
+    /// x: time (seconds); y: base ambient floor; z: camera world Y (for the
+    /// geothermal glow's absolute-depth reconstruction); w: reserved.
     pub params: Vec4,
+    /// Active dimension's geothermal profile: x = surface °C, y = gradient
+    /// °C/block, z = core °C, w = sea level. Drives the deep-rock blackbody
+    /// glow in the lighting pass (a coreless/airless world sets a cold,
+    /// no-glow sentinel).
+    pub thermal: Vec4,
 }
 
 /// Owns the per-frame scene uniform buffers and their descriptor sets.

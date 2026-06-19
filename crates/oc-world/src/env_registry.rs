@@ -45,6 +45,10 @@ pub struct Atmosphere {
     /// Ambient floor at night, and the additional gain by full day.
     pub ambient_night: f32,
     pub ambient_day_gain: f32,
+    /// Unconditional minimum light on every surface — nothing renders pure
+    /// black (the always-on base brightness; sealed caves and night stay
+    /// dimly visible). The plan's `ambient_floor`.
+    pub ambient_floor: f32,
     /// Off-axis sun tilt so noon shadows aren't perfectly vertical.
     pub sun_tilt: f32,
     /// Submerged fog tint and its near/far visibility ramp (blocks).
@@ -68,6 +72,7 @@ impl Default for Atmosphere {
             zenith_night: (0.004, 0.007, 0.022),
             ambient_night: 0.16,
             ambient_day_gain: 0.32,
+            ambient_floor: 0.045,
             sun_tilt: 0.25,
             underwater_color: (0.09, 0.30, 0.55),
             underwater_fog_near: 24.0,

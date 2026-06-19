@@ -16,6 +16,8 @@ EnvDef(
         zenith_night: (0.002, 0.002, 0.004),
         ambient_night: 0.10,
         ambient_day_gain: 0.20,
+        // Airless: starker shadows than Earth (less scattered fill light).
+        ambient_floor: 0.02,
         sun_tilt: 0.25,
         underwater_color: (0.05, 0.05, 0.07),
         underwater_fog_near: 24.0,
