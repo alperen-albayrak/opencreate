@@ -3,10 +3,16 @@
 //! exists; until then the client advances it locally.
 
 use glam::{Vec3, Vec4};
+use oc_world::env_registry;
 
 /// One full day, in real seconds — the server owns the value; the client
 /// only uses it to advance smoothly between Time broadcasts.
 pub use oc_server::DAY_LENGTH_SECS;
+
+/// `(f32, f32, f32)` data tuple -> `Vec3` (the RON atmosphere colors).
+fn v3(t: (f32, f32, f32)) -> Vec3 {
+    Vec3::new(t.0, t.1, t.2)
+}
 
 /// What the sky and sun look like at a moment of the day.
 #[derive(Debug, Clone, Copy)]
@@ -34,42 +40,44 @@ pub struct SkyState {
     pub stars: f32,
 }
 
-const DAY_SKY: Vec3 = Vec3::new(0.47, 0.71, 0.99);
-const DUSK_SKY: Vec3 = Vec3::new(0.82, 0.52, 0.31);
-const NIGHT_SKY: Vec3 = Vec3::new(0.012, 0.018, 0.05);
-const DAY_ZENITH: Vec3 = Vec3::new(0.18, 0.42, 0.86);
-const NIGHT_ZENITH: Vec3 = Vec3::new(0.004, 0.007, 0.022);
-
 /// Computes the sky for a cumulative `day` (whole part = day count for
 /// the moon phase; fraction = time of day): .0 = sunrise at the horizon,
-/// .25 = noon, .5 = sunset, .75 = midnight.
+/// .25 = noon, .5 = sunset, .75 = midnight. Colors come from the active
+/// dimension's [`Atmosphere`] (data), not hardcoded constants.
 pub fn sky_at(day: f64) -> SkyState {
+    let atm = &env_registry::overworld().atmosphere;
+    let day_sky = v3(atm.sky_day);
+    let dusk_sky = v3(atm.sky_dusk);
+    let night_sky = v3(atm.sky_night);
+    let day_zenith = v3(atm.zenith_day);
+    let night_zenith = v3(atm.zenith_night);
+
     let day_count = day.floor();
     let day_fraction = day - day_count;
     let angle = day_fraction as f32 * std::f32::consts::TAU;
     // Sun travels an east-west arc, slightly tilted off the axis so noon
     // shadows aren't perfectly vertical.
     let elevation = angle.sin();
-    let sun_dir = Vec3::new(angle.cos(), elevation, 0.25).normalize();
+    let sun_dir = Vec3::new(angle.cos(), elevation, atm.sun_tilt).normalize();
 
     // Daylight ramps in around the horizon (smoothstep over elevation).
     let daylight = smoothstep(-0.06, 0.22, elevation);
     // A warm dusk band when the sun is near the horizon.
     let dusk = smoothstep(-0.25, -0.02, elevation) * (1.0 - smoothstep(0.02, 0.35, elevation));
 
-    let sky = NIGHT_SKY.lerp(DAY_SKY, daylight).lerp(DUSK_SKY, dusk * 0.85);
+    let sky = night_sky.lerp(day_sky, daylight).lerp(dusk_sky, dusk * 0.85);
     // Opposite the sun the day fades sooner and barely warms: dusk and
     // dawn sweep across the sky instead of dimming it evenly.
-    let away = NIGHT_SKY
-        .lerp(DAY_SKY, daylight * daylight)
-        .lerp(DUSK_SKY * 0.30, dusk * 0.25);
+    let away = night_sky
+        .lerp(day_sky, daylight * daylight)
+        .lerp(dusk_sky * 0.30, dusk * 0.25);
     // The zenith keeps its blue while the horizon warms at dusk.
-    let zenith = NIGHT_ZENITH.lerp(DAY_ZENITH, daylight).lerp(DUSK_SKY * 0.35, dusk * 0.3);
+    let zenith = night_zenith.lerp(day_zenith, daylight).lerp(dusk_sky * 0.35, dusk * 0.3);
     // Never fully dark: moonlight floor at night.
-    let ambient = 0.16 + 0.32 * daylight;
+    let ambient = atm.ambient_night + atm.ambient_day_gain * daylight;
 
     // Clouds: white by day, warm-tinted at dusk, dim at night.
-    let cloud = Vec3::splat(0.06 + 0.94 * daylight).lerp(DUSK_SKY * 1.05, dusk * 0.55);
+    let cloud = Vec3::splat(0.06 + 0.94 * daylight).lerp(dusk_sky * 1.05, dusk * 0.55);
 
     // Day 0 opens on a full moon; one phase step per day, 8 per cycle.
     let moon_phase = ((day_count as i64 + 4).rem_euclid(8)) as f32 / 8.0;
@@ -91,8 +99,10 @@ pub fn sky_at(day: f64) -> SkyState {
 /// clearing as the eyes adjust; Java settles past 90 blocks, Bedrock
 /// at 60 — we sit between, scaled to our render distances).
 pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
+    let atm = &env_registry::overworld().atmosphere;
     let t = (submerged_secs / 12.0).clamp(0.0, 1.0);
-    24.0 + (72.0 - 24.0) * (t * t * (3.0 - 2.0 * t))
+    atm.underwater_fog_near
+        + (atm.underwater_fog_far - atm.underwater_fog_near) * (t * t * (3.0 - 2.0 * t))
 }
 
 /// Submerged camera: blue fog swallows the sky and the horizon — both
@@ -100,7 +110,7 @@ pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
 /// readable. The sun keeps shining through as a bright glow overhead.
 pub fn underwater(state: &SkyState) -> SkyState {
     let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
-    let water = Vec3::new(0.09, 0.30, 0.55) * (0.22 + 0.78 * daylight);
+    let water = v3(env_registry::overworld().atmosphere.underwater_color) * (0.22 + 0.78 * daylight);
     SkyState {
         sky_color: [water.x, water.y, water.z, 1.0],
         horizon_away: [water.x, water.y, water.z, 1.0],
