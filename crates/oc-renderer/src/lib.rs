@@ -457,6 +457,21 @@ impl Renderer {
             // reads sun/fog/sky/time from it instead of per-draw push constants.
             let fog = Vec4::from_array(camera.sky_color).truncate().extend(camera.fog_distance);
             let env = oc_world::env_registry::active();
+            // Pack the dimension's temperature-vs-height curve (ascending Y, two
+            // points per vec4) for the lighting pass's blackbody glow.
+            let profile = &env.thermal.profile;
+            let thermal_count = profile.len().min(8);
+            let mut thermal_profile = [Vec4::ZERO; 4];
+            for (i, p) in profile.iter().take(8).enumerate() {
+                let v = &mut thermal_profile[i / 2];
+                if i % 2 == 0 {
+                    v.x = p.y;
+                    v.y = p.temp;
+                } else {
+                    v.z = p.y;
+                    v.w = p.temp;
+                }
+            }
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -467,13 +482,15 @@ impl Renderer {
                 sky_away: Vec4::from_array(camera.sky_away),
                 sky_sun: Vec4::from_array(camera.sky_sun),
                 // params.y = the dimension's ambient floor (never pure black);
-                // params.z = camera world Y (reserved for depth reconstruction).
+                // params.z = camera world Y (to rebuild absolute depth);
+                // params.w = temperature-profile point count.
                 params: Vec4::new(
                     camera.time,
                     env.atmosphere.ambient_floor,
                     camera.position.y as f32,
-                    0.0,
+                    thermal_count as f32,
                 ),
+                thermal_profile,
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);

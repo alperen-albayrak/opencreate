@@ -35,8 +35,14 @@ pub struct SceneData {
     pub sky_away: Vec4,
     /// xyz: unscaled sun direction; w: daylight 0..1.
     pub sky_sun: Vec4,
-    /// x: time (seconds); y: base ambient floor; z: camera world Y; w: reserved.
+    /// x: time (seconds); y: base ambient floor; z: camera world Y; w: number
+    /// of temperature-profile points (0..=8) packed in `thermal_profile`.
     pub params: Vec4,
+    /// The active dimension's temperature-vs-height curve, ascending by Y, two
+    /// points per vec4 as (y0, temp0 °C, y1, temp1) — up to 8 points. The
+    /// lighting pass interpolates it (clamped at the ends) to glow hot matter
+    /// past the Draper point (hellish rock, etc.).
+    pub thermal_profile: [Vec4; 4],
 }
 
 /// Owns the per-frame scene uniform buffers and their descriptor sets.
