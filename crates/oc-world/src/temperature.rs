@@ -83,21 +83,21 @@ mod tests {
     fn temperature_follows_the_curve_and_clamps_at_the_ends() {
         let env = env_registry::overworld();
         let surface = base(IVec3::new(0, SEA_LEVEL, 0), env);
-        // 50 °C hazard onset at -256; the glow begins at the Draper point
-        // (525 °C) at the hellish top (-352) and steepens into the molten layer,
-        // ramping to ~1000 °C at the lava-lake boundary (-656), held flat below —
-        // a smooth incandescent gradient brightening toward the lava, no banding.
-        let hazard = base(IVec3::new(0, -256, 0), env);
-        let hellish_top = base(IVec3::new(0, -352, 0), env);
+        // A long cool descent to the 50 °C hazard onset at -512; then a steep
+        // ramp into the molten layer — the glow begins at the Draper point
+        // (525 °C at -560) and rises to ~1000 °C at the lava-lake boundary
+        // (-656), held flat below. The incandescent band sits just above the lava.
+        let hazard = base(IVec3::new(0, -512, 0), env);
+        let glow_onset = base(IVec3::new(0, -560, 0), env);
         let deep = base(IVec3::new(0, -656, 0), env);
         let below = base(IVec3::new(0, -100_000, 0), env);
         let high = base(IVec3::new(0, 320, 0), env);
         assert!((surface - 24.0).abs() < 0.01, "sea level ≈ 24 °C: {surface}");
-        assert!((hazard - 50.0).abs() < 1.0, "50 °C hazard onset at -256: {hazard}");
-        assert!((hellish_top - 525.0).abs() < 1.0, "Draper point at -352: {hellish_top}");
+        assert!((hazard - 50.0).abs() < 1.0, "50 °C hazard onset at -512: {hazard}");
+        assert!((glow_onset - 525.0).abs() < 1.0, "Draper point at -560: {glow_onset}");
         assert!((deep - 1000.0).abs() < 1.0, "≈1000 °C near the lava lake at -656: {deep}");
         assert_eq!(below, deep, "clamps to the deepest point below it");
-        assert!(hazard > surface && hellish_top > hazard && deep > hellish_top, "deeper is hotter");
+        assert!(hazard > surface && glow_onset > hazard && deep > glow_onset, "deeper is hotter");
         assert!(high < surface, "high altitude is colder: {high} vs {surface}");
     }
 
