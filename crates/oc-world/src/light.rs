@@ -62,12 +62,15 @@ impl LightField {
 
 /// Computes light for the 3×3 columns centered on `center`. `sample` is
 /// queried once per voxel between `min_y` (inclusive) and `max_y`
-/// (exclusive, the open sky above the tallest content).
+/// (exclusive). `sky_open` is whether `max_y` is the open sky (seed skylight
+/// from the top) or a window ceiling deep underground (no skylight enters —
+/// only block light floods, so a deep edit needn't span up to the surface).
 pub fn compute_light(
     sample: impl Fn(BlockPos) -> BlockId,
     center: ChunkPos,
     min_y: i32,
     max_y: i32,
+    sky_open: bool,
 ) -> LightField {
     let base = IVec3::new(
         (center.x - 1) * SECTION_SIZE,
@@ -95,31 +98,35 @@ pub fn compute_light(
     }
 
     let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
+    let layer = (WIDTH * WIDTH) as usize;
 
     // Sky seeding: walk each column down from the open sky. Level-15 light
-    // passes through air without attenuation (the vertical shaft rule).
-    let layer = (WIDTH * WIDTH) as usize;
-    for z in 0..WIDTH {
-        for x in 0..WIDTH {
-            let mut level = MAX_LIGHT;
-            for y in (0..height).rev() {
-                let i = (y * WIDTH + z) * WIDTH + x;
-                let i = i as usize;
-                match field.blocks[i].light_opacity() {
-                    None => break,
-                    Some(cost) => {
-                        // The free vertical shaft is air-only: water still
-                        // dims a level per block on the way down.
-                        let air = field.blocks[i] == crate::blocks::AIR;
-                        if !(air && level == MAX_LIGHT) {
-                            level = level.saturating_sub(cost);
-                        }
-                        field.sky[i] = level;
-                        if level > 1 {
-                            queue.push_back((i, level));
-                        }
-                        if level == 0 {
-                            break;
+    // passes through air without attenuation (the vertical shaft rule). Skipped
+    // for a window whose ceiling is deep underground (`!sky_open`): no skylight
+    // enters, so sky stays 0 and only block light floods.
+    if sky_open {
+        for z in 0..WIDTH {
+            for x in 0..WIDTH {
+                let mut level = MAX_LIGHT;
+                for y in (0..height).rev() {
+                    let i = (y * WIDTH + z) * WIDTH + x;
+                    let i = i as usize;
+                    match field.blocks[i].light_opacity() {
+                        None => break,
+                        Some(cost) => {
+                            // The free vertical shaft is air-only: water still
+                            // dims a level per block on the way down.
+                            let air = field.blocks[i] == crate::blocks::AIR;
+                            if !(air && level == MAX_LIGHT) {
+                                level = level.saturating_sub(cost);
+                            }
+                            field.sky[i] = level;
+                            if level > 1 {
+                                queue.push_back((i, level));
+                            }
+                            if level == 0 {
+                                break;
+                            }
                         }
                     }
                 }
@@ -245,7 +252,7 @@ mod tests {
     }
 
     fn field(extra: &[(BlockPos, BlockId)]) -> LightField {
-        compute_light(world_with(extra), ChunkPos::new(0, 0), -16, 48)
+        compute_light(world_with(extra), ChunkPos::new(0, 0), -16, 48, true)
     }
 
     fn sky(f: &LightField, pos: BlockPos) -> u8 {

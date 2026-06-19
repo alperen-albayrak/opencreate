@@ -677,7 +677,7 @@ mod tests {
                 BlockId::AIR
             }
         };
-        let field = compute_light(blocks_at, ChunkPos::new(0, 0), -16, 32);
+        let field = compute_light(blocks_at, ChunkPos::new(0, 0), -16, 32, true);
         let mesh = mesh_section(blocks_at, |local| field.get(local));
         let cov = coverage(&mesh);
 

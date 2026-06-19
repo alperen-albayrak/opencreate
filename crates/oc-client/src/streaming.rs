@@ -273,16 +273,36 @@ impl ChunkStreamer {
     /// re-meshed. In the deep world this is the difference between relighting a
     /// ~64-block window and the whole ~960-block column on every break.
     fn light_for(&self, column: ChunkPos, edit_y: i32) -> LightField {
-        let max_y = ring(column, 1)
-            .flat_map(|c| self.world.column_sections(c))
-            .map(|s| (s.y + 1) * SECTION_SIZE)
-            .max()
-            .unwrap_or(SECTION_SIZE);
         // Affected sections span the edit's section ±1; cover one more section
         // below for the light that bleeds up into them.
         let edit_section = edit_y.div_euclid(SECTION_SIZE);
         let min_y = ((edit_section - 2) * SECTION_SIZE).max(BOTTOM_SECTION_Y * SECTION_SIZE);
-        compute_light(|pos| self.world.block(pos), column, min_y, max_y.max(min_y + SECTION_SIZE))
+        // If the edit sits well below the local surface, no skylight reaches it:
+        // use a tight local window with no sky seeding, rather than spanning all
+        // the way up to the surface (the deep relight that tanked FPS on every
+        // break in the 128-section world). Near/above the surface, span to the
+        // open sky so skylight stays correct.
+        let surface = self.world.generator().surface_height(
+            column.x * SECTION_SIZE + 8,
+            column.z * SECTION_SIZE + 8,
+        );
+        if edit_y < surface - 64 {
+            let max_y = (edit_section + 3) * SECTION_SIZE;
+            compute_light(|pos| self.world.block(pos), column, min_y, max_y, false)
+        } else {
+            let max_y = ring(column, 1)
+                .flat_map(|c| self.world.column_sections(c))
+                .map(|s| (s.y + 1) * SECTION_SIZE)
+                .max()
+                .unwrap_or(SECTION_SIZE);
+            compute_light(
+                |pos| self.world.block(pos),
+                column,
+                min_y,
+                max_y.max(min_y + SECTION_SIZE),
+                true,
+            )
+        }
     }
 }
 
@@ -325,6 +345,7 @@ impl MeshJob {
             self.chunk,
             BOTTOM_SECTION_Y * SECTION_SIZE,
             self.max_y,
+            true, // full column up to the open sky
         );
         let meshes = self
             .targets
