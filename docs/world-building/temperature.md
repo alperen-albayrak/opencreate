@@ -59,6 +59,51 @@ so `density` is a function of T — see [atmosphere](atmosphere.md)); conduction
 flows between any adjacent matter; and **phase transitions** move matter between
 registries (lava→obsidian, ice→water→steam — see [matter model](matter-model.md)).
 
+## Heat transfer: simulate gradients, not blocks
+
+The discipline that keeps tiers 2–3 cheap is Minecraft's own
+([block update](https://minecraft.wiki/w/Block_update)): **never scan the world —
+do work only where something changed, and only while it stays out of equilibrium.**
+A cell does heat work only when there is a real *gradient*; once it matches its
+surroundings it drops out of the simulation and costs nothing.
+
+- **Equilibrium is free.** Tier-1 `base(pos)` *is* the equilibrium field. Two
+  adjacent deep rocks both sit at `base` → ~0 gradient → nothing to transfer, so
+  nothing is computed. The quiescent majority of the world (deep mining away from
+  any source) costs only the pure base function. Gradients exist in just three
+  places: next to an active source (tier 2), around a recent **block edit**, and
+  at a **phase boundary**.
+- **The trigger is the block-update hook** — Minecraft's neighbour-notification,
+  reused. `set_block` already fires on every edit; that is where an affected cell
+  is added to the heat **active-set** and its six neighbours are woken — "notify
+  nearby blocks to re-check," never a global pass.
+- **The active-set lifecycle.** A cell enters on a source change, a block edit, or
+  a gradient from an active neighbour; it relaxes by discrete Newton/Fourier
+  conduction `ΔTᵢ = Σⱼ kᵢⱼ·(Tⱼ − Tᵢ)·dt / (heat_capacityᵢ · massᵢ)` — per-pair
+  `conductivity` k, so **insulators shield**; it **leaves** once `|T − ambient| < ε`
+  (snap to none). Stepped every N ticks over the active-set only, **frozen offline**
+  (see [time](time.md)), saved sparsely. Sources are finite, so they cannot create
+  unbounded work.
+
+**Latent-heat plateau (the boiling pot).** When a cell reaches a phase point its
+incoming heat stops raising `T` and instead fills a **latent-heat accumulator**
+(the enthalpy of the transition); `T` is **pinned** at the phase point until the
+accumulator fills, then the matter converts (a cross-registry
+[phase transition](matter-model.md)) and `T` moves again. So a pot of water over a
+fire **holds at 100 °C until the last of it has boiled** to steam — real
+thermodynamics, event-driven, no extra machinery.
+
+**A placed cold block equilibrates to ambient — and glows on the way.** Drop a
+~24 °C block into the ~900 °C deep: the edit puts it in the active-set out of
+equilibrium with `base(pos)`, so it Newton-relaxes *upward*, **crossing the Draper
+point (525 °C) and glowing** dull-red → orange as it warms, then drops out once it
+reaches ambient. The deep is a **reservoir** — it does not measurably cool by
+heating one block; the surrounding field *is* the source, so individual neighbours
+need no special flag. The mirror case is a lava block (a finite **battery**) moved
+somewhere cool: it gives up its heat and solidifies. A block placed where the
+ambient already matches it has ~0 gradient and never ticks — so only matter moved
+across a temperature difference costs anything.
+
 ## Conservation of energy
 
 There are **no free or infinite sources** (a project-wide principle — see
@@ -144,12 +189,40 @@ temperature + the power network; both reserved now, neither implemented.
 
 ## Player heat hazard
 
-Mirrors the breathing model exactly (see [atmosphere](atmosphere.md)): a survival
-stat that takes damage outside a survivable band; **insulation gear** widens
-tolerance (same `environment + gear_modifier` shape as `breathability`). Deep
-digging gets dangerous; better suits go deeper. Plugs into `stats.rs` like
-oxygen. The hazard reads `effective T`, so it also picks up the dynamic
-[heatmap](dynamic-environment.md) (volcano warmth) for free.
+Mirrors the breathing model (see [atmosphere](atmosphere.md)): a survival stat that
+takes damage outside a survivable band, **insulation gear** widening tolerance
+(same `environment + gear_modifier` shape as `breathability`). Plugs into
+`stats.rs` like oxygen, and reads `effective T`, so it picks up source heat, the
+dynamic [heatmap](dynamic-environment.md) (volcano warmth), and any local cooling
+for free.
+
+The player takes damage from the **effective temperature at their position even in
+open air** — but the *rate* scales with how well the surrounding medium delivers
+heat (real heat-flux physics, nature's conductivity ratios):
+
+```
+heat_dps = max(0, T_eff − T_safe) × medium_conductivity × (1 − gear_insulation)
+```
+
+| Medium | conductivity (W/m·K) | feel |
+|---|---|---|
+| air | ~0.025 | hot air hurts *slowly* — you can dash through a hot pocket (sauna) |
+| water | ~0.6 | ~25× air — hot water is quickly dangerous |
+| rock | ~2–3 | touching hot rock is worse |
+| lava | ~1–2 | submersion is effectively instant death |
+
+The medium is the "effective matter at a point" rule (voxel fluid if present, else
+the gas/air — see [matter model](matter-model.md)). Two emergent consequences:
+
+- **Coolant pockets.** Water is a high-`heat_capacity`, finite **heat-sink**: poured
+  into a hot cave it conducts heat out, reaches 100 °C and **boils away on the latent
+  plateau**, opening a *temporary* survivable pocket sized by how much you haul down
+  (near 900 °C it flashes fast). Standing in the cooled air / steam → lower `T_eff`
+  → less damage, until it is spent and the reservoir reheats.
+- **Built warmth.** A furnace/fire warms its immediate blocks strongly (tier-2) and
+  nudges its 16³ cell's average via the coarse [heatmap](dynamic-environment.md) — a
+  single furnace barely moves a whole chunk, a sustained fire or volcano moves a
+  region; the warmth decays when the finite fuel runs out.
 
 ## Deep-core content
 
