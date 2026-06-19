@@ -57,6 +57,7 @@ freezes/melts/boils (lava → stone, ice → water → steam).
 | [time.md](time.md) | How time works: `world_age`, offline freeze, closed-form forward-eval, per-dimension relativity (time shift), and rendered vs. unrendered vs. ungenerated chunks |
 | [dynamic-environment.md](dynamic-environment.md) | Volcanoes, the coarse chunk heatmap, dynamic biomes, generated history (all driven by the [time](time.md) model) |
 | [geology.md](geology.md) | Layered rock strata and data-driven ore veins |
+| [deep-world.md](deep-world.md) | The downward profile: rock → hot rock → lava sea → bedrock floor, lava-driven heat/glow, the reserved hellish layer and temperature HUD |
 | [rendering.md](rendering.md) | The deferred-PBR "Vibrant Visuals"-parity graphics roadmap |
 | [disqualified/](disqualified/README.md) | Ideas and approaches we **considered and moved on from**, each with why — so we don't repeat the dead ends |
 
