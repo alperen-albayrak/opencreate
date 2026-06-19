@@ -112,10 +112,19 @@ pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
 pub fn submerged(state: &SkyState, color: Vec3, self_lit: bool) -> SkyState {
     let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
     let tint = if self_lit { color } else { color * (0.22 + 0.78 * daylight) };
+    // A self-lit (opaque) fluid like lava is a uniform wall: keep the dome
+    // FLAT (zenith = horizon), so distant geometry fogged to the sky colour
+    // doesn't show as faint silhouettes against a darker zenith. A translucent
+    // fluid (water) keeps the darker zenith for a sense of depth on a dive.
+    let zenith = if self_lit {
+        tint
+    } else {
+        Vec3::new(tint.x * 0.7, tint.y * 0.75, tint.z * 0.85)
+    };
     SkyState {
         sky_color: [tint.x, tint.y, tint.z, 1.0],
         horizon_away: [tint.x, tint.y, tint.z, 1.0],
-        zenith: [tint.x * 0.7, tint.y * 0.75, tint.z * 0.85, 1.0],
+        zenith: [zenith.x, zenith.y, zenith.z, 1.0],
         stars: 0.0, // the fog owns the view down here
         ..*state
     }
