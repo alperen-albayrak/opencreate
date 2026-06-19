@@ -44,7 +44,9 @@ pub struct ShadowPass {
     /// Set layout the chunk pipeline includes as set 1.
     pub descriptor_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    /// One per frame in flight (the UBO is rewritten per frame).
+    /// One per frame in flight (the UBO is rewritten per frame). Consumed by
+    /// the deferred lighting pass when shadow sampling is revived (Stage E4).
+    #[allow(dead_code)]
     pub descriptor_sets: Vec<vk::DescriptorSet>,
     sampler: vk::Sampler,
     image: vk::Image,

@@ -13,6 +13,7 @@ mod entity;
 mod exposure;
 mod far_renderer;
 mod hdr;
+mod lighting;
 mod mesh;
 mod font;
 mod outline;
@@ -39,6 +40,7 @@ use entity::EntityRenderer;
 use exposure::ExposurePass;
 use far_renderer::FarRenderer;
 use hdr::{HdrTarget, TonemapPass};
+use lighting::LightingPass;
 use outline::OutlineRenderer;
 use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
@@ -126,6 +128,8 @@ pub struct Renderer {
     framebuffers: Vec<vk::Framebuffer>,
     /// Offscreen HDR world target (stage A2); the world pass renders here.
     hdr: HdrTarget,
+    /// Deferred lighting resolve: G-buffer + Scene UBO -> lit HDR color.
+    lighting: LightingPass,
     tonemap: TonemapPass,
     /// World render resolution as a fraction of the window.
     resolution_scale: f32,
@@ -207,9 +211,19 @@ impl Renderer {
             tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
             let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let scene = SceneUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
+            // Deferred lighting resolve reads the G-buffer + the Scene UBO.
+            let lighting = LightingPass::new(&ctx, hdr.lighting_pass, scene.layout())?;
+            lighting.bind_input(
+                &ctx.device,
+                hdr.gb0_view,
+                hdr.gb1_view,
+                hdr.gb2_view,
+                hdr.depth.view,
+            );
             let chunks = ChunkRenderer::new(
                 &ctx,
                 &mut allocator,
+                hdr.geometry_pass,
                 hdr.render_pass,
                 hdr.water_pass,
                 command_pool,
@@ -248,6 +262,7 @@ impl Renderer {
                 depth,
                 framebuffers,
                 hdr,
+                lighting,
                 tonemap,
                 resolution_scale: 1.0,
                 scale_dirty: false,
@@ -364,6 +379,13 @@ impl Renderer {
                 self.tonemap
                     .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
                 self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
+            self.lighting.bind_input(
+                &self.ctx.device,
+                self.hdr.gb0_view,
+                self.hdr.gb1_view,
+                self.hdr.gb2_view,
+                self.hdr.depth.view,
+            );
             }
             let device = &self.ctx.device;
 
@@ -411,7 +433,10 @@ impl Renderer {
                 }
             }
 
-            // Pass 1: the world, into the HDR target at the render scale.
+            // The world renders at the HDR render scale. The viewport/scissor
+            // set once here persist across the geometry, lighting, forward and
+            // water passes (all share this extent), until the native-extent
+            // tonemap pass resets them.
             let world_extent = self.hdr.extent;
             device.cmd_set_viewport(
                 cmd,
@@ -422,26 +447,10 @@ impl Renderer {
                     .max_depth(1.0)],
             );
             device.cmd_set_scissor(cmd, 0, &[world_extent.into()]);
-            let clears = [
-                vk::ClearValue {
-                    color: vk::ClearColorValue { float32: camera.sky_color },
-                },
-                vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
-                },
-            ];
-            device.cmd_begin_render_pass(
-                cmd,
-                &vk::RenderPassBeginInfo::default()
-                    .render_pass(self.hdr.render_pass)
-                    .framebuffer(self.hdr.framebuffer)
-                    .render_area(world_extent.into())
-                    .clear_values(&clears),
-                vk::SubpassContents::INLINE,
-            );
+
+            // Fill this frame's scene/environment UBO once; every world pass
+            // reads sun/fog/sky/time from it instead of per-draw push constants.
             let fog = Vec4::from_array(camera.sky_color).truncate().extend(camera.fog_distance);
-            // Fill this frame's scene/environment UBO once; the world passes
-            // read sun/fog/sky/time from it instead of per-draw push constants.
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -455,15 +464,61 @@ impl Renderer {
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);
-            self.chunks_drawn = self.chunks.record(
-                device,
+
+            // Pass 1a: deferred geometry — opaque chunks write their material
+            // attributes into the G-buffer (GB0/GB1/GB2) + depth, all cleared.
+            let geometry_clears = [
+                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0; 4] } },
+                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0; 4] } },
+                vk::ClearValue { color: vk::ClearColorValue { float32: [0.0; 4] } },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                },
+            ];
+            device.cmd_begin_render_pass(
                 cmd,
-                camera.view_proj,
-                camera.position,
-                self.shadow.descriptor_sets[slot],
-                scene_set,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.hdr.geometry_pass)
+                    .framebuffer(self.hdr.geometry_framebuffer)
+                    .render_area(world_extent.into())
+                    .clear_values(&geometry_clears),
+                vk::SubpassContents::INLINE,
             );
-            // Far terrain ring: after the chunks, depth keeps detail on top.
+            self.chunks_drawn =
+                self.chunks
+                    .record_geometry(device, cmd, camera.view_proj, camera.position, scene_set);
+            device.cmd_end_render_pass(cmd);
+
+            // Pass 1b: deferred lighting — a fullscreen resolve of the
+            // G-buffer into the HDR color (cleared to the sky color; the
+            // shader discards background pixels so the sky dome shows through).
+            let sky_clear = [vk::ClearValue {
+                color: vk::ClearColorValue { float32: camera.sky_color },
+            }];
+            device.cmd_begin_render_pass(
+                cmd,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.hdr.lighting_pass)
+                    .framebuffer(self.hdr.lighting_framebuffer)
+                    .render_area(world_extent.into())
+                    .clear_values(&sky_clear),
+                vk::SubpassContents::INLINE,
+            );
+            self.lighting.record(device, cmd, scene_set);
+            device.cmd_end_render_pass(cmd);
+
+            // Pass 1c: forward — far terrain, entities, outline, sky, clouds
+            // over the deferred-lit color. Loads the lit color and the
+            // geometry-pass depth (no clears), so each depth-tests correctly.
+            device.cmd_begin_render_pass(
+                cmd,
+                &vk::RenderPassBeginInfo::default()
+                    .render_pass(self.hdr.render_pass)
+                    .framebuffer(self.hdr.framebuffer)
+                    .render_area(world_extent.into()),
+                vk::SubpassContents::INLINE,
+            );
+            // Far terrain ring: depth keeps near chunks on top.
             if camera.far_terrain {
                 let daylight = camera.sun.truncate().length();
                 self.far.record(
@@ -482,8 +537,7 @@ impl Renderer {
                 self.outline
                     .record(device, cmd, camera.view_proj, camera.position, block);
             }
-            // The sky dome shades only pixels no geometry wrote. Its colors
-            // come from the scene UBO (filled above).
+            // The sky dome shades only pixels no geometry wrote.
             self.sky.record(device, cmd, camera.view_proj, scene_set);
             if camera.clouds {
                 self.clouds_layer.record(
@@ -621,6 +675,14 @@ impl Renderer {
                     .max_depth(1.0)],
             );
             device.cmd_set_scissor(cmd, 0, &[extent.into()]);
+            // The tonemap fullscreen triangle overwrites every color pixel;
+            // the depth clear keeps the swapchain depth attachment valid.
+            let clears = [
+                vk::ClearValue { color: vk::ClearColorValue { float32: camera.sky_color } },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                },
+            ];
             device.cmd_begin_render_pass(
                 cmd,
                 &vk::RenderPassBeginInfo::default()
@@ -716,6 +778,13 @@ impl Renderer {
             self.tonemap
                 .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
             self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
+            self.lighting.bind_input(
+                &self.ctx.device,
+                self.hdr.gb0_view,
+                self.hdr.gb1_view,
+                self.hdr.gb2_view,
+                self.hdr.depth.view,
+            );
             self.scale_dirty = false;
             Ok(())
         }
@@ -740,6 +809,7 @@ impl Drop for Renderer {
             self.bloom.destroy(device, &mut allocator);
             self.exposure.destroy(device, &mut allocator);
             self.shadow.destroy(device, &mut allocator);
+            self.lighting.destroy(device);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {

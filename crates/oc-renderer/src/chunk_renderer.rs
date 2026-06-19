@@ -17,6 +17,7 @@ use crate::texture;
 use crate::FRAMES_IN_FLIGHT;
 
 const CHUNK_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chunk.spv"));
+const CHUNK_GBUFFER_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/chunk_gbuffer.spv"));
 const WATER_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/water.spv"));
 
 pub struct GpuBuffer {
@@ -89,6 +90,9 @@ pub struct ChunkRenderer {
     descriptor_set: vk::DescriptorSet,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// Deferred geometry pipeline: writes the G-buffer instead of shading.
+    geometry_pipeline_layout: vk::PipelineLayout,
+    geometry_pipeline: vk::Pipeline,
     water_pipeline_layout: vk::PipelineLayout,
     water_pipeline: vk::Pipeline,
     water_depth_layout: vk::DescriptorSetLayout,
@@ -111,6 +115,7 @@ impl ChunkRenderer {
     pub unsafe fn new(
         ctx: &VulkanContext,
         allocator: &mut Allocator,
+        geometry_pass: vk::RenderPass,
         render_pass: vk::RenderPass,
         water_pass: vk::RenderPass,
         command_pool: vk::CommandPool,
@@ -208,6 +213,19 @@ impl ChunkRenderer {
                 None,
             )?;
             let pipeline = create_pipeline(device, render_pass, pipeline_layout)?;
+
+            // Deferred geometry pipeline: same packed vertices, writes the
+            // G-buffer (set 0 = textures, set 1 = scene; no shadows — the
+            // lighting pass owns those).
+            let geometry_sets = [descriptor_set_layout, scene_layout];
+            let geometry_pipeline_layout = device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&geometry_sets)
+                    .push_constant_ranges(std::slice::from_ref(&push_range)),
+                None,
+            )?;
+            let geometry_pipeline =
+                create_geometry_pipeline(device, geometry_pass, geometry_pipeline_layout)?;
 
             // Water set 1: opaque depth + scene-color snapshot (rebound on
             // resize), a sampler, and a per-slot UBO for the SSR march.
@@ -331,6 +349,8 @@ impl ChunkRenderer {
                 descriptor_set,
                 pipeline_layout,
                 pipeline,
+                geometry_pipeline_layout,
+                geometry_pipeline,
                 water_pipeline_layout,
                 water_pipeline,
                 water_depth_layout,
@@ -452,6 +472,10 @@ impl ChunkRenderer {
     /// culling. Must be called inside a render pass with dynamic
     /// viewport/scissor already set.
     #[allow(clippy::too_many_arguments)]
+    /// Forward opaque shading path (binds the lit chunk pipeline + shadow +
+    /// scene sets). Superseded by the deferred geometry + lighting passes;
+    /// retained as a known-good fallback and the planned forward low tier.
+    #[allow(dead_code)]
     pub unsafe fn record(
         &self,
         device: &ash::Device,
@@ -509,6 +533,70 @@ impl ChunkRenderer {
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    as_bytes(std::slice::from_ref(&push)),
+                );
+                device.cmd_draw_indexed(cmd, solid.index_count, 1, 0, 0, 0);
+                drawn += 1;
+            }
+            drawn
+        }
+    }
+
+    /// Records opaque chunk draws into the deferred G-buffer (geometry pass).
+    /// Like [`record`] but binds the geometry pipeline and only the texture +
+    /// scene sets; lighting and shadows happen later in the lighting pass.
+    pub unsafe fn record_geometry(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        view_proj: Mat4,
+        camera_pos: DVec3,
+        scene_set: vk::DescriptorSet,
+    ) -> u32 {
+        unsafe {
+            if self.chunks.is_empty() {
+                return 0;
+            }
+            let mut drawn = 0;
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.geometry_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.geometry_pipeline_layout,
+                0,
+                &[self.descriptor_set, scene_set],
+                &[],
+            );
+            let frustum = frustum_planes(view_proj);
+            for chunk in self.chunks.values() {
+                let Some(solid) = &chunk.solid else { continue };
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                if !aabb_intersects_frustum(&frustum, rel, rel + Vec3::splat(SECTION_SIZE as f32))
+                {
+                    continue;
+                }
+                device.cmd_bind_vertex_buffers(cmd, 0, &[solid.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, solid.index.buffer, 0, vk::IndexType::UINT32);
+                let origin = chunk.origin;
+                let phase = Vec3::new(
+                    origin.x.rem_euclid(256.0) as f32,
+                    origin.y.rem_euclid(256.0) as f32,
+                    origin.z.rem_euclid(256.0) as f32,
+                );
+                let push = ChunkPush {
+                    mvp: view_proj * Mat4::from_translation(rel),
+                    params: phase.extend(0.0),
+                    rel: rel.extend(0.0),
+                };
+                device.cmd_push_constants(
+                    cmd,
+                    self.geometry_pipeline_layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     as_bytes(std::slice::from_ref(&push)),
@@ -698,6 +786,8 @@ impl ChunkRenderer {
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
+            device.destroy_pipeline(self.geometry_pipeline, None);
+            device.destroy_pipeline_layout(self.geometry_pipeline_layout, None);
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline_layout(self.water_pipeline_layout, None);
             for (buffer, alloc) in self.water_uniforms.drain(..) {
@@ -1085,6 +1175,80 @@ unsafe fn create_pipeline(
             .layout(layout)
             .render_pass(render_pass);
 
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+            .map_err(|(_, e)| e)?[0];
+        device.destroy_shader_module(module, None);
+        Ok(pipeline)
+    }
+}
+
+/// The deferred geometry pipeline: same packed vertices as the opaque
+/// pipeline, but `chunk_gbuffer.wgsl` writes three MRT G-buffer targets
+/// instead of a shaded color. Depth test/write as usual.
+unsafe fn create_geometry_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline> {
+    unsafe {
+        let code = ash::util::read_spv(&mut std::io::Cursor::new(CHUNK_GBUFFER_SPV))?;
+        let module = device
+            .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(module)
+                .name(c"vs_main"),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(module)
+                .name(c"fs_main"),
+        ];
+        let binding = vk::VertexInputBindingDescription::default()
+            .stride(size_of::<PackedVertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX);
+        let attribute = vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .format(vk::Format::R32G32B32_UINT);
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(std::slice::from_ref(&binding))
+            .vertex_attribute_descriptions(std::slice::from_ref(&attribute));
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS);
+        // One blend state per G-buffer color target (GB0/GB1/GB2), no blending.
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA); 3];
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth_stencil)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .render_pass(render_pass);
         let pipeline = device
             .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
             .map_err(|(_, e)| e)?[0];

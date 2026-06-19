@@ -15,14 +15,29 @@ use crate::depth::{self, DepthBuffer};
 /// of RGBA16F, universally supported as a render target.
 pub const HDR_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 
+/// Deferred G-buffer formats (Stage E). GB0 albedo is SRGB so its 8 bits are
+/// perceptual (matching the source block textures); GB1/GB2 hold linear data
+/// (octahedral normal + sky visibility + material, RGB block light + metal).
+pub const GB0_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
+pub const GB1_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
+pub const GB2_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
+
 const TONEMAP_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.spv"));
 
 /// The world's render target: HDR color + depth at `extent` (the
 /// swapchain size times the resolution scale).
 pub struct HdrTarget {
     pub extent: vk::Extent2D,
-    /// Opaque world pass (chunk/entity/outline pipelines). Depth ends
-    /// SHADER_READ_ONLY so the water pass can sample it.
+    /// Deferred geometry pass: opaque chunks write GB0/GB1/GB2 + depth. All
+    /// end SHADER_READ_ONLY so the lighting pass can sample them.
+    pub geometry_pass: vk::RenderPass,
+    /// Deferred lighting pass: a fullscreen resolve of the G-buffer into the
+    /// HDR color (cleared to sky here). Color ends COLOR_ATTACHMENT so the
+    /// forward pass continues into it.
+    pub lighting_pass: vk::RenderPass,
+    /// Forward pass over the lit color: far terrain, entities, outline, sky,
+    /// clouds — loads color + depth (no clear), depth ends SHADER_READ_ONLY
+    /// so the water pass can sample it.
     pub render_pass: vk::RenderPass,
     /// Water pass: loads the color, no depth attachment (water samples
     /// the opaque depth and depth-tests in the shader). Color ends in
@@ -32,6 +47,18 @@ pub struct HdrTarget {
     allocation: Option<Allocation>,
     pub view: vk::ImageView,
     pub depth: DepthBuffer,
+    // G-buffer attachments (deferred geometry pass).
+    pub gb0: vk::Image,
+    gb0_allocation: Option<Allocation>,
+    pub gb0_view: vk::ImageView,
+    pub gb1: vk::Image,
+    gb1_allocation: Option<Allocation>,
+    pub gb1_view: vk::ImageView,
+    pub gb2: vk::Image,
+    gb2_allocation: Option<Allocation>,
+    pub gb2_view: vk::ImageView,
+    pub geometry_framebuffer: vk::Framebuffer,
+    pub lighting_framebuffer: vk::Framebuffer,
     pub framebuffer: vk::Framebuffer,
     pub water_framebuffer: vk::Framebuffer,
     /// Snapshot of the opaque scene color, copied between the world and
@@ -49,17 +76,33 @@ impl HdrTarget {
         extent: vk::Extent2D,
     ) -> Result<Self> {
         unsafe {
+            let geometry_pass = create_geometry_pass(&ctx.device)?;
+            let lighting_pass = create_lighting_pass(&ctx.device)?;
             let render_pass = create_world_pass(&ctx.device)?;
             let water_pass = create_water_pass(&ctx.device)?;
-            let images = create_images(ctx, allocator, render_pass, water_pass, extent)?;
+            let images =
+                create_images(ctx, allocator, geometry_pass, lighting_pass, render_pass, water_pass, extent)?;
             Ok(Self {
                 extent,
+                geometry_pass,
+                lighting_pass,
                 render_pass,
                 water_pass,
                 image: images.image,
                 allocation: Some(images.allocation),
                 view: images.view,
                 depth: images.depth,
+                gb0: images.gb0,
+                gb0_allocation: Some(images.gb0_allocation),
+                gb0_view: images.gb0_view,
+                gb1: images.gb1,
+                gb1_allocation: Some(images.gb1_allocation),
+                gb1_view: images.gb1_view,
+                gb2: images.gb2,
+                gb2_allocation: Some(images.gb2_allocation),
+                gb2_view: images.gb2_view,
+                geometry_framebuffer: images.geometry_framebuffer,
+                lighting_framebuffer: images.lighting_framebuffer,
                 framebuffer: images.framebuffer,
                 water_framebuffer: images.water_framebuffer,
                 scene_copy: images.scene_copy,
@@ -79,12 +122,31 @@ impl HdrTarget {
     ) -> Result<()> {
         unsafe {
             self.destroy_images(&ctx.device, allocator);
-            let images = create_images(ctx, allocator, self.render_pass, self.water_pass, extent)?;
+            let images = create_images(
+                ctx,
+                allocator,
+                self.geometry_pass,
+                self.lighting_pass,
+                self.render_pass,
+                self.water_pass,
+                extent,
+            )?;
             self.extent = extent;
             self.image = images.image;
             self.allocation = Some(images.allocation);
             self.view = images.view;
             self.depth = images.depth;
+            self.gb0 = images.gb0;
+            self.gb0_allocation = Some(images.gb0_allocation);
+            self.gb0_view = images.gb0_view;
+            self.gb1 = images.gb1;
+            self.gb1_allocation = Some(images.gb1_allocation);
+            self.gb1_view = images.gb1_view;
+            self.gb2 = images.gb2;
+            self.gb2_allocation = Some(images.gb2_allocation);
+            self.gb2_view = images.gb2_view;
+            self.geometry_framebuffer = images.geometry_framebuffer;
+            self.lighting_framebuffer = images.lighting_framebuffer;
             self.framebuffer = images.framebuffer;
             self.water_framebuffer = images.water_framebuffer;
             self.scene_copy = images.scene_copy;
@@ -98,6 +160,19 @@ impl HdrTarget {
         unsafe {
             device.destroy_framebuffer(self.water_framebuffer, None);
             device.destroy_framebuffer(self.framebuffer, None);
+            device.destroy_framebuffer(self.lighting_framebuffer, None);
+            device.destroy_framebuffer(self.geometry_framebuffer, None);
+            for (view, image, alloc) in [
+                (self.gb0_view, self.gb0, &mut self.gb0_allocation),
+                (self.gb1_view, self.gb1, &mut self.gb1_allocation),
+                (self.gb2_view, self.gb2, &mut self.gb2_allocation),
+            ] {
+                device.destroy_image_view(view, None);
+                device.destroy_image(image, None);
+                if let Some(allocation) = alloc.take() {
+                    let _ = allocator.free(allocation);
+                }
+            }
             self.depth.destroy(device, allocator);
             device.destroy_image_view(self.scene_copy_view, None);
             device.destroy_image(self.scene_copy, None);
@@ -117,6 +192,8 @@ impl HdrTarget {
             self.destroy_images(device, allocator);
             device.destroy_render_pass(self.water_pass, None);
             device.destroy_render_pass(self.render_pass, None);
+            device.destroy_render_pass(self.lighting_pass, None);
+            device.destroy_render_pass(self.geometry_pass, None);
         }
     }
 }
@@ -124,6 +201,8 @@ impl HdrTarget {
 unsafe fn create_images(
     ctx: &VulkanContext,
     allocator: &mut Allocator,
+    geometry_pass: vk::RenderPass,
+    lighting_pass: vk::RenderPass,
     render_pass: vk::RenderPass,
     water_pass: vk::RenderPass,
     extent: vk::Extent2D,
@@ -166,6 +245,35 @@ unsafe fn create_images(
             None,
         )?;
         let depth = DepthBuffer::new(ctx, allocator, extent)?;
+
+        // G-buffer attachments + the geometry/lighting framebuffers.
+        let (gb0, gb0_allocation, gb0_view) =
+            create_color_attachment(ctx, allocator, GB0_FORMAT, extent, "gbuffer 0")?;
+        let (gb1, gb1_allocation, gb1_view) =
+            create_color_attachment(ctx, allocator, GB1_FORMAT, extent, "gbuffer 1")?;
+        let (gb2, gb2_allocation, gb2_view) =
+            create_color_attachment(ctx, allocator, GB2_FORMAT, extent, "gbuffer 2")?;
+        let geometry_attachments = [gb0_view, gb1_view, gb2_view, depth.view];
+        let geometry_framebuffer = ctx.device.create_framebuffer(
+            &vk::FramebufferCreateInfo::default()
+                .render_pass(geometry_pass)
+                .attachments(&geometry_attachments)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1),
+            None,
+        )?;
+        let lighting_attachments = [view];
+        let lighting_framebuffer = ctx.device.create_framebuffer(
+            &vk::FramebufferCreateInfo::default()
+                .render_pass(lighting_pass)
+                .attachments(&lighting_attachments)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1),
+            None,
+        )?;
+
         let attachments = [view, depth.view];
         let framebuffer = ctx.device.create_framebuffer(
             &vk::FramebufferCreateInfo::default()
@@ -230,6 +338,17 @@ unsafe fn create_images(
             allocation,
             view,
             depth,
+            gb0,
+            gb0_allocation,
+            gb0_view,
+            gb1,
+            gb1_allocation,
+            gb1_view,
+            gb2,
+            gb2_allocation,
+            gb2_view,
+            geometry_framebuffer,
+            lighting_framebuffer,
             framebuffer,
             water_framebuffer,
             scene_copy,
@@ -239,12 +358,73 @@ unsafe fn create_images(
     }
 }
 
+/// Creates a single-mip 2D color attachment that is also sampleable (the
+/// G-buffer targets). Returns the image, its allocation, and a full view.
+unsafe fn create_color_attachment(
+    ctx: &VulkanContext,
+    allocator: &mut Allocator,
+    format: vk::Format,
+    extent: vk::Extent2D,
+    name: &str,
+) -> Result<(vk::Image, Allocation, vk::ImageView)> {
+    unsafe {
+        let image = ctx.device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(format)
+                .extent(vk::Extent3D { width: extent.width, height: extent.height, depth: 1 })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+                .initial_layout(vk::ImageLayout::UNDEFINED),
+            None,
+        )?;
+        let requirements = ctx.device.get_image_memory_requirements(image);
+        let allocation = allocator.allocate(&AllocationCreateDesc {
+            name,
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })?;
+        ctx.device
+            .bind_image_memory(image, allocation.memory(), allocation.offset())?;
+        let view = ctx.device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(format)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .level_count(1)
+                        .layer_count(1),
+                ),
+            None,
+        )?;
+        Ok((image, allocation, view))
+    }
+}
+
 /// Everything `create_images` builds; rebuilt together on resize.
 struct Images {
     image: vk::Image,
     allocation: Allocation,
     view: vk::ImageView,
     depth: DepthBuffer,
+    gb0: vk::Image,
+    gb0_allocation: Allocation,
+    gb0_view: vk::ImageView,
+    gb1: vk::Image,
+    gb1_allocation: Allocation,
+    gb1_view: vk::ImageView,
+    gb2: vk::Image,
+    gb2_allocation: Allocation,
+    gb2_view: vk::ImageView,
+    geometry_framebuffer: vk::Framebuffer,
+    lighting_framebuffer: vk::Framebuffer,
     framebuffer: vk::Framebuffer,
     water_framebuffer: vk::Framebuffer,
     scene_copy: vk::Image,
@@ -252,20 +432,26 @@ struct Images {
     scene_copy_view: vk::ImageView,
 }
 
-/// The opaque world pass. Color stays an attachment (the water pass
-/// continues into it); depth ends shader-readable for the water pass.
-unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
+/// The deferred geometry pass: opaque chunks write GB0/GB1/GB2 + depth (all
+/// cleared). Every attachment ends SHADER_READ_ONLY so the lighting pass
+/// samples them.
+unsafe fn create_geometry_pass(device: &ash::Device) -> Result<vk::RenderPass> {
     unsafe {
-        let attachments = [
+        let color = |format| {
             vk::AttachmentDescription::default()
-                .format(HDR_FORMAT)
+                .format(format)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        };
+        let attachments = [
+            color(GB0_FORMAT),
+            color(GB1_FORMAT),
+            color(GB2_FORMAT),
             vk::AttachmentDescription::default()
                 .format(depth::DEPTH_FORMAT)
                 .samples(vk::SampleCountFlags::TYPE_1)
@@ -274,6 +460,160 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
+                // Sampled by the lighting pass.
+                .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+        ];
+        let color_refs = [
+            vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+            vk::AttachmentReference::default()
+                .attachment(1)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+            vk::AttachmentReference::default()
+                .attachment(2)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+        ];
+        let depth_ref = vk::AttachmentReference::default()
+            .attachment(3)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_refs)
+            .depth_stencil_attachment(&depth_ref);
+        let dependencies = [
+            // Entry: wait for the previous frame's lighting-pass sampling of
+            // these images (FRAGMENT_SHADER) before clearing/writing them.
+            vk::SubpassDependency::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(
+                    vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                ),
+            // Exit: G-buffer + depth writes visible to the lighting pass's
+            // fragment sampling.
+            vk::SubpassDependency::default()
+                .src_subpass(0)
+                .dst_subpass(vk::SUBPASS_EXTERNAL)
+                .src_stage_mask(
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                )
+                .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ),
+        ];
+        let render_pass = device.create_render_pass(
+            &vk::RenderPassCreateInfo::default()
+                .attachments(&attachments)
+                .subpasses(std::slice::from_ref(&subpass))
+                .dependencies(&dependencies),
+            None,
+        )?;
+        Ok(render_pass)
+    }
+}
+
+/// The deferred lighting pass: a fullscreen resolve of the G-buffer into the
+/// HDR color (cleared to the sky color; the lighting shader discards
+/// background pixels so the clear shows through for the sky dome). Color ends
+/// COLOR_ATTACHMENT_OPTIMAL so the forward pass loads it.
+unsafe fn create_lighting_pass(device: &ash::Device) -> Result<vk::RenderPass> {
+    unsafe {
+        let attachments = [vk::AttachmentDescription::default()
+            .format(HDR_FORMAT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let color_ref = [vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_ref);
+        let dependencies = [
+            // Entry: wait for the previous frame's tonemap/water sampling of
+            // the HDR color before clearing it.
+            vk::SubpassDependency::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(
+                    vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                )
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE),
+            // Exit: lit color visible to the forward pass (which loads it).
+            vk::SubpassDependency::default()
+                .src_subpass(0)
+                .dst_subpass(vk::SUBPASS_EXTERNAL)
+                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                ),
+        ];
+        let render_pass = device.create_render_pass(
+            &vk::RenderPassCreateInfo::default()
+                .attachments(&attachments)
+                .subpasses(std::slice::from_ref(&subpass))
+                .dependencies(&dependencies),
+            None,
+        )?;
+        Ok(render_pass)
+    }
+}
+
+/// The forward pass over the deferred-lit color: far terrain, entities,
+/// outline, sky, clouds. Loads the lit color and the geometry-pass depth (no
+/// clears); depth ends shader-readable for the water pass.
+unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
+    unsafe {
+        let attachments = [
+            vk::AttachmentDescription::default()
+                .format(HDR_FORMAT)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                // Keep the lit chunks the lighting pass resolved.
+                .load_op(vk::AttachmentLoadOp::LOAD)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+            vk::AttachmentDescription::default()
+                .format(depth::DEPTH_FORMAT)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                // Keep the chunk depth the geometry pass wrote, so far
+                // terrain/entities/sky depth-test against it.
+                .load_op(vk::AttachmentLoadOp::LOAD)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                // The lighting pass sampled it; re-acquire as a depth buffer.
+                .initial_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         ];
         let color_ref = [vk::AttachmentReference::default()
@@ -286,33 +626,35 @@ unsafe fn create_world_pass(device: &ash::Device) -> Result<vk::RenderPass> {
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_ref)
             .depth_stencil_attachment(&depth_ref);
-        // Entry: with two frames in flight, the PREVIOUS frame's water
-        // pass samples this depth image and the tonemap samples the color
-        // image — both in FRAGMENT_SHADER. The clears here must wait for
-        // those reads (write-after-read needs only the execution
-        // dependency), or water flickers out whenever the GPU overlaps
-        // frames. Exit: color must be visible to the tonemap pass's
-        // fragment sampling.
         let dependencies = [
+            // Entry: the lighting pass wrote the color (COLOR_ATTACHMENT) and
+            // *read* the depth as a texture (FRAGMENT_SHADER) — the depth
+            // re-use as an attachment must wait for those reads (WAR).
             vk::SubpassDependency::default()
                 .src_subpass(vk::SUBPASS_EXTERNAL)
                 .dst_subpass(0)
                 .src_stage_mask(
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER
                         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
                 )
-                .src_access_mask(vk::AccessFlags::empty())
+                .src_access_mask(
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_READ,
+                )
                 .dst_stage_mask(
                     vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
                         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
                         | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
                 )
                 .dst_access_mask(
-                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
                         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                 ),
+            // Exit: color + depth visible to the water pass's fragment
+            // sampling and blend.
             vk::SubpassDependency::default()
                 .src_subpass(0)
                 .dst_subpass(vk::SUBPASS_EXTERNAL)
