@@ -11,11 +11,21 @@
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU16, Ordering};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-const DEFAULT_DIMENSIONS: &str = include_str!("../../../data/dimensions/overworld.ron");
+const OVERWORLD_RON: &str = include_str!("../../../data/dimensions/overworld.ron");
+const MOON_RON: &str = include_str!("../../../data/dimensions/moon.ron");
+/// Built-in dimensions in id order; id 0 is always the overworld. A pack/world
+/// filesystem overlay can add more later (the §7.5 stack).
+const BUILTIN_DIMENSIONS: [&str; 2] = [OVERWORLD_RON, MOON_RON];
+
+/// The process's active dimension (index into the registry). The server sets
+/// it on world load (from LevelMeta); the client sets it from the Welcome
+/// message. Read by the sky / gravity / physics code via [`active`].
+static ACTIVE: AtomicU16 = AtomicU16::new(0);
 
 /// Per-load numeric id for a dimension (an index into the registry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -146,19 +156,24 @@ pub struct EnvRegistry {
 }
 
 impl EnvRegistry {
-    fn parse(ron_text: &str) -> Result<Self> {
-        // Each dimension file is one `EnvDef`; the embedded default is the
-        // overworld. (A pack/world overlay adds more — the §7.5 stack.)
-        let def: EnvDef = ron::from_str(ron_text).context("parsing a dimension .ron")?;
-        let mut by_id = HashMap::with_capacity(1);
-        by_id.insert(def.id.clone(), DimensionId(0));
-        Ok(Self { defs: vec![def], by_id })
+    fn load() -> Result<Self> {
+        // Each dimension file is one `EnvDef`; id 0 is the overworld.
+        let mut defs = Vec::with_capacity(BUILTIN_DIMENSIONS.len());
+        let mut by_id = HashMap::with_capacity(BUILTIN_DIMENSIONS.len());
+        for ron_text in BUILTIN_DIMENSIONS {
+            let def: EnvDef = ron::from_str(ron_text).context("parsing a dimension .ron")?;
+            if by_id.insert(def.id.clone(), DimensionId(defs.len() as u16)).is_some() {
+                bail!("duplicate dimension id {:?}", def.id);
+            }
+            defs.push(def);
+        }
+        Ok(Self { defs, by_id })
     }
 }
 
-/// The global dimension registry; the embedded overworld is parsed on first use.
+/// The global dimension registry; the built-in dimensions parse on first use.
 pub static DIMENSIONS: LazyLock<EnvRegistry> = LazyLock::new(|| {
-    EnvRegistry::parse(DEFAULT_DIMENSIONS).expect("embedded overworld.ron must parse")
+    EnvRegistry::load().expect("embedded dimension RON must parse")
 });
 
 /// Full definition for a dimension id, if in range.
@@ -174,6 +189,38 @@ pub fn find_dimension(string_id: &str) -> Option<DimensionId> {
 /// The default/overworld dimension (id 0), always present.
 pub fn overworld() -> &'static EnvDef {
     &DIMENSIONS.defs[0]
+}
+
+/// Set the process's active dimension (server: from LevelMeta on world load;
+/// client: from the Welcome message). Out-of-range ids are ignored.
+pub fn set_active(id: DimensionId) {
+    if (id.0 as usize) < DIMENSIONS.defs.len() {
+        ACTIVE.store(id.0, Ordering::Relaxed);
+    }
+}
+
+/// Set the active dimension by stable string id; returns false if unknown
+/// (the active dimension is left unchanged).
+pub fn set_active_by_id(string_id: &str) -> bool {
+    match find_dimension(string_id) {
+        Some(id) => {
+            set_active(id);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The process's active dimension (defaults to the overworld). Sky, gravity
+/// and physics read their constants from this.
+pub fn active() -> &'static EnvDef {
+    let i = ACTIVE.load(Ordering::Relaxed) as usize;
+    DIMENSIONS.defs.get(i).unwrap_or(&DIMENSIONS.defs[0])
+}
+
+/// The stable string id of the active dimension.
+pub fn active_id() -> &'static str {
+    &active().id
 }
 
 #[cfg(test)]
@@ -208,5 +255,20 @@ mod tests {
             sum += frac;
         }
         assert!((sum - 1.0).abs() < 0.05, "mole fractions should sum to ~1: {sum}");
+    }
+
+    #[test]
+    fn second_dimension_differs_proving_worlds_are_data() {
+        let moon = def(find_dimension("oc:moon").expect("moon dimension exists")).unwrap();
+        let earth = overworld();
+        assert!(moon.gravity < earth.gravity, "moon is lower-gravity: {} vs {}", moon.gravity, earth.gravity);
+        assert!(moon.thermal.is_none(), "an airless moon has no geothermal profile");
+        assert!(moon.atmosphere.sky_day != earth.atmosphere.sky_day, "moon sky differs from Earth");
+        assert!(moon.atmosphere_composition.mix.is_empty(), "the moon is a vacuum");
+        // The active-dimension switch resolves and reads back the moon.
+        assert!(set_active_by_id("oc:moon"));
+        assert_eq!(active().id, "oc:moon");
+        set_active(DimensionId(0)); // restore so other tests see the overworld
+        assert_eq!(active().id, "oc:overworld");
     }
 }

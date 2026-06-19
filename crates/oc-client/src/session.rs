@@ -124,7 +124,10 @@ impl Session {
                 .try_recv()
                 .map_err(|_| anyhow::anyhow!("server disconnected during startup"))?
             {
-                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode, cheats }) => {
+                Some(ServerMessage::Welcome { seed, spawn, day_fraction, mode, cheats, dimension }) => {
+                    // Match the server's world: the active dimension drives the
+                    // client's sky and player physics (gravity/buoyancy).
+                    oc_world::env_registry::set_active_by_id(&dimension);
                     break (seed, spawn, day_fraction, ModeId(mode), cheats);
                 }
                 Some(_) => {}

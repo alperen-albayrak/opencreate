@@ -328,6 +328,9 @@ struct LevelMeta {
     /// (`format_version: 2`). Empty for pre-registry saves → adopt the current
     /// registry order on load.
     block_palette: Vec<String>,
+    /// The world's dimension (EnvDef string id); selects gravity, sky and
+    /// atmosphere. Empty/absent → `oc:overworld`.
+    dimension: String,
 }
 
 struct Server {
@@ -348,6 +351,8 @@ struct Server {
     /// The world's block palette string ids (persisted in `level.txt`), kept so
     /// every save re-writes the table the stored column ids index into.
     block_palette: Vec<String>,
+    /// The world's dimension id (persisted; sets the process active EnvDef).
+    dimension: String,
     level_path: PathBuf,
     seed: u64,
     day_fraction: f64,
@@ -403,6 +408,15 @@ impl Server {
             .map(|l| l.cheats)
             .or(config.cheats)
             .unwrap_or(false);
+        // The world's dimension (gravity/sky/atmosphere). A loaded world keeps
+        // its saved id; a new world defaults to the overworld. Make it the
+        // process's active dimension so the server's physics read the right env.
+        let dimension = level
+            .as_ref()
+            .map(|l| l.dimension.clone())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "oc:overworld".to_string());
+        oc_world::env_registry::set_active_by_id(&dimension);
         let (position, yaw, pitch, day_fraction) = match &level {
             Some(l) => {
                 info!("resumed world from {}", level_path.display());
@@ -419,6 +433,7 @@ impl Server {
                 day_fraction,
                 mode: mode.0,
                 cheats,
+                dimension: dimension.clone(),
             })
             .map_err(|_| anyhow::anyhow!("client disconnected before welcome"))?;
 
@@ -444,6 +459,7 @@ impl Server {
             last_sent_stats: None,
             store,
             block_palette,
+            dimension,
             level_path,
             seed,
             day_fraction,
@@ -888,6 +904,7 @@ impl Server {
             mode: self.registry.mode(self.mode).id.clone(),
             cheats: self.cheats,
             block_palette: self.block_palette.clone(),
+            dimension: self.dimension.clone(),
         };
         if let Err(e) = save_level(&self.level_path, &meta) {
             warn!("saving level metadata: {e:#}");
@@ -976,12 +993,14 @@ fn load_level(path: &Path) -> Option<LevelMeta> {
                     .collect()
             })
             .unwrap_or_default(),
+        // Pre-dimension saves load as the overworld.
+        dimension: get("dimension").cloned().unwrap_or_default(),
     })
 }
 
 fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
     let text = format!(
-        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\ncheats={}\nblock_palette={}\n",
+        "seed={}\nday={}\npx={}\npy={}\npz={}\nyaw={}\npitch={}\nmode={}\ncheats={}\nblock_palette={}\ndimension={}\n",
         meta.seed,
         meta.day_fraction,
         meta.position.x,
@@ -992,6 +1011,7 @@ fn save_level(path: &Path, meta: &LevelMeta) -> Result<()> {
         meta.mode,
         meta.cheats,
         meta.block_palette.join(","),
+        meta.dimension,
     );
     let tmp = path.with_extension("txt.tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;

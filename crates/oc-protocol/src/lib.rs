@@ -69,6 +69,9 @@ pub enum ServerMessage {
         /// later run commands). §6: in singleplayer this mirrors the
         /// world's cheats flag; in multiplayer it's per-player (admin).
         cheats: bool,
+        /// The world's dimension (EnvDef string id, e.g. `oc:overworld`); the
+        /// client makes it active so sky/gravity match the server's world.
+        dimension: String,
     },
     /// Terrain for a subscribed column.
     Column(GeneratedColumn),

@@ -89,7 +89,7 @@ impl Player {
         } else {
             // Gravity/jump from the active dimension (EnvDef); water buoyancy
             // and swim from the fluid (FluidDef) — data, not constants.
-            let env = oc_world::env_registry::overworld();
+            let env = oc_world::env_registry::active();
             let gravity = env.gravity as f64;
             let terminal_fall = env.terminal_fall_speed as f64;
             let jump_speed = env.jump_speed as f64;

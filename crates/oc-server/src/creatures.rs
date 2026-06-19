@@ -142,7 +142,7 @@ pub fn tick(
         let (sin, cos) = (wander.yaw as f64).sin_cos();
         vel.0.x = -sin * speed;
         vel.0.z = -cos * speed;
-        let env = oc_world::env_registry::overworld();
+        let env = oc_world::env_registry::active();
         vel.0.y = (vel.0.y - env.gravity as f64 * dt).max(-(env.terminal_fall_speed as f64));
 
         let aabb = Aabb::standing(pos.0, def.size.0 as f64 / 2.0, def.size.1 as f64);

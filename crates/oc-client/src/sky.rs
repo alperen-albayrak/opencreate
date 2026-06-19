@@ -45,7 +45,7 @@ pub struct SkyState {
 /// .25 = noon, .5 = sunset, .75 = midnight. Colors come from the active
 /// dimension's [`Atmosphere`] (data), not hardcoded constants.
 pub fn sky_at(day: f64) -> SkyState {
-    let atm = &env_registry::overworld().atmosphere;
+    let atm = &env_registry::active().atmosphere;
     let day_sky = v3(atm.sky_day);
     let dusk_sky = v3(atm.sky_dusk);
     let night_sky = v3(atm.sky_night);
@@ -99,7 +99,7 @@ pub fn sky_at(day: f64) -> SkyState {
 /// clearing as the eyes adjust; Java settles past 90 blocks, Bedrock
 /// at 60 — we sit between, scaled to our render distances).
 pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
-    let atm = &env_registry::overworld().atmosphere;
+    let atm = &env_registry::active().atmosphere;
     let t = (submerged_secs / 12.0).clamp(0.0, 1.0);
     atm.underwater_fog_near
         + (atm.underwater_fog_far - atm.underwater_fog_near) * (t * t * (3.0 - 2.0 * t))
@@ -110,7 +110,7 @@ pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
 /// readable. The sun keeps shining through as a bright glow overhead.
 pub fn underwater(state: &SkyState) -> SkyState {
     let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
-    let water = v3(env_registry::overworld().atmosphere.underwater_color) * (0.22 + 0.78 * daylight);
+    let water = v3(env_registry::active().atmosphere.underwater_color) * (0.22 + 0.78 * daylight);
     SkyState {
         sky_color: [water.x, water.y, water.z, 1.0],
         horizon_away: [water.x, water.y, water.z, 1.0],

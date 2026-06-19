@@ -1,0 +1,28 @@
+// A small airless moon — the second dimension, proving worlds are data:
+// low gravity, a near-black vacuum sky, and no geothermal profile (uniformly
+// cold, no hot deep). Only the values that differ from Earth are listed; the
+// rest inherit the Atmosphere default.
+EnvDef(
+    id: "oc:moon",
+    name: "Moon",
+    // ~1/3 g: jumps float, falls are slow and gentle.
+    gravity: 9.0,
+    atmosphere: (
+        // Airless: the sky stays near-black even by day, only the sun lights it.
+        sky_day: (0.02, 0.02, 0.03),
+        sky_dusk: (0.05, 0.04, 0.04),
+        sky_night: (0.004, 0.004, 0.007),
+        zenith_day: (0.01, 0.01, 0.02),
+        zenith_night: (0.002, 0.002, 0.004),
+        ambient_night: 0.10,
+        ambient_day_gain: 0.20,
+        sun_tilt: 0.25,
+        underwater_color: (0.05, 0.05, 0.07),
+        underwater_fog_near: 24.0,
+        underwater_fog_far: 72.0,
+    ),
+    // Vacuum: no breathable mixture, near-zero pressure.
+    atmosphere_composition: (pressure_kpa: 0.0, mix: {}),
+    // No geothermal profile: an airless body is uniformly cold (no hot deep).
+    thermal: None,
+)
