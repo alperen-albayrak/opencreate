@@ -109,17 +109,10 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
                 for dy in 0..SECTION_SIZE {
                     let y = base_y + dy;
                     let pos = IVec3::new(x, y, z);
-                    let mut block = generator.block_in_column(info, y);
-                    // Solid rock above the bedrock floor gets carved: deep bands
-                    // (hellish caves → air, lava lake → lava) take priority over
-                    // the normal upper-crust caves.
-                    if block.is_solid() && block != crate::blocks::BEDROCK {
-                        if let Some(fill) = generator.deep_fill(pos) {
-                            block = fill;
-                        } else if generator.is_cave(pos, info.surface) {
-                            block = BlockId::AIR;
-                        }
-                    }
+                    // Carve caves + deep bands (hellish air, lava lake) in one
+                    // pass; bedrock and non-solid blocks pass through.
+                    let mut block =
+                        generator.carve(pos, info.surface, generator.block_in_column(info, y));
                     if block.is_air()
                         && let Some(&tree) = overlay.get(&IVec3::new(x, y, z))
                     {

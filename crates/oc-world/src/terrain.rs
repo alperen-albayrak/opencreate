@@ -44,12 +44,6 @@ pub const WORLD_MAX_Y: i32 = 1024;
 /// Dry surfaces at or below this height near coasts/rivers are sand.
 const BEACH_TOP: i32 = SEA_LEVEL + 1;
 
-/// Caves carve no deeper than this. Real caves are an upper-crust feature;
-/// below it the deep rock is solid (and the hellish/lava zones do their own
-/// carving), which also avoids paying the 3D cave-noise cost for the bulk of
-/// the deep column.
-const CAVE_FLOOR_Y: i32 = -320;
-
 /// No trees grow above this surface height (alpine treeline).
 const TREELINE: i32 = 78;
 
@@ -173,14 +167,31 @@ impl TerrainGenerator {
         Self { seed, deep_bands }
     }
 
-    /// In a deep band, carve big caverns and return their fill (air / lava);
-    /// `None` means the rock stays solid stone, or the position is in no band.
-    pub fn deep_fill(&self, pos: BlockPos) -> Option<BlockId> {
-        let band = self
-            .deep_bands
+    /// The deep band containing world-Y `y`, if any (its cavern fill block).
+    pub fn deep_band_fill(&self, y: i32) -> Option<BlockId> {
+        self.deep_bands
             .iter()
-            .find(|b| pos.y < b.top && pos.y >= b.bottom)?;
-        if self.big_cavern(pos) { Some(band.fill) } else { None }
+            .find(|b| y < b.top && y >= b.bottom)
+            .map(|b| b.fill)
+    }
+
+    /// Final block at `pos`, carving the `base` block from `block_in_column`:
+    /// in a deep band, big caverns + caves are filled with the band's block
+    /// (air for hostile caves, lava for the lake); above the bands, caves carve
+    /// to air; bedrock and non-solid blocks pass through. The single source of
+    /// truth for carving (worldgen, the mapgen tool, and tests all call this).
+    pub fn carve(&self, pos: BlockPos, surface: i32, base: BlockId) -> BlockId {
+        if !base.is_solid() || base == blocks::BEDROCK {
+            return base;
+        }
+        match self.deep_band_fill(pos.y) {
+            Some(fill) => {
+                if self.big_cavern(pos) || self.is_cave(pos, surface) { fill } else { base }
+            }
+            None => {
+                if self.is_cave(pos, surface) { BlockId::AIR } else { base }
+            }
+        }
     }
 
     /// Large-scale 3D noise carving the deep bands into big, open caverns
@@ -516,15 +527,10 @@ impl TerrainGenerator {
     /// noise zero-surfaces — thin sheets crossing make winding 1D tunnels).
     pub fn is_cave(&self, pos: BlockPos, surface: i32) -> bool {
         // Keep the world floor and shorelines intact: no holes in the
-        // bottom sections, none puncturing beach/ocean/river floors.
+        // bottom sections, none puncturing beach/ocean/river floors. Caves run
+        // all the way down to the bedrock floor (deeper costs more gen time,
+        // accepted for the natural look — see the 5-min creation budget).
         if pos.y <= (BOTTOM_SECTION_Y + 1) * SECTION_SIZE {
-            return false;
-        }
-        // Caves are an upper-crust phenomenon: below this the rock is solid
-        // (the deep hellish/lava zones get their own targeted carving). This
-        // also skips the expensive 3D-noise eval for the bulk of the deep
-        // column, keeping generation cheap in the much taller world.
-        if pos.y < CAVE_FLOOR_Y {
             return false;
         }
         if surface <= BEACH_TOP && pos.y > surface - 6 {
@@ -1013,28 +1019,28 @@ mod tests {
     #[test]
     fn deep_bands_carve_hellish_air_and_lava_above_the_bedrock_floor() {
         let g = TerrainGenerator::new(42); // overworld deep layers
-        let info = g.column(8, 8);
-        // No deep band in the normal range; the bedrock floor is never carved.
-        assert!(g.deep_fill(IVec3::new(8, -100, 8)).is_none(), "no band in normal range");
-        assert_eq!(g.block_in_column(&info, -760), blocks::BEDROCK, "bedrock floor");
+        // No deep band in the normal range; the bedrock floor passes through.
+        assert!(g.deep_band_fill(-100).is_none(), "no band in normal range");
+        assert_eq!(
+            g.carve(IVec3::new(8, -760, 8), 64, blocks::BEDROCK),
+            blocks::BEDROCK,
+            "bedrock floor is never carved"
+        );
         // Across a region: the hellish band carves air caverns among stone
         // walls; the lava band fills lava among stone — each only its own fill.
         let (mut hell_air, mut hell_wall, mut lava, mut lava_wall) = (0, 0, 0, 0);
         for x in 0..40 {
             for z in 0..40 {
-                match g.deep_fill(IVec3::new(x, -500, z)) {
-                    Some(b) => {
-                        assert_eq!(b, blocks::AIR, "hellish caverns are air");
-                        hell_air += 1;
-                    }
-                    None => hell_wall += 1,
+                let surface = g.column(x, z).surface;
+                match g.carve(IVec3::new(x, -500, z), surface, blocks::STONE) {
+                    b if b == blocks::AIR => hell_air += 1,
+                    b if b == blocks::STONE => hell_wall += 1,
+                    b => panic!("hellish band produced {b:?}"),
                 }
-                match g.deep_fill(IVec3::new(x, -700, z)) {
-                    Some(b) => {
-                        assert_eq!(b, blocks::LAVA, "lava lake caverns are lava");
-                        lava += 1;
-                    }
-                    None => lava_wall += 1,
+                match g.carve(IVec3::new(x, -700, z), surface, blocks::STONE) {
+                    b if b == blocks::LAVA => lava += 1,
+                    b if b == blocks::STONE => lava_wall += 1,
+                    b => panic!("lava band produced {b:?}"),
                 }
             }
         }

@@ -174,19 +174,10 @@ fn cross_section(generator: &TerrainGenerator, path: &str) {
             let x = col as i32 - X_RANGE;
             let info = generator.column(x, Z);
             let pos = glam::IVec3::new(x, y, Z);
-            let mut block = generator.block_in_column(&info, y);
-            let mut carved = false;
-            // Mirror world.rs: deep bands (hellish air / lava) take priority,
-            // then the normal upper-crust caves.
-            if block.is_solid() && block != blocks::BEDROCK {
-                if let Some(fill) = generator.deep_fill(pos) {
-                    block = fill;
-                    carved = block.is_air();
-                } else if generator.is_cave(pos, info.surface) {
-                    block = oc_world::BlockId::AIR;
-                    carved = true;
-                }
-            }
+            let base = generator.block_in_column(&info, y);
+            let block = generator.carve(pos, info.surface, base);
+            // A solid block carved to air reads as a (dark) cave/hellish cavern.
+            let carved = base.is_solid() && block.is_air();
             let color: [u8; 3] = if carved {
                 [20, 12, 8] // cave / hellish cavern air
             } else if block == blocks::WATER {
