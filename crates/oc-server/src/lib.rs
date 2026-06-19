@@ -765,7 +765,7 @@ impl Server {
         wanted.truncate(slots);
         for chunk in wanted {
             self.gen_inflight.insert(chunk);
-            let generator = *self.world.generator();
+            let generator = self.world.generator().clone();
             let store = Arc::clone(&self.store);
             let tx = self.gen_tx.clone();
             rayon::spawn(move || {

@@ -157,12 +157,13 @@ fn top_down(generator: &TerrainGenerator, path: &str, pixels: usize, scale: i32)
     }
 }
 
-/// Vertical slice along X at z = 64: terrain layers, water, and caves.
+/// Vertical slice along X at z = 64, top to the bedrock floor: terrain layers,
+/// caves, the hellish caverns and the lava lake.
 fn cross_section(generator: &TerrainGenerator, path: &str) {
     const Z: i32 = 64;
     const X_RANGE: i32 = 1024;
     const Y_TOP: i32 = 200;
-    const Y_BOTTOM: i32 = -64;
+    const Y_BOTTOM: i32 = -800;
     let width = (2 * X_RANGE) as usize;
     let height = (Y_TOP - Y_BOTTOM) as usize;
     let mut out = BufWriter::new(File::create(path).unwrap());
@@ -172,16 +173,28 @@ fn cross_section(generator: &TerrainGenerator, path: &str) {
         for col in 0..width {
             let x = col as i32 - X_RANGE;
             let info = generator.column(x, Z);
+            let pos = glam::IVec3::new(x, y, Z);
             let mut block = generator.block_in_column(&info, y);
             let mut carved = false;
-            if block.is_solid() && generator.is_cave(glam::IVec3::new(x, y, Z), info.surface) {
-                block = oc_world::BlockId::AIR;
-                carved = true;
+            // Mirror world.rs: deep bands (hellish air / lava) take priority,
+            // then the normal upper-crust caves.
+            if block.is_solid() && block != blocks::BEDROCK {
+                if let Some(fill) = generator.deep_fill(pos) {
+                    block = fill;
+                    carved = block.is_air();
+                } else if generator.is_cave(pos, info.surface) {
+                    block = oc_world::BlockId::AIR;
+                    carved = true;
+                }
             }
             let color: [u8; 3] = if carved {
-                [20, 12, 8] // cave air
+                [20, 12, 8] // cave / hellish cavern air
             } else if block == blocks::WATER {
                 [40, 90, 170]
+            } else if block == blocks::LAVA {
+                [230, 110, 30] // lava lake
+            } else if block == blocks::BEDROCK {
+                [60, 58, 64] // bedrock floor
             } else if block == blocks::GRASS {
                 [100, 160, 70]
             } else if block == blocks::DIRT {

@@ -122,6 +122,27 @@ impl Default for Thermal {
     }
 }
 
+/// The deep vertical layers of a dimension: ordered bands below the normal
+/// terrain where worldgen carves big caverns and fills them with a chosen block
+/// (air for hostile caves, lava for a lava lake). Modular per world — a volcanic
+/// planet raises the lava, an airless moon has none (default empty → just rock
+/// to the bedrock floor).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DeepLayers {
+    pub bands: Vec<DeepBand>,
+}
+
+/// One deep band: caverns are carved from `top` downward (to the next band's
+/// top, or the bedrock floor for the last) and filled with `fill` (a stable
+/// block id, e.g. `oc:air` or `oc:lava`); the un-carved rock stays stone.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeepBand {
+    /// Top world-Y of the band (bands are sorted descending on load).
+    pub top: i32,
+    /// Block id filling the carved caverns (`oc:air`, `oc:lava`, …).
+    pub fill: String,
+}
+
 /// A sun / moon / star. Reserved for Step 4-5 (directional light + sky).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CelestialBody {
@@ -160,6 +181,10 @@ pub struct EnvDef {
     /// airless world is just a single cold point (no sentinel needed).
     #[serde(default)]
     pub thermal: Thermal,
+    /// Deep vertical layers (hellish caves, lava lake). Empty = none (rock to
+    /// the bedrock floor). Read by the terrain generator.
+    #[serde(default)]
+    pub layers: DeepLayers,
     #[serde(default)]
     pub celestial: Vec<CelestialBody>,
 }

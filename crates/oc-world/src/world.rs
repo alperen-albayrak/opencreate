@@ -108,9 +108,17 @@ pub fn generate_column_data(generator: &TerrainGenerator, chunk: ChunkPos) -> Ge
                 let info = &infos[dz * 16 + dx];
                 for dy in 0..SECTION_SIZE {
                     let y = base_y + dy;
+                    let pos = IVec3::new(x, y, z);
                     let mut block = generator.block_in_column(info, y);
-                    if block.is_solid() && generator.is_cave(IVec3::new(x, y, z), info.surface) {
-                        block = BlockId::AIR;
+                    // Solid rock above the bedrock floor gets carved: deep bands
+                    // (hellish caves → air, lava lake → lava) take priority over
+                    // the normal upper-crust caves.
+                    if block.is_solid() && block != crate::blocks::BEDROCK {
+                        if let Some(fill) = generator.deep_fill(pos) {
+                            block = fill;
+                        } else if generator.is_cave(pos, info.surface) {
+                            block = BlockId::AIR;
+                        }
                     }
                     if block.is_air()
                         && let Some(&tree) = overlay.get(&IVec3::new(x, y, z))
@@ -296,7 +304,7 @@ mod tests {
         world.generate_column(chunk);
         assert!(world.is_generated(chunk));
 
-        let generator = *world.generator();
+        let generator = world.generator().clone();
         for (dx, dz) in [(0, 0), (7, 11), (15, 15)] {
             let (x, z) = (chunk.x * 16 + dx, chunk.z * 16 + dz);
             let h = world.surface_height(x, z);

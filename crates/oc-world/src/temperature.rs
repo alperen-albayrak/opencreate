@@ -83,19 +83,17 @@ mod tests {
     fn temperature_follows_the_curve_and_clamps_at_the_ends() {
         let env = env_registry::overworld();
         let surface = base(IVec3::new(0, SEA_LEVEL, 0), env);
-        // The survivable band ends at 50 °C; the curve is authored so that's
-        // reached ~200 blocks down (the rock above is safe to mine).
-        let hazard_depth = base(IVec3::new(0, SEA_LEVEL - 200, 0), env);
-        // Below the deepest point the curve holds flat (no runaway extrapolation
-        // toward a glowing core — the deep heat comes from lava, not the base).
-        let deepest = base(IVec3::new(0, -368, 0), env);
-        let below_floor = base(IVec3::new(0, SEA_LEVEL - 100_000, 0), env);
-        let high = base(IVec3::new(0, SEA_LEVEL + 120, 0), env);
-        assert!((surface - 14.0).abs() < 0.01, "sea level ≈ 14 °C: {surface}");
-        assert!((hazard_depth - 50.0).abs() < 1.0, "~50 °C at 200 deep: {hazard_depth}");
-        assert!(hazard_depth > surface, "deeper is hotter");
-        assert_eq!(below_floor, deepest, "clamps to the deepest point below it");
-        assert!(deepest < 100.0, "the base stays gentle (lava does the heat): {deepest}");
+        // 50 °C hazard onset at -256; the hellish caves are authored hot
+        // (666 °C) at -352, held flat below as the "core".
+        let hazard = base(IVec3::new(0, -256, 0), env);
+        let hellish = base(IVec3::new(0, -352, 0), env);
+        let below = base(IVec3::new(0, -100_000, 0), env);
+        let high = base(IVec3::new(0, 320, 0), env);
+        assert!((surface - 24.0).abs() < 0.01, "sea level ≈ 24 °C: {surface}");
+        assert!((hazard - 50.0).abs() < 1.0, "50 °C hazard onset at -256: {hazard}");
+        assert!((hellish - 666.0).abs() < 1.0, "hellish ≈ 666 °C at -352: {hellish}");
+        assert_eq!(below, hellish, "clamps to the deepest point below it");
+        assert!(hazard > surface && hellish > hazard, "deeper is hotter");
         assert!(high < surface, "high altitude is colder: {high} vs {surface}");
     }
 

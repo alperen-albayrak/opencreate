@@ -22,7 +22,8 @@
 use glam::IVec3;
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE};
 
-use crate::{BlockId, blocks};
+use crate::env_registry::{self, DeepLayers};
+use crate::{BlockId, blocks, registry};
 
 /// Lowest section a generated column reaches: y = -768, the bedrock floor of
 /// the deep world (the bottom section is unbreakable bedrock). The range below
@@ -69,14 +70,28 @@ const SEED_TREES: u64 = 0x7EE5_0000_0000_0001;
 const SEED_TREE_SHAPE: u64 = 0x7EE5_0000_0000_0002;
 const SEED_VILLAGE: u64 = 0x111A_6E00_0000_000C;
 const SEED_HOUSE: u64 = 0x115E_0000_0000_000D;
+const SEED_DEEP_CAVERN: u64 = 0xDEE9_CA7E_0000_000E;
 
 /// Villages are placed per square region of this many chunks.
 pub const VILLAGE_REGION: i32 = 12;
 
 /// Heightmap terrain, pure function of (seed, x, z).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct TerrainGenerator {
     seed: u64,
+    /// Resolved deep layers (hellish caves, lava lake), sorted top-down with
+    /// computed band bottoms. Empty for a dimension with no deep layers.
+    deep_bands: Vec<DeepBandResolved>,
+}
+
+/// A deep band with its computed extent and resolved fill block.
+#[derive(Debug, Clone, Copy)]
+struct DeepBandResolved {
+    /// Caverns are carved for `bottom <= y < top`.
+    top: i32,
+    bottom: i32,
+    /// Block filling carved caverns (air for hostile caves, lava for a lake).
+    fill: BlockId,
 }
 
 /// The climate tuple a column's terrain and biome derive from.
@@ -128,8 +143,59 @@ impl Biome {
 }
 
 impl TerrainGenerator {
+    /// New generator for the **active dimension** (its deep layers from the
+    /// dimension registry). Tests / the mapgen tool get the overworld default.
     pub fn new(seed: u64) -> Self {
-        Self { seed }
+        Self::with_layers(seed, &env_registry::active().layers)
+    }
+
+    /// New generator with explicit deep layers (a specific dimension's).
+    pub fn with_layers(seed: u64, layers: &DeepLayers) -> Self {
+        // Sort bands top-down; each band runs from its top to the next band's
+        // top (the last to the bedrock-floor top), and its fill string resolves
+        // to a runtime block id (unknown ids → air, a no-op carve).
+        let mut tops: Vec<(i32, BlockId)> = layers
+            .bands
+            .iter()
+            .map(|b| (b.top, registry::find_block(&b.fill).unwrap_or(BlockId::AIR)))
+            .collect();
+        tops.sort_by(|a, b| b.0.cmp(&a.0));
+        let floor = (BOTTOM_SECTION_Y + 1) * SECTION_SIZE;
+        let deep_bands = tops
+            .iter()
+            .enumerate()
+            .map(|(i, &(top, fill))| DeepBandResolved {
+                top,
+                bottom: tops.get(i + 1).map(|&(t, _)| t).unwrap_or(floor),
+                fill,
+            })
+            .collect();
+        Self { seed, deep_bands }
+    }
+
+    /// In a deep band, carve big caverns and return their fill (air / lava);
+    /// `None` means the rock stays solid stone, or the position is in no band.
+    pub fn deep_fill(&self, pos: BlockPos) -> Option<BlockId> {
+        let band = self
+            .deep_bands
+            .iter()
+            .find(|b| pos.y < b.top && pos.y >= b.bottom)?;
+        if self.big_cavern(pos) { Some(band.fill) } else { None }
+    }
+
+    /// Large-scale 3D noise carving the deep bands into big, open caverns
+    /// (vertically squashed so they read as wide chambers, not vertical shafts).
+    fn big_cavern(&self, pos: BlockPos) -> bool {
+        let d = fbm3(
+            self.seed ^ SEED_DEEP_CAVERN,
+            pos.x as f64 / 60.0,
+            pos.y as f64 / 40.0,
+            pos.z as f64 / 60.0,
+            2,
+        );
+        // Generous threshold → roughly half the band is open: big caverns
+        // separated by stone walls and pillars.
+        d > 0.08
     }
 
     /// The climate tuple at a column. All channels are sampled through a
@@ -942,6 +1008,38 @@ mod tests {
                 assert!(!g.is_cave(IVec3::new(x, floor_y, z), surface), "hole in world floor");
             }
         }
+    }
+
+    #[test]
+    fn deep_bands_carve_hellish_air_and_lava_above_the_bedrock_floor() {
+        let g = TerrainGenerator::new(42); // overworld deep layers
+        let info = g.column(8, 8);
+        // No deep band in the normal range; the bedrock floor is never carved.
+        assert!(g.deep_fill(IVec3::new(8, -100, 8)).is_none(), "no band in normal range");
+        assert_eq!(g.block_in_column(&info, -760), blocks::BEDROCK, "bedrock floor");
+        // Across a region: the hellish band carves air caverns among stone
+        // walls; the lava band fills lava among stone — each only its own fill.
+        let (mut hell_air, mut hell_wall, mut lava, mut lava_wall) = (0, 0, 0, 0);
+        for x in 0..40 {
+            for z in 0..40 {
+                match g.deep_fill(IVec3::new(x, -500, z)) {
+                    Some(b) => {
+                        assert_eq!(b, blocks::AIR, "hellish caverns are air");
+                        hell_air += 1;
+                    }
+                    None => hell_wall += 1,
+                }
+                match g.deep_fill(IVec3::new(x, -700, z)) {
+                    Some(b) => {
+                        assert_eq!(b, blocks::LAVA, "lava lake caverns are lava");
+                        lava += 1;
+                    }
+                    None => lava_wall += 1,
+                }
+            }
+        }
+        assert!(hell_air > 0 && hell_wall > 0, "hellish caverns + walls: {hell_air}/{hell_wall}");
+        assert!(lava > 0 && lava_wall > 0, "lava lake + stone: {lava}/{lava_wall}");
     }
 
     #[test]
