@@ -34,10 +34,43 @@ struct Scene {
     sky_zenith: vec4<f32>,
     sky_away: vec4<f32>,
     sky_sun: vec4<f32>,
-    // x: time (seconds); y: base ambient floor; z, w: reserved.
+    // x: time (seconds); y: base ambient floor; z: camera world Y; w: thermal
+    // point count.
     params: vec4<f32>,
+    // Temperature-vs-height curve, ascending Y, two points per vec4 as
+    // (y0, temp0 °C, y1, temp1) — up to 8 points; params.w is the count.
+    thermal_profile: array<vec4<f32>, 4>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
+
+// One temperature-curve point (y, °C); the curve is ascending by y.
+fn profile_point(i: i32) -> vec2<f32> {
+    let v = scene.thermal_profile[i / 2];
+    if ((i & 1) == 0) { return vec2<f32>(v.x, v.y); }
+    return vec2<f32>(v.z, v.w);
+}
+
+// Tier-1 ambient temperature (°C) at a world Y from the dimension's curve;
+// piecewise-linear, clamped beyond the ends. Mirrors oc_world::temperature::base
+// and pbr.wgsl, but evaluated per-vertex here (smooth) so the glow it drives
+// doesn't band on the depth buffer's quantization.
+fn base_temp(world_y: f32) -> f32 {
+    let n = i32(scene.params.w);
+    if (n <= 0) { return 14.0; }
+    let first = profile_point(0);
+    let last = profile_point(n - 1);
+    if (world_y <= first.x) { return first.y; }
+    if (world_y >= last.x) { return last.y; }
+    for (var i = 0; i < n - 1; i = i + 1) {
+        let a = profile_point(i);
+        let b = profile_point(i + 1);
+        if (world_y >= a.x && world_y <= b.x) {
+            let t = (world_y - a.x) / max(b.x - a.x, 0.0001);
+            return a.y + t * (b.y - a.y);
+        }
+    }
+    return last.y;
+}
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -51,6 +84,10 @@ struct VsOut {
     // Bit 0: underwater (caustics); bit 2: adjacent water is the open surface.
     @location(5) @interpolate(flat) underwater: u32,
     @location(6) @interpolate(flat) normal: vec3<f32>,
+    // Blackbody glow drive, 0..1 = temperature 525..1500 °C past the Draper
+    // point. Per-vertex (smooth) so the glow doesn't band; the lighting pass
+    // blooms it. 0 = no glow.
+    @location(7) emissive: f32,
 }
 
 @vertex
@@ -113,6 +150,10 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     }
     out.underwater = (packed.y >> 24u) & 5u;
     out.normal = face_normal[face];
+    // Absolute world Y = camera world Y (params.z) + camera-relative section
+    // origin (pc.rel) + local pos. Drives the per-vertex blackbody glow.
+    let world_y = scene.params.z + pc.rel.y + pos.y;
+    out.emissive = clamp((base_temp(world_y) - 525.0) / 975.0, 0.0, 1.0);
     return out;
 }
 
@@ -205,6 +246,7 @@ fn fs_main(in: VsOut) -> GBufferOut {
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
     out.gb1 = vec4<f32>(oct_encode(in.normal), in.ao_sky.y, 1.0);
-    out.gb2 = vec4<f32>(in.block_light, 0.0);
+    // GB2.a carries the blackbody-glow temperature (was metalness-reserved).
+    out.gb2 = vec4<f32>(in.block_light, in.emissive);
     return out;
 }

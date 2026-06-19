@@ -109,36 +109,6 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
     return mix(1.0, mix(lit, 1.0, range_fade), strength);
 }
 
-// One temperature-curve point (y, °C); the curve is ascending by y.
-fn profile_point(i: i32) -> vec2<f32> {
-    let v = scene.thermal_profile[i / 2];
-    if ((i & 1) == 0) {
-        return vec2<f32>(v.x, v.y);
-    }
-    return vec2<f32>(v.z, v.w);
-}
-
-// Tier-1 ambient temperature (°C) at a world Y from the dimension's keypoint
-// curve: piecewise-linear, clamped beyond the ends. Mirrors
-// oc_world::temperature::base, so glowing matter agrees CPU-side.
-fn base_temp(world_y: f32) -> f32 {
-    let n = i32(scene.params.w);
-    if (n <= 0) { return 14.0; }
-    let first = profile_point(0);
-    let last = profile_point(n - 1);
-    if (world_y <= first.x) { return first.y; }
-    if (world_y >= last.x) { return last.y; }
-    for (var i = 0; i < n - 1; i = i + 1) {
-        let a = profile_point(i);
-        let b = profile_point(i + 1);
-        if (world_y >= a.x && world_y <= b.x) {
-            let t = (world_y - a.x) / max(b.x - a.x, 0.0001);
-            return a.y + t * (b.y - a.y);
-        }
-    }
-    return last.y;
-}
-
 // Incandescent self-glow past the Draper point (~525 °C), HDR so hot matter
 // blooms. Color tracks the TFC heat ladder: dull red -> orange -> yellow ->
 // toward white as temperature rises. Driven by hot *matter* (rendered rock at
@@ -205,12 +175,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let lit = max(vec3<f32>(sky_term + sun_term), block_light) + vec3<f32>(floor);
     var color = albedo * lit;
 
-    // Incandescence: the rendered surface glows by its ambient temperature past
-    // the Draper point (deep hellish rock at ~666 °C glows dull-orange). Only
-    // opaque geometry reaches here, so this is hot *matter*, not hot air.
-    // Absolute world Y = camera world Y (params.z) + reconstructed relative Y.
-    let world_y = scene.params.z + world_rel.y;
-    color += blackbody_glow(base_temp(world_y));
+    // Incandescence: the surface's own blackbody glow past the Draper point,
+    // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —
+    // smooth, so it never bands on depth quantization. Hot matter (hellish
+    // rock, lava) glows + blooms; cold surfaces store 0 → no glow.
+    color += blackbody_glow(525.0 + g2.a * 975.0);
 
     // Distance fog: far terrain melts into the sky, same curve as the
     // forward path (and the water pass).
