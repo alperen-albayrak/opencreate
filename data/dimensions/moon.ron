@@ -1,6 +1,6 @@
 // A small airless moon — the second dimension, proving worlds are data:
-// low gravity, a near-black vacuum sky, and no geothermal profile (uniformly
-// cold, no hot deep). Only the values that differ from Earth are listed; the
+// low gravity, a near-black vacuum sky, and a uniform cold temperature (one
+// profile point, no hot deep). Only the values that differ from Earth are listed; the
 // rest inherit the Atmosphere default.
 EnvDef(
     id: "oc:moon",
@@ -25,6 +25,7 @@ EnvDef(
     ),
     // Vacuum: no breathable mixture, near-zero pressure.
     atmosphere_composition: (pressure_kpa: 0.0, mix: {}),
-    // No geothermal profile: an airless body is uniformly cold (no hot deep).
-    thermal: None,
+    // An airless body is uniformly cold: a single-point curve (held at every
+    // height, no warming with depth). No sentinel needed — one point = uniform.
+    thermal: (profile: [(y: 0.0, temp: -10.0)]),
 )

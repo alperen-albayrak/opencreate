@@ -27,9 +27,15 @@ EnvDef(
         pressure_kpa: 101.3,
         mix: {"oc:n2": 0.78, "oc:o2": 0.21, "oc:co2": 0.01},
     ),
-    // A cored planet. Gentle, near-realistic geothermal gradient (°C per
-    // block): the survivable band (50 °C) is reached ~200 blocks down, so the
-    // rock above is safe to mine. The glowing, lethal heat below comes from
-    // real lava (~1200 °C) in the deep layers, not faked shallow geothermal.
-    thermal: Some((surface_temp: 14.0, geothermal_gradient: 0.18, core_temp: 1200.0)),
+    // Temperature-vs-height curve (°C at world Y, piecewise-linear, clamped
+    // beyond the ends). Earth-like and gentle: ~0.16 °C/block lapse above sea
+    // level, ~0.18 °C/block geothermal below it, so the survivable band (50 °C)
+    // is reached ~200 blocks down and the rock above is safe to mine. The
+    // glowing, lethal heat deeper comes from real lava (~1200 °C) in the deep
+    // layers, not from faking a steep gradient here.
+    thermal: (profile: [
+        (y:  320.0, temp: -37.2),  // high peaks (held colder above)
+        (y:    0.0, temp:  14.0),  // sea level
+        (y: -368.0, temp:  80.2),  // deepest rock (held as the "core" below)
+    ]),
 )

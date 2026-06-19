@@ -19,9 +19,6 @@ struct Scene {
     sky_sun: vec4<f32>,
     // x: time; y: base ambient floor; z: camera world Y; w: reserved.
     params: vec4<f32>,
-    // Geothermal profile: x surface °C, y gradient °C/block, z core °C, w sea
-    // level. Drives the deep-rock blackbody glow.
-    thermal: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 
@@ -109,21 +106,10 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
     return mix(1.0, mix(lit, 1.0, range_fade), strength);
 }
 
-// Tier-1 static base temperature (°C) at a world Y — mirrors
-// oc_world::temperature::base. A coreless world passes a cold no-glow profile.
-fn base_temp(world_y: f32) -> f32 {
-    let surface = scene.thermal.x;
-    let gradient = scene.thermal.y;
-    let core = scene.thermal.z;
-    let sea = scene.thermal.w;
-    let depth = max(sea - world_y, 0.0);
-    let altitude = max(world_y - sea, 0.0);
-    return min(surface + gradient * depth - 0.16 * altitude, core);
-}
-
-// Incandescent self-glow past the Draper point (~525 °C), HDR so hot rock
+// Incandescent self-glow past the Draper point (~525 °C), HDR so hot matter
 // blooms. Color tracks the TFC heat ladder: dull red -> orange -> yellow ->
-// toward white as temperature rises.
+// toward white as temperature rises. Driven by hot *matter* (lava / heated
+// blocks via their emissive), not by the ambient field — hot air doesn't glow.
 fn blackbody_glow(temp_c: f32) -> vec3<f32> {
     if (temp_c < 525.0) {
         return vec3<f32>(0.0);
@@ -185,10 +171,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let lit = max(vec3<f32>(sky_term + sun_term), block_light) + vec3<f32>(floor);
     var color = albedo * lit;
 
-    // Geothermal incandescence: deep rock self-glows past the Draper point.
-    // Absolute world Y = camera world Y (params.z) + reconstructed relative Y.
-    let world_y = scene.params.z + world_rel.y;
-    color += blackbody_glow(base_temp(world_y));
+    // (Incandescent glow is re-added as a matter-based emissive term with the
+    // lava activation: hot blocks/fluids past the Draper point glow, hot air
+    // does not. `blackbody_glow` above is that model, awaiting its emissive input.)
 
     // Distance fog: far terrain melts into the sky, same curve as the
     // forward path (and the water pass).

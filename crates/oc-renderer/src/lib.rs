@@ -456,18 +456,7 @@ impl Renderer {
             // Fill this frame's scene/environment UBO once; every world pass
             // reads sun/fog/sky/time from it instead of per-draw push constants.
             let fog = Vec4::from_array(camera.sky_color).truncate().extend(camera.fog_distance);
-            // The active dimension's geothermal profile for the deep-rock
-            // blackbody glow (a coreless/airless world → a cold no-glow value).
             let env = oc_world::env_registry::active();
-            let thermal = match &env.thermal {
-                Some(t) => Vec4::new(
-                    t.surface_temp,
-                    t.geothermal_gradient,
-                    t.core_temp,
-                    oc_world::terrain::SEA_LEVEL as f32,
-                ),
-                None => Vec4::new(-50.0, 0.0, -50.0, oc_world::terrain::SEA_LEVEL as f32),
-            };
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -478,15 +467,13 @@ impl Renderer {
                 sky_away: Vec4::from_array(camera.sky_away),
                 sky_sun: Vec4::from_array(camera.sky_sun),
                 // params.y = the dimension's ambient floor (never pure black);
-                // params.z = camera world Y, so the lighting pass can rebuild
-                // absolute depth for the geothermal glow.
+                // params.z = camera world Y (reserved for depth reconstruction).
                 params: Vec4::new(
                     camera.time,
                     env.atmosphere.ambient_floor,
                     camera.position.y as f32,
                     0.0,
                 ),
-                thermal,
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);

@@ -2,7 +2,7 @@
 //! Earth/overworld is the first entry; other planets/moons/asteroids are RON
 //! files under `data/dimensions/`. Per dimension: gravity, the atmosphere
 //! (sky colors + scattering + the underwater medium), the gas-mixture
-//! composition + total pressure, an optional geothermal profile, and the
+//! composition + total pressure, a temperature-vs-height profile, and the
 //! celestial bodies.
 //!
 //! Same loading contract as the block/fluid/gas registries: embedded default,
@@ -94,14 +94,32 @@ pub struct AtmosphereComposition {
     pub mix: HashMap<String, f32>,
 }
 
-/// Optional geothermal profile (a cored planet has one; a small airless moon
-/// omits it — uniformly cold). Feeds the Stage-G static base heat map.
+/// One point on a dimension's temperature-vs-height curve: degrees Celsius at a
+/// world Y. Sea level is `y = 0`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct TempPoint {
+    pub y: f32,
+    pub temp: f32,
+}
+
+/// A dimension's static (tier-1) temperature profile: ambient °C as a function
+/// of height, **authored as keypoints**, piecewise-linear between them and
+/// **clamped beyond both ends** (the deepest point is the held "core"; a high
+/// cold point is the lapse). The shape is data, not code: a uniform-conductivity
+/// world is a straight line, but a layered world — an insulating shell over a
+/// hot core, or a hot-cold-hot sandwich — is just a different set of points. A
+/// single point is a uniform world (e.g. an airless moon). Points may be in any
+/// order; the registry sorts them by `y` on load. Feeds the Stage-G heat map.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Thermal {
-    pub surface_temp: f32,
-    /// Kelvin per block of depth below the surface.
-    pub geothermal_gradient: f32,
-    pub core_temp: f32,
+    pub profile: Vec<TempPoint>,
+}
+
+impl Default for Thermal {
+    /// A dimension that omits `thermal` gets a mild uniform 14 °C.
+    fn default() -> Self {
+        Self { profile: vec![TempPoint { y: 0.0, temp: 14.0 }] }
+    }
 }
 
 /// A sun / moon / star. Reserved for Step 4-5 (directional light + sky).
@@ -138,8 +156,10 @@ pub struct EnvDef {
     pub atmosphere: Atmosphere,
     #[serde(default)]
     pub atmosphere_composition: AtmosphereComposition,
+    /// The temperature-vs-height curve. Defaults to a mild uniform 14 °C; an
+    /// airless world is just a single cold point (no sentinel needed).
     #[serde(default)]
-    pub thermal: Option<Thermal>,
+    pub thermal: Thermal,
     #[serde(default)]
     pub celestial: Vec<CelestialBody>,
 }
@@ -166,9 +186,17 @@ impl EnvRegistry {
         let mut defs = Vec::with_capacity(BUILTIN_DIMENSIONS.len());
         let mut by_id = HashMap::with_capacity(BUILTIN_DIMENSIONS.len());
         for ron_text in BUILTIN_DIMENSIONS {
-            let def: EnvDef = ron::from_str(ron_text).context("parsing a dimension .ron")?;
+            let mut def: EnvDef = ron::from_str(ron_text).context("parsing a dimension .ron")?;
             if by_id.insert(def.id.clone(), DimensionId(defs.len() as u16)).is_some() {
                 bail!("duplicate dimension id {:?}", def.id);
+            }
+            // The temperature curve is sampled assuming ascending Y; authors may
+            // list points in any order, so sort once at load.
+            def.thermal
+                .profile
+                .sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+            if def.thermal.profile.is_empty() {
+                def.thermal = Thermal::default();
             }
             defs.push(def);
         }
@@ -241,9 +269,11 @@ mod tests {
         // Sky transcribed from sky.rs.
         assert_eq!(env.atmosphere.sky_day, (0.47, 0.71, 0.99));
         assert_eq!(env.atmosphere.sun_tilt, 0.25);
-        // A cored planet has a geothermal profile.
-        let thermal = env.thermal.as_ref().expect("overworld has thermal");
-        assert!(thermal.core_temp > thermal.surface_temp);
+        // A cored planet warms with depth: the deepest profile point is hotter
+        // than sea level (the curve is sorted ascending by Y on load).
+        let p = &env.thermal.profile;
+        assert!(p.len() >= 2, "overworld has a multi-point curve");
+        assert!(p.first().unwrap().temp > p.last().unwrap().temp, "deep is hotter than high");
     }
 
     #[test]
@@ -267,7 +297,10 @@ mod tests {
         let moon = def(find_dimension("oc:moon").expect("moon dimension exists")).unwrap();
         let earth = overworld();
         assert!(moon.gravity < earth.gravity, "moon is lower-gravity: {} vs {}", moon.gravity, earth.gravity);
-        assert!(moon.thermal.is_none(), "an airless moon has no geothermal profile");
+        // An airless moon is uniformly cold: a single-point curve (no warming
+        // with depth, unlike Earth's multi-point profile).
+        assert_eq!(moon.thermal.profile.len(), 1, "moon is uniform-temperature");
+        assert!(moon.thermal.profile[0].temp < 0.0, "moon is cold");
         assert!(moon.atmosphere.sky_day != earth.atmosphere.sky_day, "moon sky differs from Earth");
         assert!(moon.atmosphere_composition.mix.is_empty(), "the moon is a vacuum");
         // The active-dimension switch resolves and reads back the moon.
