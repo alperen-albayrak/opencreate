@@ -147,6 +147,13 @@ pub fn underground(state: &SkyState, ambient_floor: f32) -> SkyState {
         // vertical-shaft rule floods skylight straight down). The deep is lit by
         // the ambient floor + block light (lava) + the emissive glow only.
         sun: Vec4::ZERO,
+        // Zero the sky-dome sun (xyz dir + w daylight) so the sky pass draws no
+        // sun disc, warm glow, or moon (moon_dir = -sun_dir = 0) into the dark
+        // void you see through unloaded-chunk gaps at low render distance — you
+        // can't see the sun from a deep cave. Stars and clouds off for the same
+        // reason: the cave void, not the open sky.
+        sun_dir: [0.0; 4],
+        clouds: [0.0; 4],
         stars: 0.0,
         ..*state
     }
