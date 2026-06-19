@@ -7,6 +7,12 @@ prototype) are complete; phase 3 (survival core) is well underway. The
 workspace holds 7 crates, ~90 tests, all green; the M1 dev machine runs
 60 fps at a 12-column (192-block) view distance.
 
+> **In-progress branch:** the graphics/world-building **Phase-0 foundation**
+> (deferred renderer, data-driven worlds, the heat/environment systems) is
+> being built on `feat/phase0-foundation` — see
+> [phase0-foundation-status.md](phase0-foundation-status.md) for its
+> stage-by-stage status. The notes below describe `main` (merged) state.
+
 ## Done
 
 ### Phase 1 — Engine bring-up
