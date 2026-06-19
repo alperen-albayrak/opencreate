@@ -370,6 +370,20 @@ impl Registry {
         &self.items[id.0 as usize]
     }
 
+    /// Localized display name for an item: the `item.<id>` key from the active
+    /// language if it defines one, otherwise the built-in English `name` from
+    /// items.ron — so a new item with no translation still reads in English,
+    /// never as a raw key. Adding a language is purely adding these keys to its
+    /// lang file; no code changes. (The 6×8 bitmap font is uppercase-only and
+    /// Latin, so non-Latin scripts need a font expansion too — tracked
+    /// separately from this string plumbing.)
+    pub fn item_name(&self, id: ItemId) -> &str {
+        let item = self.item(id);
+        self.texts
+            .get(&format!("item.{}", item.id))
+            .map_or(item.name.as_str(), String::as_str)
+    }
+
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
@@ -523,6 +537,26 @@ mod tests {
         assert_eq!(reg.item_for_block(block), Some(stone));
         // Sticks place nothing.
         assert_eq!(reg.block_for_item(reg.find("oc:stick").unwrap()), None);
+    }
+
+    #[test]
+    fn item_name_reads_the_active_language_then_falls_back() {
+        let mut reg = registry();
+        let stone = reg.find("oc:stone").unwrap();
+        // The English lang file localizes the name.
+        assert_eq!(reg.item_name(stone), "Stone");
+        // Every item resolves to a non-empty display name.
+        for i in 0..reg.item_count() {
+            assert!(!reg.item_name(ItemId(i as u16)).is_empty(), "item {i} has a name");
+        }
+        // Switching language changes the resolved name — proof the lookup goes
+        // through the lang table, so future languages work with data alone.
+        reg.load_lang(r#"{ "item.oc:stone": "Stein" }"#).unwrap();
+        assert_eq!(reg.item_name(stone), "Stein");
+        // An item missing from the active language falls back to its built-in
+        // English name (items.ron), never a raw key.
+        let dirt = reg.find("oc:dirt").unwrap();
+        assert_eq!(reg.item_name(dirt), "Dirt");
     }
 
     #[test]

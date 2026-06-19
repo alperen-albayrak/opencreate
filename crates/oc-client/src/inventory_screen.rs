@@ -518,6 +518,59 @@ fn draw_palette(
     }
 }
 
+/// The item under the cursor for a given hover hit, if that slot holds one.
+/// Tabs, the trash, empty slots, and `None` yield nothing (no tooltip).
+fn hovered_item(
+    hover: Hit,
+    slots: &[Slot; 36],
+    craft: &[Slot; 9],
+    result: Option<(ItemId, u8)>,
+) -> Option<ItemId> {
+    match hover {
+        Hit::Storage(i) => slots.get(i).copied().flatten().map(|(it, _)| it),
+        Hit::Craft(i) => craft.get(i).copied().flatten().map(|(it, _)| it),
+        Hit::Output => result.map(|(it, _)| it),
+        Hit::Palette(id) => Some(ItemId(id)),
+        Hit::Trash | Hit::Tab(_) | Hit::None => None,
+    }
+}
+
+/// Draws a name tooltip near the cursor: a bordered dark box with the
+/// already-localized `name`. The bitmap font is uppercase-only, so it reads
+/// in caps like the rest of the UI. Positioned below-right of the cursor and
+/// clamped so the box stays fully on-screen.
+fn tooltip(
+    quads: &mut Vec<UiQuad>,
+    texts: &mut Vec<UiText>,
+    name: &str,
+    mouse: (f32, f32),
+    w: f32,
+    h: f32,
+    ui: f32,
+) {
+    if name.is_empty() {
+        return;
+    }
+    let pad = 5.0 * ui;
+    let char_w = 6.0 * ui; // font cell advance (CELL_W)
+    let text_w = name.chars().count() as f32 * char_w;
+    let (box_w, box_h) = (text_w + 2.0 * pad, 7.0 * ui + 2.0 * pad);
+    let mut x = mouse.0 + 14.0 * ui;
+    let mut y = mouse.1 + 14.0 * ui;
+    if x + box_w > w {
+        x = (mouse.0 - box_w - 10.0 * ui).max(0.0);
+    }
+    if y + box_h > h {
+        y = (h - box_h).max(0.0);
+    }
+    // Border then fill (a later quad draws over an earlier one); the renderer
+    // always paints text above quads, so the label stays legible on top.
+    let b = ui;
+    quads.push(UiQuad { x: x - b, y: y - b, w: box_w + 2.0 * b, h: box_h + 2.0 * b, color: [0.35, 0.35, 0.42, 0.95] });
+    quads.push(UiQuad { x, y, w: box_w, h: box_h, color: [0.05, 0.05, 0.08, 0.97] });
+    texts.push(UiText { text: name.to_string(), x: x + pad, y: y + pad, scale: ui });
+}
+
 /// Builds the whole panel from the authoritative inventory mirror.
 #[allow(clippy::too_many_arguments)]
 pub fn panel(
@@ -575,6 +628,15 @@ pub fn panel(
                 scale: ui,
             });
         }
+    }
+
+    // Hover tooltip: the localized name of the item under the cursor, shown
+    // only when the cursor isn't carrying a stack (so it never hides the
+    // dragged item). Added last so its box sits above the rest of the panel.
+    if cursor.is_none()
+        && let Some(item) = hovered_item(hover, slots, craft, craft_result)
+    {
+        tooltip(&mut quads, &mut texts, registry.item_name(item), mouse, width, height, ui);
     }
 
     (quads, texts)
@@ -671,5 +733,33 @@ mod tests {
         let (qc, tc) = panel(&registry, &slots, &craft, None, None, 0, &skin, (0.0, 0.0), 1600.0, 1000.0, 1.0, Some(&c));
         assert!(qc.len() > 20);
         assert!(tc.iter().any(|x| x.text == "FIND"), "tab labels render");
+    }
+
+    #[test]
+    fn hovering_a_filled_slot_shows_its_localized_name() {
+        let registry = Registry::load_default().unwrap();
+        let stone = registry.find("oc:stone").unwrap();
+        let mut slots: [Slot; 36] = [None; 36];
+        slots[0] = Some((stone, 64));
+        let craft: [Slot; 9] = [None; 9];
+        let skin = crate::avatar::load_skin();
+        let (w, h, ui) = (1600.0, 1000.0, 1.0);
+        let hb = hotbar_rect(0, w, h, ui);
+        let mouse = (hb.0 + 2.0, hb.1 + 2.0);
+        let name = registry.item_name(stone);
+
+        // Empty cursor over a filled slot: the localized name shows as a tooltip.
+        let (_q, t) = panel(&registry, &slots, &craft, None, None, 0, &skin, mouse, w, h, ui, None);
+        assert!(t.iter().any(|x| x.text == name), "tooltip shows {name:?}");
+
+        // Carrying a stack: no tooltip (it would hide the dragged item).
+        let (_q2, t2) =
+            panel(&registry, &slots, &craft, Some((stone, 1)), None, 0, &skin, mouse, w, h, ui, None);
+        assert!(!t2.iter().any(|x| x.text == name), "no tooltip while dragging");
+
+        // Over empty space: no tooltip.
+        let (_q3, t3) =
+            panel(&registry, &slots, &craft, None, None, 0, &skin, (1.0, 1.0), w, h, ui, None);
+        assert!(!t3.iter().any(|x| x.text == name), "no tooltip over empty space");
     }
 }
