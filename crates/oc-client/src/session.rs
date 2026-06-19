@@ -748,6 +748,12 @@ impl Session {
             render_pos.z.floor() as i32,
         );
         let underground = (render_pos.y.floor() as i32) < surface - 6;
+        // Underground (and not in a fluid): the background/sky is the dark cave
+        // void, so unloaded-chunk gaps and the render-distance edge don't show
+        // the night sky from deep down.
+        if underground && !underwater {
+            sky = sky::underground(&sky, oc_world::env_registry::active().atmosphere.ambient_floor);
+        }
         let caps = self.caps(registry);
 
         let hotbar_slots = self.hotbar_slots(registry);
