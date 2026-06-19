@@ -24,6 +24,7 @@ impl LightingPass {
         ctx: &VulkanContext,
         lighting_pass: vk::RenderPass,
         scene_layout: vk::DescriptorSetLayout,
+        shadow_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         unsafe {
             let device = &ctx.device;
@@ -57,10 +58,17 @@ impl LightingPass {
                     .set_layouts(std::slice::from_ref(&descriptor_layout)),
             )?[0];
 
-            // Set 0 = G-buffer, set 1 = the shared Scene UBO.
-            let set_layouts = [descriptor_layout, scene_layout];
+            // Set 0 = G-buffer, set 1 = the shared Scene UBO, set 2 = shadow
+            // cascades. The push constant carries the inverse view-projection
+            // (depth -> camera-relative world for the cascade lookup).
+            let set_layouts = [descriptor_layout, scene_layout, shadow_layout];
+            let push_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                .size(size_of::<glam::Mat4>() as u32);
             let pipeline_layout = device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&set_layouts)
+                    .push_constant_ranges(std::slice::from_ref(&push_range)),
                 None,
             )?;
             let pipeline = create_pipeline(device, lighting_pass, pipeline_layout)?;
@@ -114,6 +122,8 @@ impl LightingPass {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         scene_set: vk::DescriptorSet,
+        shadow_set: vk::DescriptorSet,
+        inv_view_proj: glam::Mat4,
     ) {
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -122,8 +132,15 @@ impl LightingPass {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set, scene_set],
+                &[self.descriptor_set, scene_set, shadow_set],
                 &[],
+            );
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                crate::chunk_renderer::as_bytes(std::slice::from_ref(&inv_view_proj)),
             );
             device.cmd_draw(cmd, 3, 1, 0, 0);
         }

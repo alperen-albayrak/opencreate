@@ -826,8 +826,10 @@ impl Session {
                 fog_distance
             },
             clouds: clouds && !underwater,
-            // Cascaded shadows are shelved (the implementation never
-            // looked right); the renderer keeps the plumbing dormant.
+            // Cascaded shadows are shelved (the implementation never looked
+            // right — over-shadowed beyond the near cascade). The deferred
+            // lighting pass is wired to sample them (set 2), so the toggle
+            // works; the quality fix is Step 4. Default off until then.
             shadows: false,
             water_reflections,
             far_terrain: far_terrain && !underwater,

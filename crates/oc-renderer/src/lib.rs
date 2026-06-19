@@ -212,7 +212,12 @@ impl Renderer {
             let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let scene = SceneUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             // Deferred lighting resolve reads the G-buffer + the Scene UBO.
-            let lighting = LightingPass::new(&ctx, hdr.lighting_pass, scene.layout())?;
+            let lighting = LightingPass::new(
+                &ctx,
+                hdr.lighting_pass,
+                scene.layout(),
+                shadow.descriptor_layout,
+            )?;
             lighting.bind_input(
                 &ctx.device,
                 hdr.gb0_view,
@@ -504,7 +509,13 @@ impl Renderer {
                     .clear_values(&sky_clear),
                 vk::SubpassContents::INLINE,
             );
-            self.lighting.record(device, cmd, scene_set);
+            self.lighting.record(
+                device,
+                cmd,
+                scene_set,
+                self.shadow.descriptor_sets[slot],
+                camera.view_proj.inverse(),
+            );
             device.cmd_end_render_pass(cmd);
 
             // Pass 1c: forward — far terrain, entities, outline, sky, clouds

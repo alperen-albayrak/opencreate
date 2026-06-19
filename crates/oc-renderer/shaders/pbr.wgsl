@@ -27,6 +27,28 @@ struct Scene {
 @group(0) @binding(2) var gb2: texture_2d<f32>;
 @group(0) @binding(3) var gbuf_depth: texture_depth_2d;
 
+// Sun shadow cascades (set 2) — the same dormant plumbing the forward chunk
+// shader used. `shadow.params.x` (strength) is 0 while shadows are shelved, so
+// `sun_visibility` returns 1.0 and this is a no-op until they're toggled on.
+struct ShadowData {
+    // Camera-relative world -> cascade clip.
+    matrices: array<mat4x4<f32>, 3>,
+    // Cascade far distances; w unused.
+    splits: vec4<f32>,
+    // x: strength (0 = off/night); yzw: world units per texel, per cascade.
+    params: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> shadow: ShadowData;
+@group(2) @binding(1) var shadow_map: texture_depth_2d_array;
+@group(2) @binding(2) var shadow_sampler: sampler_comparison;
+
+// Rebuilds the camera-relative world position from the G-buffer depth for the
+// cascade lookup (the inverse of the view-projection the chunks rendered with).
+struct LightPush {
+    inv_view_proj: mat4x4<f32>,
+}
+var<immediate> pc: LightPush;
+
 // Must match the projection in camera.rs.
 const NEAR: f32 = 0.05;
 const FAR: f32 = 4096.0;
@@ -43,6 +65,45 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     n.x += select(t, -t, n.x >= 0.0);
     n.y += select(t, -t, n.y >= 0.0);
     return normalize(n);
+}
+
+// PCF visibility from one cascade (ported verbatim from the forward chunk
+// shader): depth-biased by the cascade's texel size, one bilinear comparison.
+fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let texel_world = shadow.params[1u + u32(cascade)];
+    let pos = world_rel + normal * texel_world;
+    let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
+    let uv = ndc.xy * 0.5 + vec2(0.5);
+    if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
+        return 1.0;
+    }
+    let bias = 0.0003 + texel_world * 2.5 / 400.0;
+    return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, cascade, ndc.z - bias);
+}
+
+// How much of the sun reaches this fragment, with cross-faded cascades that
+// ease out at the far cascade and at twilight.
+fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
+    let strength = shadow.params.x;
+    if (strength <= 0.0 || view_dist >= shadow.splits.z) {
+        return 1.0;
+    }
+    var cascade = 2;
+    var split = shadow.splits.z;
+    if (view_dist < shadow.splits.x) {
+        cascade = 0;
+        split = shadow.splits.x;
+    } else if (view_dist < shadow.splits.y) {
+        cascade = 1;
+        split = shadow.splits.y;
+    }
+    var lit = cascade_lit(cascade, world_rel, normal);
+    let blend = smoothstep(split * 0.85, split, view_dist);
+    if (blend > 0.0 && cascade < 2) {
+        lit = mix(lit, cascade_lit(cascade + 1, world_rel, normal), blend);
+    }
+    let range_fade = smoothstep(shadow.splits.z * 0.8, shadow.splits.z, view_dist);
+    return mix(1.0, mix(lit, 1.0, range_fade), strength);
 }
 
 @vertex
@@ -74,11 +135,18 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Block light already carries its 0.95 trim and AO from the geometry pass.
     let block_light = g2.rgb;
 
+    let view_dist = linearize(depth);
+    // Rebuild the camera-relative world position from depth for the cascade
+    // lookup (visually a no-op while shadows are shelved: sun_vis stays 1.0).
+    let dims = vec2<f32>(textureDimensions(gb0));
+    let ndc = vec3<f32>((frag.xy / dims) * 2.0 - 1.0, depth);
+    let world_h = pc.inv_view_proj * vec4<f32>(ndc, 1.0);
+    let world_rel = world_h.xyz / world_h.w;
+    let sun_vis = sun_visibility(world_rel, normal, view_dist);
+
     let ambient = scene.sun.w;
     // scene.sun.xyz is pre-scaled by daylight, so the diffuse dies at night.
     let diffuse = max(dot(normal, scene.sun.xyz), 0.0);
-    // E4 revives the shadow cascades here; fully lit until then.
-    let sun_vis = 1.0;
 
     let sky_term = sky_vis * ambient * ao;
     let sun_term = sky_vis * (1.0 - ambient) * diffuse * ao * sun_vis;
@@ -87,7 +155,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Distance fog: far terrain melts into the sky, same curve as the
     // forward path (and the water pass).
-    let view_dist = linearize(depth);
     let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / scene.fog.w, 2.0));
     color = mix(color, scene.fog.rgb, fog_amount);
     return vec4<f32>(color, 1.0);
