@@ -142,6 +142,11 @@ pub fn underground(state: &SkyState, ambient_floor: f32) -> SkyState {
         sky_color: [dark[0], dark[1], dark[2], 1.0],
         horizon_away: [dark[0], dark[1], dark[2], 1.0],
         zenith: [dark[0], dark[1], dark[2], 1.0],
+        // No sun/sky light reaches deep underground: kill the directional sun
+        // and sky-ambient so surfaces aren't lit bright through air shafts (the
+        // vertical-shaft rule floods skylight straight down). The deep is lit by
+        // the ambient floor + block light (lava) + the emissive glow only.
+        sun: Vec4::ZERO,
         stars: 0.0,
         ..*state
     }
