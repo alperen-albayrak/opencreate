@@ -7,6 +7,11 @@ const SAFE_FALL_BLOCKS: f64 = 3.0;
 const DAMAGE_PER_BLOCK: f32 = 0.7;
 /// Y movement smaller than this counts as "standing".
 const REST_EPSILON: f64 = 1e-4;
+/// A single-tick drop larger than this is a **teleport**, not a fall — far
+/// beyond terminal velocity at the tick rate — so it deals no fall damage
+/// (dev spawn / respawn / future teleport mechanics). A real free-fall only
+/// covers a couple of blocks per 30 TPS tick.
+const TELEPORT_DROP: f64 = 32.0;
 
 #[derive(Debug, Default)]
 pub struct FallTracker {
@@ -26,6 +31,11 @@ impl FallTracker {
             return 0.0;
         }
         let dy = y - last;
+        if -dy > TELEPORT_DROP {
+            // A teleport (spawn/respawn), not a fall — don't accumulate it.
+            self.fall_distance = 0.0;
+            return 0.0;
+        }
         if dy < -REST_EPSILON {
             self.fall_distance += -dy;
             return 0.0;
@@ -83,6 +93,16 @@ mod tests {
         t.tick(60.0, false); // falling
         t.tick(55.0, true); // splashed into water
         assert_eq!(t.tick(55.0, false), 0.0, "no damage after a splash");
+    }
+
+    #[test]
+    fn a_teleport_is_not_a_fall() {
+        // A huge single-tick drop (dev spawn / respawn / teleport) deals no
+        // fall damage, and leaves nothing owed once the player settles.
+        let mut t = FallTracker::default();
+        t.tick(70.0, false); // standing on the surface
+        assert_eq!(t.tick(-700.0, false), 0.0, "the teleport jump is not a fall");
+        assert_eq!(t.tick(-700.0, false), 0.0, "no delayed fall damage either");
     }
 
     #[test]
