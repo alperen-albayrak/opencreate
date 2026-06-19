@@ -7,6 +7,7 @@
 pub mod env_registry;
 pub mod fluid_registry;
 pub mod gas_registry;
+pub mod heat;
 pub mod light;
 pub mod physics;
 pub mod raycast;

@@ -16,7 +16,8 @@ use glam::{DVec3, IVec3};
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_protocol::ClientMessage;
-use oc_renderer::{Renderer, SectionMeshes, mesh_section};
+use oc_renderer::{Renderer, SectionMeshes, mesh_section, quantize_heat};
+use oc_world::heat::{HeatField, compute_heat};
 use oc_world::light::{LightField, compute_light};
 use oc_world::terrain::BOTTOM_SECTION_Y;
 use oc_world::world::GeneratedColumn;
@@ -221,8 +222,11 @@ impl ChunkStreamer {
     pub fn remesh_after_edit(&mut self, renderer: &mut Renderer, block: BlockPos) -> Result<()> {
         let center = block_to_chunk(block);
         let edit_sy = block.y.div_euclid(SECTION_SIZE);
-        // One bounded light field for the 3×3 columns around the edit.
+        // One bounded light field for the 3×3 columns around the edit, plus a
+        // matching tier-2 source-heat field (so placing/removing lava updates
+        // the surrounding glow, attenuated by conductivity).
         let field = self.light_for(center, block.y);
+        let heat = self.heat_for(center, block.y);
         // A block edit changes geometry/light only within the propagation
         // radius (~15 blocks < a section), so the affected set is exactly the
         // 3×3×3 section neighbourhood around the edit's section. Re-mesh those
@@ -254,6 +258,7 @@ impl ChunkStreamer {
                         }
                     },
                     |local: IVec3| field.get(base + local),
+                    |local: IVec3| quantize_heat(heat.delta(base + local)),
                 );
                 renderer.set_chunk(pos, &mesh)?;
                 let sections = self.meshed.get_mut(&col).expect("checked above");
@@ -304,6 +309,22 @@ impl ChunkStreamer {
             )
         }
     }
+
+    /// Tier-2 source-heat for the region around an edit. Heat spreads only
+    /// ~12 blocks from a source, so a tight window (the edit's section ±2)
+    /// covers the affected glow; sections outside it read delta 0.
+    fn heat_for(&self, column: ChunkPos, edit_y: i32) -> HeatField {
+        let edit_section = edit_y.div_euclid(SECTION_SIZE);
+        let min_y = ((edit_section - 2) * SECTION_SIZE).max(BOTTOM_SECTION_Y * SECTION_SIZE);
+        let max_y = (edit_section + 3) * SECTION_SIZE;
+        compute_heat(
+            |pos| self.world.block(pos),
+            oc_world::env_registry::active(),
+            column,
+            min_y,
+            max_y.max(min_y + SECTION_SIZE),
+        )
+    }
 }
 
 /// Everything a worker needs to mesh one column: `Arc` snapshots of the
@@ -347,6 +368,16 @@ impl MeshJob {
             self.max_y,
             true, // full column up to the open sky
         );
+        // Tier-2 source heat over the same column, so natural lava glows the
+        // surrounding rock as soon as a column streams in (deterministic from
+        // the blocks — no server sync). Cheap where there are no sources.
+        let heat = compute_heat(
+            block_at,
+            oc_world::env_registry::active(),
+            self.chunk,
+            BOTTOM_SECTION_Y * SECTION_SIZE,
+            self.max_y,
+        );
         let meshes = self
             .targets
             .iter()
@@ -365,6 +396,7 @@ impl MeshJob {
                         }
                     },
                     |local: IVec3| light.get(base + local),
+                    |local: IVec3| quantize_heat(heat.delta(base + local)),
                 );
                 (pos, mesh)
             })

@@ -211,6 +211,10 @@ pub struct BlockProps {
     /// occlude their neighbours' faces, so a solid block touching lava keeps
     /// its face (no holes at the boundary).
     pub fluid: bool,
+    /// Thermal conductivity (W/m·K), copied from the def so the per-voxel heat
+    /// flood-fill never touches the heavy `BlockDef`. Insulators (wood/wool/snow)
+    /// are low and shield heat; stone/metal are high and conduct it.
+    pub conductivity: f32,
 }
 
 /// Fallback for ids the registry doesn't know (out-of-range/stale): treated as a
@@ -222,6 +226,7 @@ const DEFAULT_PROPS: BlockProps = BlockProps {
     light_emission: 0,
     light_color: [0, 0, 0],
     fluid: false,
+    conductivity: 2.5,
 };
 
 /// The loaded block registry: full defs + the hot-path props table + the
@@ -266,6 +271,7 @@ impl BlockRegistry {
                 light_emission: d.light_emission,
                 light_color,
                 fluid: d.fluid.is_some(),
+                conductivity: d.conductivity,
             });
         }
         Ok(Self { defs, props, by_id })

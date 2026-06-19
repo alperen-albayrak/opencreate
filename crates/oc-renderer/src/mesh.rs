@@ -14,8 +14,10 @@ use oc_world::{BlockId, blocks};
 ///      ao = 0 darkest .. 3 open, per vertex)
 ///   word 1: texture layer:16 | (reserved):8 | underwater:1 | surface_top:1 |
 ///           underwater_surface:1
-///   word 2: light:16 (sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4) | (reserved):16
-///     (per-vertex baked sky visibility + RGB block light)
+///   word 2: light:16 (sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4) | heat:16
+///     (per-vertex baked sky visibility + RGB block light; high 16 = the tier-2
+///      source-heat delta °C above the base, 0..HEAT_DELTA_MAX → 0..65535, which
+///      the geometry shader adds to the static depth temperature for the glow)
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct PackedVertex(pub u32, pub u32, pub u32);
@@ -146,6 +148,10 @@ const UV_AXES: [(usize, usize); 6] = [(0, 2), (0, 2), (0, 1), (0, 1), (2, 1), (2
 struct FaceKey {
     layer: u32,
     light: u16,
+    /// Tier-2 source-heat delta (°C above the geothermal base) at the voxel the
+    /// face looks into, quantized `0..HEAT_DELTA_MAX → 0..=65535`. Part of the
+    /// merge key so quads split at heat gradients (like `light`); 0 = no source.
+    heat: u16,
     /// Non-opaque (water) faces are emitted double-sided.
     opaque: bool,
     /// Solid face submerged in water: the chunk shader plays caustics
@@ -198,6 +204,17 @@ fn occludes(block: BlockId) -> bool {
     block.is_opaque() && !block.is_fluid()
 }
 
+/// Full-scale of the quantized tier-2 source-heat delta baked into vertex word 2
+/// (°C above the geothermal base). Past this the deep is already glowing
+/// brilliant-white, so finer range buys nothing. **Must match `HEAT_DELTA_MAX`
+/// in `chunk_gbuffer.wgsl`.**
+pub const HEAT_DELTA_MAX: f32 = 1500.0;
+
+/// Quantize a source-heat delta (°C) into the u16 baked into word 2's high half.
+pub fn quantize_heat(delta: f32) -> u16 {
+    (delta / HEAT_DELTA_MAX * 65535.0).clamp(0.0, 65535.0) as u16
+}
+
 /// Meshes one section with greedy quad merging. `sample` takes
 /// section-local coordinates and is also called one block outside the
 /// section (components -1 or 16), so callers provide neighbor-section
@@ -206,10 +223,13 @@ fn occludes(block: BlockId) -> bool {
 ///
 /// `light` returns the packed light (`sky << 12 | r << 8 | g << 4 | b`, each
 /// nibble 0..=15) of the transparent voxel a face is emitted into; same
-/// coordinate convention.
+/// coordinate convention. `heat` returns the quantized tier-2 source-heat delta
+/// ([`quantize_heat`]) of that same voxel, baked alongside the light for the
+/// blackbody glow.
 pub fn mesh_section(
     sample: impl Fn(IVec3) -> BlockId,
     light: impl Fn(IVec3) -> u16,
+    heat: impl Fn(IVec3) -> u16,
 ) -> SectionMeshes {
     let mut meshes = SectionMeshes::default();
     let n = SECTION_SIZE as usize;
@@ -256,8 +276,9 @@ pub fn mesh_section(
                     };
                     mask[v as usize][u as usize] = Some(FaceKey {
                         layer: face_texture(block, face),
-                        // Faces are lit by the voxel they face into.
+                        // Faces are lit (and heated) by the voxel they face into.
                         light: light(pos + *normal),
+                        heat: heat(pos + *normal),
                         opaque: block.is_opaque(),
                         underwater,
                         // Top faces are always the open surface (no
@@ -372,7 +393,7 @@ fn emit_quad(
             | (key.underwater as u32) << 24
             | (key.surface_top as u32) << 25
             | (key.underwater_surface as u32) << 26;
-        let w2 = key.light as u32;
+        let w2 = key.light as u32 | (key.heat as u32) << 16;
         vertices.push(PackedVertex(w0, w1, w2));
     }
     // Corners 0/3 and 1/2 are the quad's diagonals (corner1 flips U,
@@ -479,7 +500,7 @@ mod tests {
         let sample = |pos: IVec3| {
             if pos == IVec3::new(8, 8, 8) { blocks::STONE } else { BlockId::AIR }
         };
-        let mesh = mesh_section(sample, |_| 0xF0);
+        let mesh = mesh_section(sample, |_| 0xF0, |_| 0);
         assert_eq!(mesh.solid.vertices.len(), 6 * 4);
         assert_eq!(mesh.solid.indices.len(), 6 * 6);
         assert!(mesh.water.is_empty_mesh(), "stone is not water");
@@ -491,7 +512,7 @@ mod tests {
             let inside = pos.cmpge(IVec3::splat(4)).all() && pos.cmplt(IVec3::splat(12)).all();
             if inside { blocks::STONE } else { BlockId::AIR }
         };
-        let mesh = mesh_section(solid, |_| 0xF0);
+        let mesh = mesh_section(solid, |_| 0xF0, |_| 0);
         // 8x8x8 cube with uniform light: exactly one quad per side.
         assert_eq!(mesh.solid.vertices.len() / 4, 6, "cube sides should merge fully");
         // Coverage still matches the per-cell reference.
@@ -518,7 +539,7 @@ mod tests {
                 }
             };
             let light = move |pos: IVec3| (hash(pos, salt ^ 99) % 256) as u16;
-            let mesh = mesh_section(sample, light);
+            let mesh = mesh_section(sample, light, |_| 0);
             assert_eq!(
                 coverage(&mesh),
                 reference(sample, light),
@@ -534,7 +555,7 @@ mod tests {
                 pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
             if inside && pos.y == 0 { blocks::STONE } else { BlockId::AIR }
         };
-        let mesh = mesh_section(floor, |_| 0xF0);
+        let mesh = mesh_section(floor, |_| 0xF0, |_| 0);
         let tops = mesh
             .solid
             .vertices
@@ -549,7 +570,7 @@ mod tests {
         let layer_of = |block: BlockId| -> u32 {
             let sample =
                 move |pos: IVec3| if pos == IVec3::new(8, 8, 8) { block } else { BlockId::AIR };
-            let mesh = mesh_section(sample, |_| 0xF0);
+            let mesh = mesh_section(sample, |_| 0xF0, |_| 0);
             coverage(&mesh)[&(0, IVec3::new(8, 8, 8))].0
         };
         assert_eq!(layer_of(blocks::GRASS), layers::GRASS_TOP);
@@ -588,7 +609,7 @@ mod tests {
                 pos.cmpge(IVec3::ZERO).all() && pos.cmplt(IVec3::splat(SECTION_SIZE)).all();
             if inside && pos.y == 0 { blocks::STONE } else { BlockId::AIR }
         };
-        let mesh = mesh_section(floor, |_| 0xF0);
+        let mesh = mesh_section(floor, |_| 0xF0, |_| 0);
         assert!(
             top_face_ao(&mesh).iter().all(|&(_, ao)| ao == 3),
             "nothing occludes an open floor"
@@ -606,7 +627,7 @@ mod tests {
                 BlockId::AIR
             }
         };
-        let mesh = mesh_section(world, |_| 0xF0);
+        let mesh = mesh_section(world, |_| 0xF0, |_| 0);
         let tops = top_face_ao(&mesh);
         // Floor vertices at the block's feet (y=1 plane, touching x/z 8..9)
         // are occluded; floor far away stays open.
@@ -636,7 +657,7 @@ mod tests {
                 BlockId::AIR
             }
         };
-        let mesh = mesh_section(world, |_| 0xF0);
+        let mesh = mesh_section(world, |_| 0xF0, |_| 0);
         // +X faces of the stone column at y=8 (against surface water) and
         // y=7 (water above it): only the surface one is waterline-cut.
         let flags_at = |y: i32| -> u32 {
@@ -678,7 +699,7 @@ mod tests {
             }
         };
         let field = compute_light(blocks_at, ChunkPos::new(0, 0), -16, 32, true);
-        let mesh = mesh_section(blocks_at, |local| field.get(local));
+        let mesh = mesh_section(blocks_at, |local| field.get(local), |_| 0);
         let cov = coverage(&mesh);
 
         let sky_of = |x: i32, z: i32| cov[&(0, IVec3::new(x, 0, z))].1 >> 12;

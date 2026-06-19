@@ -128,7 +128,8 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
         vec3<f32>(-1.0, 0.0, 0.0),
     );
 
-    // word 2: sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4.
+    // word 2: low 16 = light (sky:4 << 12 | r:4 << 8 | g:4 << 4 | b:4);
+    // high 16 = the baked tier-2 source-heat delta °C above the base.
     let light = packed.z & 0xFFFFu;
     let sky_level = f32((light >> 12u) & 15u) / 15.0;
     let block_rgb = vec3<f32>(
@@ -136,6 +137,8 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
         f32((light >> 4u) & 15u),
         f32(light & 15u),
     ) / 15.0;
+    // Must match HEAT_DELTA_MAX in mesh.rs.
+    let heat_delta = f32((packed.z >> 16u) & 0xFFFFu) / 65535.0 * 1500.0;
 
     let ao = f32((w0 >> 28u) & 3u);
     let ao_mul = 0.66 + (0.34 / 3.0) * ao;
@@ -159,12 +162,13 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     out.normal = face_normal[face];
     // Absolute world Y = camera world Y (params.z) + camera-relative section
     // origin (pc.rel) + local pos. Drives the per-vertex blackbody glow. Hot
-    // matter glows at the hotter of its ambient temperature and its own
-    // intrinsic emissive temperature (lava ~1200 °C, not the ambient ~666).
+    // matter glows at the hotter of its effective ambient temperature (the
+    // geothermal base + the baked tier-2 source-heat delta, so rock near lava
+    // glows) and its own intrinsic emissive temperature (lava ~1200 °C).
     let world_y = scene.params.z + pc.rel.y + pos.y;
     let layer = packed.y & 0xFFFFu;
     let mat_temp = scene.emissive_temp[layer / 4u][layer % 4u];
-    let temp = max(base_temp(world_y), mat_temp);
+    let temp = max(base_temp(world_y) + heat_delta, mat_temp);
     out.emissive = clamp((temp - 525.0) / 975.0, 0.0, 1.0);
     return out;
 }

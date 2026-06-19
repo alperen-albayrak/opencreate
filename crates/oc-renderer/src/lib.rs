@@ -49,7 +49,7 @@ use swapchain::Swapchain;
 use ui::UiRenderer;
 
 pub use far_renderer::{FarTile, FarVertex};
-pub use mesh::{ChunkMesh, SectionMeshes, mesh_section};
+pub use mesh::{ChunkMesh, HEAT_DELTA_MAX, SectionMeshes, mesh_section, quantize_heat};
 pub use texture::block_swatch;
 pub use entity::EntityDraw;
 pub use ui::{UiQuad, UiText};
