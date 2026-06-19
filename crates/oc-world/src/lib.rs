@@ -13,6 +13,7 @@ pub mod raycast;
 pub mod registry;
 pub mod section;
 pub mod store;
+pub mod temperature;
 pub mod terrain;
 pub mod world;
 

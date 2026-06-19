@@ -26,6 +26,8 @@ EnvDef(
         pressure_kpa: 101.3,
         mix: {"oc:n2": 0.78, "oc:o2": 0.21, "oc:co2": 0.01},
     ),
-    // A cored planet: warm surface, hot deep (Stage-G base heat map).
-    thermal: Some((surface_temp: 14.0, geothermal_gradient: 0.025, core_temp: 1200.0)),
+    // A cored planet: warm surface, hot deep (Stage-G base heat map). The
+    // gradient is gameplay-scaled (°C per block) so the deepest rock reaches
+    // the Draper point and glows within the playable depth range.
+    thermal: Some((surface_temp: 14.0, geothermal_gradient: 12.0, core_temp: 1200.0)),
 )
