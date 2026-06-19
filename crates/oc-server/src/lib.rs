@@ -1204,7 +1204,9 @@ mod tests {
                     for z in 0..16 {
                         for x in 0..16 {
                             let b = section.get(IVec3::new(x, y, z));
-                            if b.is_solid() {
+                            // Skip bedrock: it's unbreakable, so survival can't
+                            // mine it (the deepened column now has a bedrock floor).
+                            if b.is_solid() && !oc_world::registry::is_unbreakable(b) {
                                 return Some((
                                     IVec3::new(
                                         spawn_chunk.x * 16 + x,

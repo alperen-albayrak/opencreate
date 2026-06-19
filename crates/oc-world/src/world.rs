@@ -11,7 +11,9 @@ use glam::IVec3;
 use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SHIFT, SECTION_SIZE, SectionPos};
 
-use crate::terrain::{BOTTOM_SECTION_Y, ColumnInfo, SEA_LEVEL, TerrainGenerator};
+use crate::terrain::{
+    BOTTOM_SECTION_Y, ColumnInfo, SEA_LEVEL, TerrainGenerator, WORLD_MAX_Y, WORLD_MIN_Y,
+};
 use crate::{BlockId, Section};
 
 /// Vertical section range of a generated column, inclusive.
@@ -245,6 +247,10 @@ impl World {
     /// generated. Creates the backing section and extends the column span
     /// when building above/below existing content.
     pub fn set_block(&mut self, pos: BlockPos, block: BlockId) -> bool {
+        // Hard build limits: nothing exists outside the world's vertical range.
+        if pos.y < WORLD_MIN_Y || pos.y > WORLD_MAX_Y {
+            return false;
+        }
         let chunk = block_to_chunk(pos);
         let Some(span) = self.columns.get_mut(&chunk) else {
             return false;

@@ -24,16 +24,30 @@ use oc_core::{BlockPos, ChunkPos, SECTION_SIZE};
 
 use crate::{BlockId, blocks};
 
-/// Lowest section a generated column reaches. Terrain below this is left
-/// ungenerated until caves/depth arrive; meshes are never seen from below in
-/// normal play.
-pub const BOTTOM_SECTION_Y: i32 = -4;
+/// Lowest section a generated column reaches: y = -768, the bedrock floor of
+/// the deep world (the bottom section is unbreakable bedrock). The range below
+/// it down to [`WORLD_MIN_Y`] is reserved bounds-space for future expansion
+/// (a deeper realm) and is left ungenerated for now.
+pub const BOTTOM_SECTION_Y: i32 = -48;
 
 /// Water fills open terrain up to this Y (ARCHITECTURE.md §3: sea level 0).
 pub const SEA_LEVEL: i32 = 0;
 
+/// Hard vertical build limits (enforced by `World::set_block`). The world
+/// reserves space down to -1024 (below the -768 bedrock floor, for future deep
+/// content) and up to +1024 for player towers. A block placed outside this
+/// range is rejected.
+pub const WORLD_MIN_Y: i32 = -1024;
+pub const WORLD_MAX_Y: i32 = 1024;
+
 /// Dry surfaces at or below this height near coasts/rivers are sand.
 const BEACH_TOP: i32 = SEA_LEVEL + 1;
+
+/// Caves carve no deeper than this. Real caves are an upper-crust feature;
+/// below it the deep rock is solid (and the hellish/lava zones do their own
+/// carving), which also avoids paying the 3D cave-noise cost for the bulk of
+/// the deep column.
+const CAVE_FLOOR_Y: i32 = -320;
 
 /// No trees grow above this surface height (alpine treeline).
 const TREELINE: i32 = 78;
@@ -258,6 +272,10 @@ impl TerrainGenerator {
 
     /// Block for world-space `y` in a resolved column (the surface rules).
     pub fn block_in_column(&self, info: &ColumnInfo, y: i32) -> BlockId {
+        // The bottom generated section is the unbreakable bedrock floor.
+        if y < (BOTTOM_SECTION_Y + 1) * SECTION_SIZE {
+            return blocks::BEDROCK;
+        }
         let surface = info.surface;
         if y > surface {
             return if y <= SEA_LEVEL { blocks::WATER } else { blocks::AIR };
@@ -434,6 +452,13 @@ impl TerrainGenerator {
         // Keep the world floor and shorelines intact: no holes in the
         // bottom sections, none puncturing beach/ocean/river floors.
         if pos.y <= (BOTTOM_SECTION_Y + 1) * SECTION_SIZE {
+            return false;
+        }
+        // Caves are an upper-crust phenomenon: below this the rock is solid
+        // (the deep hellish/lava zones get their own targeted carving). This
+        // also skips the expensive 3D-noise eval for the bulk of the deep
+        // column, keeping generation cheap in the much taller world.
+        if pos.y < CAVE_FLOOR_Y {
             return false;
         }
         if surface <= BEACH_TOP && pos.y > surface - 6 {
@@ -912,7 +937,9 @@ mod tests {
                         );
                     }
                 }
-                assert!(!g.is_cave(IVec3::new(x, -48, z), surface), "hole in world floor");
+                // The bedrock floor (bottom section) is never cave-breached.
+                let floor_y = BOTTOM_SECTION_Y * SECTION_SIZE;
+                assert!(!g.is_cave(IVec3::new(x, floor_y, z), surface), "hole in world floor");
             }
         }
     }
