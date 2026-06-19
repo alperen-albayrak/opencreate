@@ -148,6 +148,14 @@ pub fn find_fluid(string_id: &str) -> Option<FluidId> {
     FLUIDS.by_id.get(string_id).copied()
 }
 
+/// The fluid a block embodies, if any (via `BlockDef.fluid`): `oc:water` →
+/// the water def, `oc:lava` → the lava def, ordinary solids → None. The
+/// generalised replacement for `== blocks::WATER` checks.
+pub fn for_block(block: crate::BlockId) -> Option<&'static FluidDef> {
+    let id = crate::registry::def(block)?.fluid.as_deref()?;
+    def(find_fluid(id)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

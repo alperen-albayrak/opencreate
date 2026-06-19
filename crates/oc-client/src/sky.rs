@@ -105,16 +105,17 @@ pub fn underwater_fog_distance(submerged_secs: f32) -> f32 {
         + (atm.underwater_fog_far - atm.underwater_fog_near) * (t * t * (3.0 - 2.0 * t))
 }
 
-/// Submerged camera: blue fog swallows the sky and the horizon — both
-/// fade to water blue, daylight-scaled with a floor so dusk dives stay
-/// readable. The sun keeps shining through as a bright glow overhead.
-pub fn underwater(state: &SkyState) -> SkyState {
+/// Submerged camera: the fluid's color swallows the sky and horizon. The tint
+/// is the fluid's own `color` (per-fluid: water blue, lava orange, oil yellow…).
+/// A sun-lit fluid (water) dims with daylight so dusk dives stay readable; a
+/// self-lit fluid (lava, which glows) keeps full brightness day or night.
+pub fn submerged(state: &SkyState, color: Vec3, self_lit: bool) -> SkyState {
     let daylight = Vec3::new(state.sun.x, state.sun.y, state.sun.z).length();
-    let water = v3(env_registry::active().atmosphere.underwater_color) * (0.22 + 0.78 * daylight);
+    let tint = if self_lit { color } else { color * (0.22 + 0.78 * daylight) };
     SkyState {
-        sky_color: [water.x, water.y, water.z, 1.0],
-        horizon_away: [water.x, water.y, water.z, 1.0],
-        zenith: [water.x * 0.7, water.y * 0.75, water.z * 0.85, 1.0],
+        sky_color: [tint.x, tint.y, tint.z, 1.0],
+        horizon_away: [tint.x, tint.y, tint.z, 1.0],
+        zenith: [tint.x * 0.7, tint.y * 0.75, tint.z * 0.85, 1.0],
         stars: 0.0, // the fog owns the view down here
         ..*state
     }
@@ -184,14 +185,16 @@ mod tests {
     }
 
     #[test]
-    fn underwater_is_blue_fog_and_tracks_daylight() {
-        let noon = underwater(&sky_at(0.25));
+    fn submerged_water_is_blue_fog_and_tracks_daylight() {
+        let blue = Vec3::new(0.09, 0.30, 0.55); // oc:water's color
+        let noon = submerged(&sky_at(0.25), blue, false);
         assert!(
             noon.sky_color[2] > noon.sky_color[0] * 3.0,
             "underwater fog should be deep blue: {:?}",
             noon.sky_color
         );
-        let night = underwater(&sky_at(0.75));
+        // Sun-lit fluid dims at night.
+        let night = submerged(&sky_at(0.75), blue, false);
         assert!(
             night.sky_color[2] < noon.sky_color[2] * 0.3,
             "night dives should be dark: {:?} vs {:?}",
@@ -201,6 +204,16 @@ mod tests {
         // The visibility ramp: dense on the dive, clear once adjusted.
         assert!(underwater_fog_distance(0.0) < 30.0);
         assert!(underwater_fog_distance(20.0) > 70.0);
+    }
+
+    #[test]
+    fn submerged_self_lit_fluid_stays_bright_at_night() {
+        let orange = Vec3::new(0.70, 0.20, 0.02); // oc:lava's color
+        let day = submerged(&sky_at(0.25), orange, true);
+        let night = submerged(&sky_at(0.75), orange, true);
+        // Lava glows: full brightness regardless of the sun, and red-dominant.
+        assert_eq!(day.sky_color, night.sky_color, "self-lit fluid ignores daylight");
+        assert!(day.sky_color[0] > day.sky_color[2] * 3.0, "lava fog is orange: {:?}", day.sky_color);
     }
 
     #[test]

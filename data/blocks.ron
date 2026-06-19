@@ -41,6 +41,7 @@
     // Thermal mirrors the oc:water FluidDef (high heat capacity, poor conductor).
     (id: "oc:water", name: "Water",
         light_opacity: Some(1), color: (54, 106, 224), textures: All(5),
+        fluid: Some("oc:water"),
         heat_capacity: 4.18, conductivity: 0.6),
 
     (id: "oc:log", name: "Log",
@@ -84,6 +85,7 @@
     (id: "oc:lava", name: "Lava",
         opaque: true, light_emission: 15,
         emissive: (1.0, 0.42, 0.0), color: (226, 104, 26), textures: All(13),
+        fluid: Some("oc:lava"),
         heat_capacity: 1.45, conductivity: 1.7,
         melting_point: Some(1273.0),
         phase_transition: Some((freeze: Some("oc:basalt"), quench: Some("oc:obsidian")))),

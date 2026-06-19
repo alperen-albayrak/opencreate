@@ -690,18 +690,24 @@ impl Session {
         }
     }
 
-    /// True when the camera eye is inside water — below the 14/16 surface
-    /// of the topmost water block, or anywhere in a submerged one.
-    fn camera_underwater(&self, p: glam::DVec3) -> bool {
+    /// The fluid the camera eye is inside, if any (water, lava, …), via the
+    /// block→fluid link. A translucent fluid (water) renders at the 14/16
+    /// surface, so the top sliver of a surface block is air; an opaque fluid
+    /// (lava) fills the whole block.
+    fn camera_fluid(&self, p: glam::DVec3) -> Option<&'static oc_world::fluid_registry::FluidDef> {
         let bp = p.floor().as_ivec3();
         let world = self.streamer.world();
-        if world.block(bp) != oc_world::blocks::WATER {
-            return false;
-        }
-        // The top sliver of a surface block is air: the water sits at 14/16.
-        let in_top_sliver = p.y - p.y.floor() > 0.875
-            && world.block(bp + glam::IVec3::Y) != oc_world::blocks::WATER;
-        !in_top_sliver
+        let block = world.block(bp);
+        let fluid = oc_world::fluid_registry::for_block(block)?;
+        let in_top_sliver = !block.is_opaque()
+            && p.y - p.y.floor() > 0.875
+            && oc_world::fluid_registry::for_block(world.block(bp + glam::IVec3::Y)).is_none();
+        if in_top_sliver { None } else { Some(fluid) }
+    }
+
+    /// Whether the camera eye is submerged in any fluid (splash + audio).
+    fn camera_underwater(&self, p: glam::DVec3) -> bool {
+        self.camera_fluid(p).is_some()
     }
 
     /// Builds the world frame: camera, entities, and in-game UI at the
@@ -726,9 +732,13 @@ impl Session {
         let aspect = w.max(1.0) / h.max(1.0);
         let mut sky = sky::sky_at(self.day_fraction);
         let (render_pos, render_yaw, render_pitch) = self.render_view();
-        let underwater = self.camera_underwater(render_pos);
-        if underwater {
-            sky = sky::underwater(&sky);
+        let submerged = self.camera_fluid(render_pos);
+        let underwater = submerged.is_some();
+        if let Some(fluid) = submerged {
+            let (r, g, b) = fluid.color;
+            // A self-lit fluid (lava emits light) keeps full brightness; a
+            // sun-lit one (water) dims with daylight.
+            sky = sky::submerged(&sky, glam::Vec3::new(r, g, b), fluid.light_emission > 0);
         }
         let caps = self.caps(registry);
 
@@ -823,10 +833,12 @@ impl Session {
                 sky.moon_phase,
             ],
             sky_angle: sky.angle,
-            fog_distance: if underwater {
-                sky::underwater_fog_distance(self.submerged_for).min(fog_distance)
-            } else {
-                fog_distance
+            // Submerged: the fluid's own fog_distance caps the view (water's
+            // long eye-adjustment ramp is unchanged; lava clamps to ~1.5 blocks
+            // → a dense "you're in lava" wall, no x-ray through it).
+            fog_distance: match submerged {
+                Some(fluid) => sky::underwater_fog_distance(self.submerged_for).min(fluid.fog_distance),
+                None => fog_distance,
             },
             clouds: clouds && !underwater,
             // Cascaded shadows are shelved (the implementation never looked

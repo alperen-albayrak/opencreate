@@ -110,6 +110,12 @@ pub struct BlockDef {
     /// Can be overwritten by placement (grass, tall plants).
     #[serde(default)]
     pub replaceable: bool,
+    /// If this block is a fluid voxel, the `FluidDef` id it embodies (`oc:water`,
+    /// `oc:lava`). Links the block to its fluid for submersion fog, buoyancy and
+    /// breathing — generalising the old `== blocks::WATER` special-cases. None
+    /// for ordinary solids.
+    #[serde(default)]
+    pub fluid: Option<String>,
 
     // --- reserved: render / material ---
     #[serde(default)]
