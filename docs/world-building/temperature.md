@@ -1,12 +1,11 @@
 # Temperature & the Deep Core
 
-**Partly built.** Tiers 1–2 (static base + source heat), the blackbody glow, and
-the player heat hazard are **live**; per-block stored heat (tier 3) and phase
-transitions are the remaining work. A temperature field over the world that makes
-deep digging hot and hazardous, lets blocks glow by incandescence, and drives
-phase changes — without a full per-voxel simulation. The trick is that almost all
-of it is a **pure function**, with sparse dynamic state only where something is
-actually being heated.
+**Built.** All three tiers (static base, source heat, per-block stored heat), the
+blackbody glow, and the player heat hazard are **live**; only **phase transitions**
+(G5) remain. A temperature field over the world that makes deep digging hot and
+hazardous, lets blocks glow by incandescence, and drives phase changes — without a
+full per-voxel simulation. The trick is that almost all of it is a **pure
+function**, with sparse dynamic state only where something is actually being heated.
 
 ## The three-tier effective temperature
 
@@ -31,12 +30,17 @@ Effective temperature decomposes into three tiers, most of it free:
    world copy — the client reusing the light field's block snapshot to avoid a
    second column scan. Most of the world has no source, so temperature is just
    the base function.
-3. **Per-block stored temperature — only on actively-heated blocks** (the
-   reserved `temperature` block-state), cooling toward local ambient by Newton's
-   law. Sparse: only cells meaningfully above ambient carry state (near-ambient
-   snaps to none). **Persisted like a block edit, and frozen offline — no
-   elapsed-time catch-up** (see [time](time.md)): a block heated to 200° reloads
-   at 200° and only cools as you keep playing.
+3. **Per-block stored temperature — only on out-of-equilibrium blocks (built):**
+   a sparse `World.temperatures` map (`BlockPos → °C`), relaxing toward local
+   ambient each server tick by Newton's law (`heat::relax_step`, τ ∝
+   `heat_capacity/conductivity`). Sparse: a block placed near its ambient gets no
+   entry, and a cell drops out once within `EQUILIBRIUM_C` of ambient. **Server-
+   authoritative** (synced to clients via `ServerMessage::BlockTemps`, throttled to
+   visible glow steps) and **persisted in the v3 column side-layer, frozen offline
+   — no elapsed-time catch-up** (see [time](time.md)): a block heated to 200°
+   reloads at 200° and only cools as you keep playing. The client folds it into the
+   glow as a *signed* delta (it can sit below the base — a cool block placed in the
+   hot deep renders dark, then brightens as it heats).
 
 ```
 effective T = base(pos) + source_delta(pos) [+ stored if heated]
@@ -100,10 +104,10 @@ accumulator fills, then the matter converts (a cross-registry
 fire **holds at 100 °C until the last of it has boiled** to steam — real
 thermodynamics, event-driven, no extra machinery.
 
-**A placed cold block equilibrates to ambient — and glows on the way.** Drop a
-~24 °C block into the ~900 °C deep: the edit puts it in the active-set out of
-equilibrium with `base(pos)`, so it Newton-relaxes *upward*, **crossing the Draper
-point (525 °C) and glowing** dull-red → orange as it warms, then drops out once it
+**A placed cold block equilibrates to ambient — and glows on the way (built).**
+Drop a ~24 °C block into the ~900 °C deep: the edit tracks it out of equilibrium
+with `base(pos)`, so it Newton-relaxes *upward*, **crossing the Draper point
+(525 °C) and glowing** dull-red → orange as it warms, then drops out once it
 reaches ambient. The deep is a **reservoir** — it does not measurably cool by
 heating one block; the surrounding field *is* the source, so individual neighbours
 need no special flag. The mirror case is a lava block (a finite **battery**) moved
@@ -138,13 +142,16 @@ Any matter's `emissive = blackbody(local_temperature)` past the **Draper point
 ≈ 798 K (525 °C)**, so **deep rock glows dull-red → orange before any lava
 appears** (and lava glows by the same rule). Built and **baked into the vertex at
 mesh time** (free, like baked light): the geometry shader (`chunk_gbuffer.wgsl`)
-reads the depth base temperature and **adds the tier-2 source delta**, carried
-quantized in the spare upper 16 bits of vertex word 2, so rock near lava glows
-hotter. The glow uses the **block's own** temperature — incandescence comes from
-within, so a hot stone shell glows on its outward faces — not the cell a face
-looks into (that rule is for *light*). Only tier-3 heated blocks (reserved) still
-need a dynamic re-bake. See [rendering](rendering.md) for the blackbody → bloom
-pipeline and [meshing](../client/engine/meshing.md) for the vertex layout.
+reads the depth base temperature and **adds a signed glow delta**, carried
+quantized in the upper 16 bits of vertex word 2: the **tier-2 source delta** (rock
+near lava glows hotter), or — where a block carries a **tier-3 stored temperature**
+— an override that may go *negative*, so a cool block placed in the hot deep
+renders **dark**, then brightens as it heats. The glow uses the **block's own**
+temperature — incandescence comes from within, so a hot stone shell glows on its
+outward faces — not the cell a face looks into (that rule is for *light*). A tier-3
+cell's section is re-baked when its synced temperature crosses a glow step. See
+[rendering](rendering.md) for the blackbody → bloom pipeline and
+[meshing](../client/engine/meshing.md) for the vertex layout.
 
 Cross-validated by TerraFirmaCraft's heat-color ladder (`Heat.java`), a
 ready-made `temperature → color` table:

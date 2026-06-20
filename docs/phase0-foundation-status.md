@@ -51,6 +51,14 @@ a second **moon** dimension proving per-world selection at runtime.
   **nature's** (≈50 °C hot / −60 °C cold); creative exempt. Verified in-game: a
   deep survival spawn dies from heat in ~0.6 s, the surface is safe. (Also fixed:
   a teleport/respawn no longer counts as a fall.)
+- **G3.2** — tier-3 **stored** per-block temperature: a placed block out of
+  equilibrium relaxes toward ambient (Newton, `heat::relax_step`, frozen offline),
+  so a cool block dropped in the deep **heats up and glows** over seconds.
+  Server-authoritative (`World.temperatures`, ticked + broadcast as `BlockTemps`
+  throttled to visible glow steps), baked into the glow as a *signed* delta
+  (renders dark, then brightens), and persisted in a **v3** column side-layer
+  (lossless v2 load). The per-column light/heat flood is cached so the glow stream
+  stays smooth. Verified in-game.
 
 **Now live (the deep world is built):** with the deep overworld — lava lake at
 −656, bedrock floor at −752 — the glow, source heat, and hazard are **active**:
@@ -58,31 +66,26 @@ the descent ramps cool caves → glowing molten layer → lava, and the deep is
 lethal. A shallow or airless world keeps them correctly dormant.
 
 **Pending:**
-- **G3.2** — tier-3 *stored* per-block temperature (a placed block heats up and
-  glows over seconds), its sparse per-section save layer, server-authoritative
-  sync to clients, and Newton cooling (frozen offline, no catch-up).
 - **G5** — *phase transitions* (lava↔obsidian/basalt, ice↔water↔steam) + the
   latent-heat plateau + water cooling. Needs `oc:obsidian`/`oc:basalt`/`oc:ice`
-  content (lava/water already exist as placeable items).
+  content (lava/water already exist as placeable items). The latent-heat plateau
+  builds on the tier-3 stored-heat state from G3.2.
 
 ## The key coupling: the deep world is built
 
 The deep-world build ([world-building/deep-world.md](world-building/deep-world.md))
 landed the lava sea + bedrock floor the heat features need, so **G3.1** (source
-heat) and **G6** (hazard) are now live. **G5** still needs its transition
-**content** (`oc:obsidian`/`oc:basalt`/`oc:ice`); and **Stage H's volcanoes** are
-lava heat sources too, so H wants the same content path — the remaining work
-still converges there.
+heat), **G6** (hazard), and **G3.2** (stored heat) are now live. **G5** still needs
+its transition **content** (`oc:obsidian`/`oc:basalt`/`oc:ice`); and **Stage H's
+volcanoes** are lava heat sources too, so H wants the same content path — the
+remaining work still converges there.
 
 ## Remaining work, in dependency order
 
-1. **G3.2** — tier-3 *stored* per-block temperature: server-authoritative state,
-   a sparse per-section save layer (lossless format bump), sync to clients, and
-   Newton cooling (frozen offline). Delivers "a placed block heats up and glows."
-2. **G5** — *phase transitions* + content: `oc:obsidian`/`oc:basalt`/`oc:ice`,
+1. **G5** — *phase transitions* + content: `oc:obsidian`/`oc:basalt`/`oc:ice`,
    lava+water→obsidian/basalt, ice↔water↔steam, the latent-heat plateau, and
    water as a finite coolant (the temporary survivable pocket).
-3. **Stage H** — coarse 16³ climate grid + volcanoes (lava sources) +
+2. **Stage H** — coarse 16³ climate grid + volcanoes (lava sources) +
    global `world_age`.
 
 **Reserved (later):** a hellish layer above the lava sea (distinct content); a
@@ -91,8 +94,8 @@ real-temp readout of the player or looked-at object via gear); insulation gear.
 
 ## Risk note
 
-The deep-world deepening (the keystone risk — worldgen, column save size, light
-range, performance) is **done and measured fine**. The riskiest remaining change
-is now **G3.2's stored-heat persistence + sync**: a save-format bump (must stay
-lossless) and a new server→client channel for live per-block temperature. It
-wants focused, careful work, not a tail-end rush.
+The deep-world deepening and **G3.2's stored-heat persistence + sync** (the
+save-format bump, kept lossless, and the live server→client temperature channel)
+both landed and measured fine. The remaining heat work, **G5**, is mostly content
++ event-driven block swaps — lower-risk than what's already shipped; its only
+subtlety is the latent-heat plateau riding on the G3.2 stored-heat state.
