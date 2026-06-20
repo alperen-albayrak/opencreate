@@ -7,7 +7,7 @@
 use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 14;
+pub const LAYER_COUNT: u32 = 17;
 /// Mip levels for the block array: 16→8→4→2→1 = `floor(log2(16)) + 1`.
 pub const MIP_LEVELS: u32 = 5;
 
@@ -17,6 +17,7 @@ pub const MIP_LEVELS: u32 = 5;
 pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
     "grass_top", "dirt", "stone", "grass_side", "sand", "water", "log_side",
     "log_top", "leaves", "lamp", "snow", "planks", "bedrock", "lava",
+    "obsidian", "basalt", "ice",
 ];
 
 /// Intrinsic emissive (blackbody-glow) temperature in °C per block-texture
@@ -81,6 +82,15 @@ pub fn build_block_textures() -> Vec<u8> {
                     // noise dips (every 5th cell), giving a cracked surface.
                     13 if n % 5 == 0 => shade([122, 36, 8], n, 18),
                     13 => shade([226, 104, 26], n, 44),
+                    // Obsidian: near-black volcanic glass, smooth, with the
+                    // occasional brighter purple glint.
+                    14 if n % 7 == 0 => shade([60, 48, 84], n, 10),
+                    14 => shade([22, 18, 34], n, 8),
+                    // Basalt: dark grey, finely mottled volcanic rock.
+                    15 => shade([52, 50, 56], n, 20),
+                    // Ice: pale blue, smooth, with faint brighter cracks.
+                    16 if n % 6 == 0 => shade([205, 230, 255], n, 6),
+                    16 => shade([165, 205, 240], n, 10),
                     // Unknown layer → magenta (matches the registry's missing tint).
                     _ => shade([255, 0, 255], n, 0),
                 };

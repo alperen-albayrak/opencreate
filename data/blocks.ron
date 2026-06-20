@@ -42,7 +42,9 @@
     (id: "oc:water", name: "Water",
         light_opacity: Some(1), color: (54, 106, 224), textures: All(5),
         fluid: Some("oc:water"),
-        heat_capacity: 4.18, conductivity: 0.6),
+        heat_capacity: 4.18, conductivity: 0.6,
+        melting_point: Some(0.0), boiling_point: Some(100.0),
+        phase_transition: Some((freeze: Some("oc:ice")))),
 
     (id: "oc:log", name: "Log",
         solid: true, opaque: true, color: (104, 82, 50),
@@ -89,4 +91,27 @@
         heat_capacity: 1.45, conductivity: 1.7,
         melting_point: Some(1273.0),
         phase_transition: Some((freeze: Some("oc:basalt"), quench: Some("oc:obsidian")))),
+
+    // Obsidian: glassy volcanic rock — lava quenched fast at a water edge. Dense,
+    // very hard, dark. Stable in the current deep (high melting point).
+    (id: "oc:obsidian", name: "Obsidian",
+        solid: true, opaque: true, hardness: 5.0,
+        color: (22, 18, 34), textures: All(14),
+        heat_capacity: 0.84, conductivity: 1.5),
+
+    // Basalt: lava cooled slowly — dark grey volcanic rock, distinct from stone
+    // and bedrock so cooled lava reads as different matter.
+    (id: "oc:basalt", name: "Basalt",
+        solid: true, opaque: true,
+        color: (52, 50, 56), textures: All(15),
+        heat_capacity: 0.84, conductivity: 2.0),
+
+    // Ice: frozen water. Melts back to water above 0 °C (G5 phase transition); a
+    // decent conductor, so a hot neighbour thaws it.
+    (id: "oc:ice", name: "Ice",
+        solid: true, opaque: true,
+        color: (165, 205, 240), textures: All(16),
+        heat_capacity: 2.0, conductivity: 2.2,
+        melting_point: Some(0.0),
+        phase_transition: Some((melt: Some("oc:water")))),
 ]

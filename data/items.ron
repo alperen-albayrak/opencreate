@@ -15,6 +15,9 @@
     (id: "oc:bedrock",name: "Bedrock",     block: Some(11), category: "building"),
     (id: "oc:water",  name: "Water",       block: Some(5),  category: "natural"),
     (id: "oc:lava",   name: "Lava",        block: Some(12), category: "natural"),
+    (id: "oc:obsidian",name: "Obsidian",   block: Some(13), category: "building"),
+    (id: "oc:basalt", name: "Basalt",      block: Some(14), category: "building"),
+    (id: "oc:ice",    name: "Ice",         block: Some(15), category: "natural"),
     (id: "oc:stick",  name: "Stick",       block: None,     category: "items"),
     (id: "oc:apple",  name: "Apple",       block: None,     food: 3, category: "food"),
 ]
