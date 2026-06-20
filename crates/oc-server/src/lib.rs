@@ -744,6 +744,9 @@ impl Server {
                     oc_world::heat::placed_stored_temp(pos, oc_world::env_registry::active())
                 {
                     self.world.set_temperature(pos, t);
+                    // Sync the initial (cool) temperature now, so the block renders
+                    // dark immediately — in the same drain as its BlockChanged.
+                    self.transport.send(ServerMessage::BlockTemps(vec![(pos, t)]))?;
                 }
             } else {
                 // Rejected: re-assert the authoritative state.
@@ -886,10 +889,16 @@ impl Server {
         // one. Conductivity decides the rate — hot air is a slow burn, lava and
         // bare hot stone are not, an insulator underfoot shields.
         let env = oc_world::env_registry::active();
+        let world = &self.world;
         let block_temp = |pos: IVec3, block: oc_world::BlockId| {
             let mut t = oc_world::temperature::effective(pos, env);
             if let Some(ft) = oc_world::fluid_registry::for_block(block).and_then(|f| f.temperature) {
                 t = t.max(ft);
+            }
+            // Tier-3: a block holding a stored temperature (a not-yet-equilibrated
+            // block, later a forge block) conducts its own heat when you touch it.
+            if let Some(s) = world.temperature(pos) {
+                t = t.max(s);
             }
             t
         };
@@ -970,12 +979,19 @@ impl Server {
         let env = oc_world::env_registry::active();
         let mut updated: Vec<(oc_core::BlockPos, f32)> = Vec::new();
         let mut settled: Vec<oc_core::BlockPos> = Vec::new();
+        // Sync only cells that crossed a visible glow step this tick (plus the
+        // final value of cells that just equilibrated) — throttles client re-mesh.
+        let mut batch: Vec<(oc_core::BlockPos, f32)> = Vec::new();
         for (pos, current) in self.world.temperatures().collect::<Vec<_>>() {
             let ambient = oc_world::temperature::base(pos, env);
             let next = oc_world::heat::relax_step(current, ambient, self.world.block(pos), dt);
             if (next - ambient).abs() < oc_world::heat::EQUILIBRIUM_C {
                 settled.push(pos);
+                batch.push((pos, ambient)); // final: client prunes to the base glow
             } else {
+                if oc_world::heat::glow_bucket(next) != oc_world::heat::glow_bucket(current) {
+                    batch.push((pos, next));
+                }
                 updated.push((pos, next));
             }
         }
@@ -984,6 +1000,9 @@ impl Server {
         }
         for pos in settled {
             self.world.remove_temperature(pos);
+        }
+        if !batch.is_empty() {
+            self.transport.send(ServerMessage::BlockTemps(batch))?;
         }
         Ok(())
     }

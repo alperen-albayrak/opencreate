@@ -204,15 +204,17 @@ fn occludes(block: BlockId) -> bool {
     block.is_opaque() && !block.is_fluid()
 }
 
-/// Full-scale of the quantized tier-2 source-heat delta baked into vertex word 2
-/// (°C above the geothermal base). Past this the deep is already glowing
-/// brilliant-white, so finer range buys nothing. **Must match `HEAT_DELTA_MAX`
-/// in `chunk_gbuffer.wgsl`.**
+/// Full magnitude of the **signed** glow delta baked into vertex word 2 (°C from
+/// the geothermal base). Signed because tier-3 stored heat can pull a cell
+/// *below* the base — a cool block placed in the hot deep must render dark — where
+/// tier-1/2 only ever add. Past this the deep is brilliant-white, so a wider
+/// range buys nothing. **Must match `HEAT_DELTA_MAX` in `chunk_gbuffer.wgsl`.**
 pub const HEAT_DELTA_MAX: f32 = 1500.0;
 
-/// Quantize a source-heat delta (°C) into the u16 baked into word 2's high half.
+/// Quantize a signed glow delta (°C, −MAX..+MAX) into word 2's high u16:
+/// 0 ⇒ −MAX, ~32768 ⇒ 0, 65535 ⇒ +MAX. The shader inverts this.
 pub fn quantize_heat(delta: f32) -> u16 {
-    (delta / HEAT_DELTA_MAX * 65535.0).clamp(0.0, 65535.0) as u16
+    ((delta / HEAT_DELTA_MAX * 0.5 + 0.5) * 65535.0).clamp(0.0, 65535.0) as u16
 }
 
 /// Meshes one section with greedy quad merging. `sample` takes

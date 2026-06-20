@@ -17,7 +17,8 @@ use oc_core::coords::{block_in_section, block_to_chunk, block_to_section};
 use oc_core::{BlockPos, ChunkPos, SECTION_SIZE, SectionPos};
 use oc_protocol::ClientMessage;
 use oc_renderer::{Renderer, SectionMeshes, mesh_section, quantize_heat};
-use oc_world::heat::compute_heat_in;
+use oc_world::env_registry::EnvDef;
+use oc_world::heat::{HeatField, compute_heat_in};
 use oc_world::light::{LightField, compute_light};
 use oc_world::terrain::BOTTOM_SECTION_Y;
 use oc_world::world::GeneratedColumn;
@@ -54,6 +55,11 @@ pub struct ChunkStreamer {
     upload_queue: Vec<MeshJobResult>,
     /// View radius in chunks (settings-driven).
     radius: i32,
+    /// Cached light+heat field per column with an actively-heating block, so the
+    /// stream of glow updates re-uses one flood instead of re-running it every
+    /// tick. A pure function of the (unedited) blocks, so it stays valid until
+    /// the column is edited or unloaded.
+    glow_field: HashMap<ChunkPos, (LightField, HeatField)>,
 }
 
 impl ChunkStreamer {
@@ -68,6 +74,7 @@ impl ChunkStreamer {
             mesh_rx,
             upload_queue: Vec::new(),
             radius: DEFAULT_VIEW_RADIUS,
+            glow_field: HashMap::new(),
         }
     }
 
@@ -169,6 +176,7 @@ impl ChunkStreamer {
             // `meshed` bookkeeping — a column queued for re-mesh (removed
             // from `meshed`) still has meshes uploaded.
             self.meshed.remove(&chunk);
+            self.glow_field.remove(&chunk);
             for pos in self.world.column_sections(chunk) {
                 renderer.remove_chunk(pos);
             }
@@ -222,18 +230,19 @@ impl ChunkStreamer {
     pub fn remesh_after_edit(&mut self, renderer: &mut Renderer, block: BlockPos) -> Result<()> {
         let center = block_to_chunk(block);
         let edit_sy = block.y.div_euclid(SECTION_SIZE);
+        // The edit changes light/heat in the 3×3 neighbourhood, so any cached
+        // glow field there is stale.
+        for col in ring(center, 1) {
+            self.glow_field.remove(&col);
+        }
         // One bounded light field for the 3×3 columns around the edit, plus a
         // matching tier-2 source-heat field (so placing/removing lava updates
         // the surrounding glow, attenuated by conductivity).
         let field = self.light_for(center, block.y);
+        let env = oc_world::env_registry::active();
         // Reuse the light field's block snapshot for the heat flood (same
         // region) — no second column scan.
-        let heat = compute_heat_in(
-            field.blocks(),
-            field.base(),
-            field.height(),
-            oc_world::env_registry::active(),
-        );
+        let heat = compute_heat_in(field.blocks(), field.base(), field.height(), env);
         // A block edit changes geometry/light only within the propagation
         // radius (~15 blocks < a section), so the affected set is exactly the
         // 3×3×3 section neighbourhood around the edit's section. Re-mesh those
@@ -265,7 +274,10 @@ impl ChunkStreamer {
                         }
                     },
                     |local: IVec3| field.get(base + local),
-                    |local: IVec3| quantize_heat(heat.delta(base + local)),
+                    |local: IVec3| {
+                        let p = base + local;
+                        quantize_heat(glow_delta(world.temperature(p), &heat, p, env))
+                    },
                 );
                 renderer.set_chunk(pos, &mesh)?;
                 let sections = self.meshed.get_mut(&col).expect("checked above");
@@ -274,6 +286,80 @@ impl ChunkStreamer {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Folds a batch of tier-3 stored-temperature updates from the server into
+    /// the world mirror and re-meshes the glow of the affected sections. A value
+    /// back at the local ambient is pruned (the base glow already covers it).
+    ///
+    /// A stored-temp change touches only the block's own faces (no geometry or
+    /// light change), so each section is re-baked once — and the dominant cost,
+    /// the light/heat field, is computed **once per column** and shared across
+    /// its dirty sections (a tick's updates cluster there).
+    pub fn apply_block_temps(
+        &mut self,
+        renderer: &mut Renderer,
+        updates: &[(BlockPos, f32)],
+    ) -> Result<()> {
+        let env = oc_world::env_registry::active();
+        let mut dirty: HashMap<ChunkPos, Vec<SectionPos>> = HashMap::new();
+        for &(pos, temp) in updates {
+            if (temp - oc_world::temperature::base(pos, env)).abs() < oc_world::heat::EQUILIBRIUM_C {
+                self.world.remove_temperature(pos);
+            } else {
+                self.world.set_temperature(pos, temp);
+            }
+            let sp = block_to_section(pos);
+            let group = dirty.entry(ChunkPos::new(sp.x, sp.z)).or_default();
+            if !group.contains(&sp) {
+                group.push(sp);
+            }
+        }
+        for (col, sections) in &dirty {
+            if !self.meshed.contains_key(col) {
+                continue;
+            }
+            // Compute the column's light+heat flood once and cache it; the stream
+            // of glow updates while the block heats then re-uses it (the flood is
+            // the dominant cost, ~10 ms, and the blocks haven't changed).
+            if !self.glow_field.contains_key(col) {
+                let mid_y = sections.iter().map(|s| s.y).sum::<i32>() / sections.len() as i32;
+                let field = self.light_for(*col, mid_y * SECTION_SIZE);
+                let heat = compute_heat_in(field.blocks(), field.base(), field.height(), env);
+                self.glow_field.insert(*col, (field, heat));
+            }
+            let (field, heat) = &self.glow_field[col];
+            for &sp in sections {
+                if !self.meshed.get(col).is_some_and(|s| s.contains(&sp)) {
+                    continue; // not currently drawn
+                }
+                let base = sp * SECTION_SIZE;
+                let section = self.world.section(sp).cloned();
+                let world = &self.world;
+                let mesh = mesh_section(
+                    |local: IVec3| {
+                        let inside = local.cmpge(IVec3::ZERO).all()
+                            && local.cmplt(IVec3::splat(SECTION_SIZE)).all();
+                        if inside {
+                            section.as_ref().map_or(BlockId::AIR, |s| s.get(local))
+                        } else {
+                            world.block(base + local)
+                        }
+                    },
+                    |local: IVec3| field.get(base + local),
+                    |local: IVec3| {
+                        let p = base + local;
+                        quantize_heat(glow_delta(world.temperature(p), heat, p, env))
+                    },
+                );
+                renderer.set_chunk(sp, &mesh)?;
+            }
+        }
+        // Drop cached fields for columns whose blocks have all equilibrated.
+        let active: HashSet<ChunkPos> =
+            self.world.temperatures().map(|(p, _)| block_to_chunk(p)).collect();
+        self.glow_field.retain(|col, _| active.contains(col));
         Ok(())
     }
 
@@ -328,6 +414,9 @@ struct MeshJob {
     snapshot: HashMap<SectionPos, Arc<Section>>,
     /// Open sky above the tallest section in the neighborhood.
     max_y: i32,
+    /// Tier-3 stored temperatures for this column (synced from the server) — so
+    /// a heated block that streams in already glows correctly. Sparse, usually empty.
+    temps: HashMap<BlockPos, f32>,
 }
 
 impl MeshJob {
@@ -343,7 +432,11 @@ impl MeshJob {
                 }
             }
         }
-        Self { chunk, targets, snapshot, max_y }
+        let temps = world
+            .temperatures()
+            .filter(|(p, _)| block_to_chunk(*p) == chunk)
+            .collect();
+        Self { chunk, targets, snapshot, max_y, temps }
     }
 
     fn run(self) -> MeshJobResult {
@@ -363,13 +456,9 @@ impl MeshJob {
         // Tier-2 source heat over the same column, reusing the light field's
         // block snapshot (no second full-column scan), so natural lava glows
         // the surrounding rock as soon as a column streams in. Deterministic
-        // from the blocks — no server sync.
-        let heat = compute_heat_in(
-            light.blocks(),
-            light.base(),
-            light.height(),
-            oc_world::env_registry::active(),
-        );
+        // from the blocks — no server sync (tier-3 stored heat is `self.temps`).
+        let env = oc_world::env_registry::active();
+        let heat = compute_heat_in(light.blocks(), light.base(), light.height(), env);
         let meshes = self
             .targets
             .iter()
@@ -388,12 +477,26 @@ impl MeshJob {
                         }
                     },
                     |local: IVec3| light.get(base + local),
-                    |local: IVec3| quantize_heat(heat.delta(base + local)),
+                    |local: IVec3| {
+                        let p = base + local;
+                        quantize_heat(glow_delta(self.temps.get(&p).copied(), &heat, p, env))
+                    },
                 );
                 (pos, mesh)
             })
             .collect();
         MeshJobResult { chunk: self.chunk, meshes }
+    }
+}
+
+/// The signed glow delta (°C from the base) to bake for a cell: a tier-3 stored
+/// temperature (synced from the server) **overrides** — it can sit below the
+/// base, so a cool block placed in the hot deep renders dark — otherwise the
+/// deterministic tier-2 source delta.
+fn glow_delta(stored: Option<f32>, heat: &HeatField, pos: BlockPos, env: &EnvDef) -> f32 {
+    match stored {
+        Some(t) => t - oc_world::temperature::base(pos, env),
+        None => heat.delta(pos),
     }
 }
 

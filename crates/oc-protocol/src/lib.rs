@@ -81,6 +81,11 @@ pub enum ServerMessage {
     Column(GeneratedColumn),
     /// A block changed (echoes the client's own edits too).
     BlockChanged { pos: BlockPos, block: BlockId },
+    /// Tier-3 stored block temperatures (°C) that changed since the last send —
+    /// a placed block heating toward the deep ambient. The client folds these
+    /// into the blackbody glow (server-authoritative dynamic heat). A value back
+    /// at the local ambient means the cell equilibrated (drop it).
+    BlockTemps(Vec<(BlockPos, f32)>),
     /// Authoritative time of day, sent periodically.
     Time { day_fraction: f64 },
     /// This player's cheat permission changed (cheats toggled, or an

@@ -123,6 +123,19 @@ pub fn placed_stored_temp(pos: BlockPos, env: &EnvDef) -> Option<f32> {
     ((carry - ambient).abs() > EQUILIBRIUM_C).then_some(carry)
 }
 
+/// Upper end of the visible blackbody glow (°C) — the shader's brilliant-white
+/// cap (must match `HEAT_DELTA_MAX` in the renderer).
+const GLOW_MAX_C: f32 = 1500.0;
+
+/// Quantizes a temperature into one of ~64 visible glow buckets above the Draper
+/// point. The server broadcasts a relaxing cell only when its bucket changes, so
+/// a heating block streams ~32 updates rather than one per tick; everything
+/// below the Draper point is bucket 0 (dark), costing no traffic.
+pub fn glow_bucket(temp_c: f32) -> i32 {
+    let range = GLOW_MAX_C - crate::temperature::DRAPER_C;
+    (((temp_c - crate::temperature::DRAPER_C) / range).clamp(0.0, 1.0) * 64.0) as i32
+}
+
 /// Fraction of a cell's delta that crosses into `block` per block travelled
 /// (combined with [`STEP_DECAY`]). Open air carries heat freely
 /// (radiation/convection); a solid conducts it in proportion to its

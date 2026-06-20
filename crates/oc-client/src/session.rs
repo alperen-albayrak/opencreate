@@ -501,6 +501,16 @@ impl Session {
                         .is_some_and(|item| self.item_count(item.0) > 0));
             if free && self.streamer.world_mut().set_block(pos, block) {
                 self.sounds.push(crate::audio::Sound::Place);
+                // Predict the tier-3 stored temperature too (a deterministic
+                // function of position), so a block placed in the deep renders
+                // cool immediately instead of flashing the depth glow for a frame
+                // until the server's authoritative BlockTemps round-trips back.
+                if let Some(t) = oc_world::heat::placed_stored_temp(
+                    pos,
+                    oc_world::env_registry::active(),
+                ) {
+                    self.streamer.world_mut().set_temperature(pos, t);
+                }
                 self.streamer.remesh_after_edit(renderer, pos)?;
                 self.outbox.push(ClientMessage::SetBlock { pos, block });
                 if self.caps(registry).uses_inventory
@@ -528,6 +538,9 @@ impl Session {
                 Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
                 Some(ServerMessage::BlockChanged { pos, block }) => {
                     self.streamer.apply_block_change(renderer, pos, block)?;
+                }
+                Some(ServerMessage::BlockTemps(updates)) => {
+                    self.streamer.apply_block_temps(renderer, &updates)?;
                 }
                 Some(ServerMessage::Time { day_fraction }) => self.day_fraction = day_fraction,
                 Some(ServerMessage::Cheats(cheats)) => {

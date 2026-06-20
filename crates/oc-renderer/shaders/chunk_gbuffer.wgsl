@@ -137,8 +137,10 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
         f32((light >> 4u) & 15u),
         f32(light & 15u),
     ) / 15.0;
-    // Must match HEAT_DELTA_MAX in mesh.rs.
-    let heat_delta = f32((packed.z >> 16u) & 0xFFFFu) / 65535.0 * 1500.0;
+    // Signed glow delta (°C from the base): 0 ⇒ −MAX, ~32768 ⇒ 0, 65535 ⇒ +MAX.
+    // Signed so tier-3 stored heat can pull a cell below the depth glow (a cool
+    // block placed deep renders dark). Must match quantize_heat in mesh.rs.
+    let heat_delta = (f32((packed.z >> 16u) & 0xFFFFu) / 65535.0 * 2.0 - 1.0) * 1500.0;
 
     let ao = f32((w0 >> 28u) & 3u);
     let ao_mul = 0.66 + (0.34 / 3.0) * ao;
