@@ -65,26 +65,26 @@ a second **moon** dimension proving per-world selection at runtime.
 the descent ramps cool caves → glowing molten layer → lava, and the deep is
 lethal. A shallow or airless world keeps them correctly dormant.
 
-**Pending:**
-- **G5** — *phase transitions* (lava↔obsidian/basalt, ice↔water↔steam) + the
-  latent-heat plateau + water cooling. Needs `oc:obsidian`/`oc:basalt`/`oc:ice`
-  content (lava/water already exist as placeable items). The latent-heat plateau
-  builds on the tier-3 stored-heat state from G3.2.
+**Partly done:**
+- **G5** — *phase transitions*. **Done:** `oc:obsidian`/`oc:basalt`/`oc:ice`
+  content + the **lava + water → obsidian quench** (event-driven on edit — the
+  water-cooling mechanic, verified in-game). **Remaining:** ice ↔ water melt/freeze,
+  the slow lava→basalt cool, and the **latent-heat plateau** (the boiling-water pot)
+  + water as a finite coolant, which build on the tier-3 stored-heat state from G3.2.
 
 ## The key coupling: the deep world is built
 
 The deep-world build ([world-building/deep-world.md](world-building/deep-world.md))
 landed the lava sea + bedrock floor the heat features need, so **G3.1** (source
-heat), **G6** (hazard), and **G3.2** (stored heat) are now live. **G5** still needs
-its transition **content** (`oc:obsidian`/`oc:basalt`/`oc:ice`); and **Stage H's
-volcanoes** are lava heat sources too, so H wants the same content path — the
-remaining work still converges there.
+heat), **G6** (hazard), **G3.2** (stored heat), and **G5's** content + lava-water
+quench are now live. **Stage H's volcanoes** are lava heat sources too, so H wants
+the same content path — the remaining work still converges there.
 
 ## Remaining work, in dependency order
 
-1. **G5** — *phase transitions* + content: `oc:obsidian`/`oc:basalt`/`oc:ice`,
-   lava+water→obsidian/basalt, ice↔water↔steam, the latent-heat plateau, and
-   water as a finite coolant (the temporary survivable pocket).
+1. **G5 (finish)** — ice ↔ water melt/freeze, the slow lava→basalt cool, and the
+   latent-heat plateau + water as a finite coolant (the boiling-water pot, on the
+   tier-3 stored heat). Content + the lava-water quench already shipped.
 2. **Stage H** — coarse 16³ climate grid + volcanoes (lava sources) +
    global `world_age`.
 
@@ -96,6 +96,12 @@ real-temp readout of the player or looked-at object via gear); insulation gear.
 
 The deep-world deepening and **G3.2's stored-heat persistence + sync** (the
 save-format bump, kept lossless, and the live server→client temperature channel)
-both landed and measured fine. The remaining heat work, **G5**, is mostly content
-+ event-driven block swaps — lower-risk than what's already shipped; its only
-subtlety is the latent-heat plateau riding on the G3.2 stored-heat state.
+both landed and measured fine. **G5's** content + lava-water quench shipped; the
+rest of G5 (ice↔water, the latent-heat plateau) is lower-risk event-driven swaps,
+its only subtlety the plateau riding on the G3.2 stored-heat state.
+
+Separately, a **deep-world streaming cost** surfaced under sustained play: columns
+load their full ~60-section vertical extent everywhere, so ~40k sections stay
+GPU-resident (most never visible), driving recurring upload stalls that worsen as
+the allocator churns. The fix — streaming 16³ cubes within a horizontal+vertical
+render box — is its own planned effort (not a heat regression).

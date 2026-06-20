@@ -1,7 +1,8 @@
 # The Deep World — Vertical Layers, Lava & the Hellish Deep
 
 **Built (terrain, thermal curve, glow, tier-2 source heat, heat hazard, tier-3
-stored heat); phase transitions pending (G5).** How the overworld is structured
+stored heat, lava+water→obsidian quench); the rest of the phase transitions
+(ice↔water, latent heat) pending (G5).** How the overworld is structured
 *downward*: a tall column of
 rock that grows hot and hazardous with depth, opens into lava, and ends at an
 impassable floor. It applies the "use nature's values" principle to depth — a
@@ -98,9 +99,11 @@ The build, in dependency order (see also the Phase-0 plan):
    the medium + conduction through the blocks you touch — G6,
    [survival](../gameplay/survival.md)), and **tier-3 per-block stored heat** (a
    placed block heats up and glows over seconds, server-authoritative + synced +
-   saved in the v3 column side-layer — G3.2). Remaining: **phase transitions**
-   (lava + water → obsidian/basalt; ice ↔ water ↔ steam — G5), which need
-   `oc:obsidian`/`oc:basalt`/`oc:ice` content too.
+   saved in the v3 column side-layer — G3.2), and the first **phase transition** —
+   lava + water → **obsidian** (the water quench), with `oc:obsidian`/`oc:basalt`/
+   `oc:ice` content (G5). Remaining: ice ↔ water melt/freeze, the slow lava→basalt
+   cool, and the latent-heat plateau (the boiling-water pot), which build on the
+   tier-3 stored heat.
 
 Cross-refs: [temperature.md](temperature.md) (the three-tier heat model),
 [matter-model.md](matter-model.md) (cross-registry phase transitions),

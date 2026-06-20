@@ -1,8 +1,9 @@
 # Temperature & the Deep Core
 
 **Built.** All three tiers (static base, source heat, per-block stored heat), the
-blackbody glow, and the player heat hazard are **live**; only **phase transitions**
-(G5) remain. A temperature field over the world that makes deep digging hot and
+blackbody glow, the player heat hazard, and the first **phase transition** (lava +
+water → obsidian) are **live**; the rest of the phase transitions — ice ↔ water and
+the latent-heat plateau (G5) — are the last piece. A temperature field over the world that makes deep digging hot and
 hazardous, lets blocks glow by incandescence, and drives phase changes — without a
 full per-voxel simulation. The trick is that almost all of it is a **pure
 function**, with sparse dynamic state only where something is actually being heated.
