@@ -758,6 +758,55 @@ impl Server {
         if inventory_changed {
             self.send_inventory()?;
         }
+        // The edit may have brought lava and water into contact — quench it.
+        self.resolve_quench(pos)?;
+        Ok(())
+    }
+
+    /// Event-driven phase transition (docs/world-building/temperature.md): when an
+    /// edit puts a quenchable block (lava, via `phase_transition.quench`) next to
+    /// **water**, the lava flashes to its quench product (obsidian) and the water
+    /// that did it boils away. Data-driven and bounded to the edit's neighbourhood
+    /// — the §6.6 "notify nearby blocks to re-check" hook, never a global scan.
+    fn resolve_quench(&mut self, pos: oc_core::BlockPos) -> Result<(), Disconnected> {
+        const DIRS: [IVec3; 6] = [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ];
+        let Some(water) = oc_world::registry::find_block("oc:water") else {
+            return Ok(());
+        };
+        // The edit changed adjacencies at `pos` and its six neighbours.
+        let mut swaps: std::collections::HashMap<oc_core::BlockPos, oc_world::BlockId> =
+            std::collections::HashMap::new();
+        for cell in std::iter::once(pos).chain(DIRS.iter().map(|d| pos + *d)) {
+            let block = self.world.block(cell);
+            let product = oc_world::registry::def(block)
+                .and_then(|d| d.phase_transition.as_ref())
+                .and_then(|pt| pt.quench.as_deref())
+                .and_then(oc_world::registry::find_block);
+            let Some(product) = product else { continue };
+            // Only where it actually touches water — and boil that water away.
+            let mut quenched = false;
+            for d in DIRS {
+                if self.world.block(cell + d) == water {
+                    quenched = true;
+                    swaps.insert(cell + d, oc_world::BlockId::AIR);
+                }
+            }
+            if quenched {
+                swaps.insert(cell, product);
+            }
+        }
+        for (p, block) in swaps {
+            if self.world.set_block(p, block) {
+                self.transport.send(ServerMessage::BlockChanged { pos: p, block })?;
+            }
+        }
         Ok(())
     }
 

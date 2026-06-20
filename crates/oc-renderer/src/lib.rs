@@ -476,8 +476,8 @@ impl Renderer {
                 }
             }
             // Per-texture-layer intrinsic emissive temperature (lava → 1200 °C),
-            // 14 layers packed into 4 vec4 for the geometry pass.
-            let mut emissive_temp = [Vec4::ZERO; 4];
+            // up to 20 layers packed into 5 vec4 for the geometry pass.
+            let mut emissive_temp = [Vec4::ZERO; 5];
             for (i, &t) in crate::texture::EMISSIVE_TEMPS.iter().enumerate() {
                 emissive_temp[i / 4][i % 4] = t;
             }
