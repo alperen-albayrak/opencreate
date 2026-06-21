@@ -35,7 +35,35 @@ pub struct GeneratedColumn {
     pub temperatures: HashMap<BlockPos, f32>,
 }
 
+/// One freshly generated (or loaded) section, the per-section transfer unit the
+/// section-streaming protocol ships. Mirrors [`crate::store::StoredSection`] (the
+/// on-disk form) on the wire/in-memory side.
+#[derive(Clone)]
+pub struct GeneratedSection {
+    pub pos: SectionPos,
+    pub section: Section,
+    pub temperatures: HashMap<BlockPos, f32>,
+}
+
 impl GeneratedColumn {
+    /// Splits a generated column into its per-section transfer units, attaching
+    /// each section's stored temperatures. Used by the server to answer
+    /// per-section subscriptions from a transiently generated column.
+    pub fn into_sections(self) -> Vec<GeneratedSection> {
+        self.sections
+            .into_iter()
+            .map(|(pos, section)| {
+                let temperatures = self
+                    .temperatures
+                    .iter()
+                    .filter(|(p, _)| block_to_section(**p) == pos)
+                    .map(|(p, t)| (*p, *t))
+                    .collect();
+                GeneratedSection { pos, section, temperatures }
+            })
+            .collect()
+    }
+
     /// Overlays one saved section onto freshly generated terrain: a saved
     /// section fully replaces the generated one at its position, or is appended
     /// if it sits outside the generated span (e.g. a tower built up high). Its
@@ -264,12 +292,21 @@ impl World {
         Some(StoredSection { voxels: Section::clone(section), temperatures })
     }
 
-    /// Inserts one loaded/saved section, registering it in the column index and
-    /// restoring its stored temperatures. Not an edit — no dirty mark.
+    /// Inserts one generated/streamed section, registering it in the column
+    /// index and restoring its stored temperatures. Not an edit — no dirty mark.
+    pub fn insert_section(&mut self, gs: GeneratedSection) {
+        self.columns.entry(ChunkPos::new(gs.pos.x, gs.pos.z)).or_default().insert(gs.pos.y);
+        self.sections.insert(gs.pos, Arc::new(gs.section));
+        self.temperatures.extend(gs.temperatures);
+    }
+
+    /// Inserts one loaded/saved section (the on-disk form). Not an edit.
     pub fn import_section(&mut self, pos: SectionPos, stored: StoredSection) {
-        self.columns.entry(ChunkPos::new(pos.x, pos.z)).or_default().insert(pos.y);
-        self.sections.insert(pos, Arc::new(stored.voxels));
-        self.temperatures.extend(stored.temperatures);
+        self.insert_section(GeneratedSection {
+            pos,
+            section: stored.voxels,
+            temperatures: stored.temperatures,
+        });
     }
 
     /// Gathers a loaded column into the column-shaped transfer form the protocol

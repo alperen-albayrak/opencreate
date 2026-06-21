@@ -75,17 +75,58 @@ impl LightField {
     }
 }
 
+/// How sky light is seeded into a freshly built field.
+enum SkySeed<'a> {
+    /// No skylight enters — a deep window with rock above it (only block light
+    /// floods, so a deep edit needn't span up to the surface).
+    None,
+    /// Derive each column's heightmap (highest non-air block) from the window's
+    /// own blocks — the classic full-column walk, exact when the window reaches
+    /// the open sky.
+    DeriveFromWindow,
+    /// Seed from an external per-(x,z) heightmap: the world Y of the highest
+    /// sky-blocking block (`i32::MIN` for a column open to the void). This lets a
+    /// vertical *band* be lit without loading the column above it — the server
+    /// ships the heightmap so the client need only hold the band.
+    Heights(&'a dyn Fn(i32, i32) -> i32),
+}
+
 /// Computes light for the 3×3 columns centered on `center`. `sample` is
 /// queried once per voxel between `min_y` (inclusive) and `max_y`
-/// (exclusive). `sky_open` is whether `max_y` is the open sky (seed skylight
-/// from the top) or a window ceiling deep underground (no skylight enters —
-/// only block light floods, so a deep edit needn't span up to the surface).
+/// (exclusive). `sky_open` is whether `max_y` is the open sky (derive the
+/// heightmap from the window and seed skylight) or a window ceiling deep
+/// underground (no skylight enters).
 pub fn compute_light(
     sample: impl Fn(BlockPos) -> BlockId,
     center: ChunkPos,
     min_y: i32,
     max_y: i32,
     sky_open: bool,
+) -> LightField {
+    let seed = if sky_open { SkySeed::DeriveFromWindow } else { SkySeed::None };
+    compute_inner(sample, center, min_y, max_y, seed)
+}
+
+/// Computes light for a vertical *band* whose sky is seeded from a server-sent
+/// heightmap rather than the window's own top — so a band can be lit correctly
+/// without holding the column above it. `heights(x, z)` gives the world Y of the
+/// highest sky-blocking block at a world column (`i32::MIN` = open to the void).
+pub fn compute_light_banded(
+    sample: impl Fn(BlockPos) -> BlockId,
+    center: ChunkPos,
+    min_y: i32,
+    max_y: i32,
+    heights: impl Fn(i32, i32) -> i32,
+) -> LightField {
+    compute_inner(sample, center, min_y, max_y, SkySeed::Heights(&heights))
+}
+
+fn compute_inner(
+    sample: impl Fn(BlockPos) -> BlockId,
+    center: ChunkPos,
+    min_y: i32,
+    max_y: i32,
+    seed: SkySeed<'_>,
 ) -> LightField {
     let base = IVec3::new(
         (center.x - 1) * SECTION_SIZE,
@@ -115,54 +156,32 @@ pub fn compute_light(
     let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
 
     // Sky seeding: a cell sees the open sky when it sits above its column's
-    // highest non-air block — the **heightmap**. Cells above the heightmap take
-    // full sky; from the heightmap down the level attenuates per block (water
-    // dims a level each; an opaque block stops it, the vertical-shaft rule keeps
-    // full-strength sky through clear air). A deep window with no sky (`!sky_open`)
-    // seeds nothing — only block light floods. Deriving the heightmap from the
-    // sampled blocks here reproduces the old top-down walk exactly; the cubic-
-    // streaming work swaps the source to a server-sent heightmap so a vertical
-    // *band* can be lit without loading the whole column above.
-    if sky_open {
-        let w = WIDTH as usize;
-        for z in 0..w {
-            for x in 0..w {
-                // Heightmap (window-relative): highest non-air block in the
-                // column; -1 means the column is clear all the way down.
-                let mut heightmap = -1i32;
-                for y in (0..height).rev() {
-                    if field.blocks[(y as usize * w + z) * w + x] != crate::blocks::AIR {
-                        heightmap = y;
-                        break;
-                    }
-                }
-                let mut level = MAX_LIGHT;
-                for y in (0..height).rev() {
-                    let i = (y as usize * w + z) * w + x;
-                    if y > heightmap {
-                        field.sky[i] = MAX_LIGHT; // open sky above the surface
-                        queue.push_back((i, MAX_LIGHT));
-                        continue;
-                    }
-                    match field.blocks[i].light_opacity() {
-                        None => break,
-                        Some(cost) => {
-                            let air = field.blocks[i] == crate::blocks::AIR;
-                            if !(air && level == MAX_LIGHT) {
-                                level = level.saturating_sub(cost);
-                            }
-                            field.sky[i] = level;
-                            if level > 1 {
-                                queue.push_back((i, level));
-                            }
-                            if level == 0 {
-                                break;
-                            }
+    // highest sky-blocking block — the **heightmap**. Cells above it take full
+    // sky; from there down the level attenuates per block (water dims a level
+    // each; an opaque block stops it, the vertical-shaft rule keeps full-strength
+    // sky through clear air). The heightmap source is either derived from the
+    // window (full-column walk) or supplied by the server (band lighting).
+    let w = WIDTH as usize;
+    match seed {
+        SkySeed::None => {}
+        SkySeed::DeriveFromWindow => {
+            // Highest non-air block per window column, as a world Y.
+            let mut highest = vec![i32::MIN; w * w];
+            for z in 0..w {
+                for x in 0..w {
+                    for y in (0..height).rev() {
+                        if field.blocks[(y as usize * w + z) * w + x] != crate::blocks::AIR {
+                            highest[z * w + x] = min_y + y;
+                            break;
                         }
                     }
                 }
             }
+            seed_sky(&mut field, &mut queue, min_y, height, &|wx, wz| {
+                highest[((wz - base.z) as usize) * w + (wx - base.x) as usize]
+            });
         }
+        SkySeed::Heights(h) => seed_sky(&mut field, &mut queue, min_y, height, h),
     }
     bfs(&mut field.sky, &field.blocks, &mut queue, height, true);
 
@@ -191,6 +210,55 @@ pub fn compute_light(
     flood_channel(&mut field.block_b, &field.blocks, height);
 
     field
+}
+
+/// Seeds skylight from a per-(x,z) heightmap: cells above the heightmap take
+/// full sky and queue; from the heightmap down the level attenuates per block.
+/// A column whose heightmap sits at/above the window top gets no sky (it is
+/// entirely underground); a column open to the void (`i32::MIN`) is full sky.
+fn seed_sky(
+    field: &mut LightField,
+    queue: &mut VecDeque<(usize, u8)>,
+    min_y: i32,
+    height: i32,
+    heights: &dyn Fn(i32, i32) -> i32,
+) {
+    let w = WIDTH as usize;
+    for z in 0..w {
+        for x in 0..w {
+            let world_x = field.base.x + x as i32;
+            let world_z = field.base.z + z as i32;
+            let h = heights(world_x, world_z);
+            if h >= min_y + height {
+                continue; // whole window column is at/under the surface: no sky
+            }
+            let mut level = MAX_LIGHT;
+            for y in (0..height).rev() {
+                let i = (y as usize * w + z) * w + x;
+                if min_y + y > h {
+                    field.sky[i] = MAX_LIGHT; // open sky above the heightmap
+                    queue.push_back((i, MAX_LIGHT));
+                    continue;
+                }
+                match field.blocks[i].light_opacity() {
+                    None => break,
+                    Some(cost) => {
+                        let air = field.blocks[i] == crate::blocks::AIR;
+                        if !(air && level == MAX_LIGHT) {
+                            level = level.saturating_sub(cost);
+                        }
+                        field.sky[i] = level;
+                        if level > 1 {
+                            queue.push_back((i, level));
+                        }
+                        if level == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Seeds a block-light channel from its already-placed source levels and
@@ -339,6 +407,66 @@ mod tests {
         assert_eq!(blk(&f, IVec3::new(8 + 16, 3, 8)), 0);
         // Sky light is unaffected by the lamp.
         assert_eq!(sky(&f, IVec3::new(9, 3, 8)), 15);
+    }
+
+    /// The banded path, fed the heightmap the full-column path would derive,
+    /// must produce identical sky light — proof the server-sent heightmap can
+    /// replace the top-down window walk without changing the result.
+    #[test]
+    fn banded_with_derived_heightmap_matches_full_column() {
+        // Terrain: stone floor at y<=0, a hill of stone to y=6 over a patch, a
+        // lamp, and a water pool — a mix of opaque, emissive, and translucent.
+        let mut extra: Vec<(BlockPos, BlockId)> = Vec::new();
+        for x in 6..=10 {
+            for z in 6..=10 {
+                for y in 1..=6 {
+                    extra.push((IVec3::new(x, y, z), blocks::STONE));
+                }
+            }
+        }
+        for y in 1..=3 {
+            extra.push((IVec3::new(2, y, 2), blocks::WATER));
+        }
+        let sample = world_with(&extra);
+
+        let full = compute_light(&sample, ChunkPos::new(0, 0), -16, 48, true);
+        // Highest non-air block per world column (what the window would derive).
+        let heights = |wx: i32, wz: i32| -> i32 {
+            for y in (-16..48).rev() {
+                if sample(IVec3::new(wx, y, wz)) != blocks::AIR {
+                    return y;
+                }
+            }
+            i32::MIN
+        };
+        let banded = compute_light_banded(&sample, ChunkPos::new(0, 0), -16, 48, heights);
+
+        for y in -16..48 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    let p = IVec3::new(x, y, z);
+                    assert_eq!(
+                        full.get(p) >> 12,
+                        banded.get(p) >> 12,
+                        "sky differs at {p}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A band that starts below the surface, fed a heightmap that sits above the
+    /// window, gets no skylight — the deep-band-is-dark case the streamer relies
+    /// on (sky comes only from columns whose heightmap is within/below the band).
+    #[test]
+    fn banded_below_a_high_heightmap_is_dark() {
+        let sample = world_with(&[]); // open flat world, floor at y<=0
+        // Pretend the surface is far above this band (y=200) everywhere.
+        let banded =
+            compute_light_banded(&sample, ChunkPos::new(0, 0), -64, -16, |_, _| 200);
+        for y in -64..-16 {
+            assert_eq!(sky(&banded, IVec3::new(8, y, 8)), 0, "deep band has no sky at y={y}");
+        }
     }
 
     #[test]
