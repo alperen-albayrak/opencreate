@@ -8,6 +8,7 @@ use tracing::warn;
 pub const SETTINGS_PATH: &str = "settings.ron";
 
 pub const RENDER_DISTANCE_RANGE: (f32, f32) = (4.0, 24.0);
+pub const VERTICAL_RENDER_DISTANCE_RANGE: (f32, f32) = (2.0, 12.0);
 pub const FOV_RANGE: (f32, f32) = (50.0, 110.0);
 pub const SENSITIVITY_RANGE: (f32, f32) = (0.2, 3.0);
 pub const UI_SCALE_RANGE: (f32, f32) = (0.5, 3.0);
@@ -17,8 +18,10 @@ pub const MAX_FPS_RANGE: (f32, f32) = (0.0, 240.0);
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// View radius in chunks.
+    /// Horizontal view radius in chunks.
     pub render_distance: i32,
+    /// Vertical view radius in 16³ sections (the cubic-streaming band height).
+    pub render_distance_vertical: i32,
     /// Vertical field of view, degrees.
     pub fov: f32,
     /// Mouse look multiplier (1.0 = default feel).
@@ -45,6 +48,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             render_distance: 12,
+            render_distance_vertical: 6,
             fov: 70.0,
             mouse_sensitivity: 1.0,
             ui_scale: 1.0,
@@ -62,6 +66,8 @@ impl Settings {
     pub fn clamped(mut self) -> Self {
         self.render_distance = (self.render_distance as f32)
             .clamp(RENDER_DISTANCE_RANGE.0, RENDER_DISTANCE_RANGE.1) as i32;
+        self.render_distance_vertical = (self.render_distance_vertical as f32)
+            .clamp(VERTICAL_RENDER_DISTANCE_RANGE.0, VERTICAL_RENDER_DISTANCE_RANGE.1) as i32;
         self.fov = self.fov.clamp(FOV_RANGE.0, FOV_RANGE.1);
         self.mouse_sensitivity = self
             .mouse_sensitivity
@@ -119,6 +125,7 @@ mod tests {
 
         let wild = Settings {
             render_distance: 9999,
+            render_distance_vertical: 9999,
             fov: 1.0,
             mouse_sensitivity: -5.0,
             ui_scale: 100.0,
@@ -131,6 +138,7 @@ mod tests {
         }
         .clamped();
         assert_eq!(wild.render_distance, 24);
+        assert_eq!(wild.render_distance_vertical, 12);
         assert_eq!(wild.fov, 50.0);
         assert_eq!(wild.mouse_sensitivity, 0.2);
         assert_eq!(wild.ui_scale, 3.0);
@@ -142,6 +150,7 @@ mod tests {
     fn settings_roundtrip_through_ron() {
         let settings = Settings {
             render_distance: 16,
+            render_distance_vertical: 5,
             fov: 90.0,
             mouse_sensitivity: 1.5,
             ui_scale: 2.0,

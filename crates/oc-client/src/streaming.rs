@@ -26,6 +26,8 @@ use oc_world::{BlockId, Section, World};
 
 /// Default view radius (chunks); settings override per session.
 const DEFAULT_VIEW_RADIUS: i32 = 12;
+/// Default vertical view radius in 16³ sections (the cubic-streaming band).
+const DEFAULT_VERTICAL_RADIUS: i32 = 6;
 /// Extra generated ring so view-edge chunks cull faces against real
 /// neighbors instead of assumed air.
 const GEN_MARGIN: i32 = 1;
@@ -53,8 +55,12 @@ pub struct ChunkStreamer {
     mesh_rx: Receiver<MeshJobResult>,
     /// Mesh results that arrived but exceeded the frame's upload budget.
     upload_queue: Vec<MeshJobResult>,
-    /// View radius in chunks (settings-driven).
+    /// Horizontal view radius in chunks (settings-driven).
     radius: i32,
+    /// Vertical view radius in 16³ sections — the meshed/streamed band height
+    /// around the camera (settings-driven). Drives streaming once the cubic
+    /// section work lands; stored here now so the slider has a home.
+    vertical_radius: i32,
     /// Cached light+heat field per column with an actively-heating block, so the
     /// stream of glow updates re-uses one flood instead of re-running it every
     /// tick. A pure function of the (unedited) blocks, so it stays valid until
@@ -74,6 +80,7 @@ impl ChunkStreamer {
             mesh_rx,
             upload_queue: Vec::new(),
             radius: DEFAULT_VIEW_RADIUS,
+            vertical_radius: DEFAULT_VERTICAL_RADIUS,
             glow_field: HashMap::new(),
         }
     }
@@ -82,6 +89,12 @@ impl ChunkStreamer {
     /// next update (new subscriptions or unloads as needed).
     pub fn set_radius(&mut self, radius: i32) {
         self.radius = radius.max(2);
+    }
+
+    /// Applies the settings' vertical render distance (the band height in 16³
+    /// sections around the camera). Consumed by streaming once cubic sections land.
+    pub fn set_vertical_radius(&mut self, radius: i32) {
+        self.vertical_radius = radius.max(1);
     }
 
     /// Current view radius in chunks (the loaded square's half-extent).

@@ -196,6 +196,7 @@ impl App {
             session.camera.fov_y = self.settings.fov.to_radians();
             session.camera.sensitivity = self.settings.mouse_sensitivity;
             session.streamer.set_radius(self.settings.render_distance);
+            session.streamer.set_vertical_radius(self.settings.render_distance_vertical);
         }
     }
 

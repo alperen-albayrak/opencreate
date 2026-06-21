@@ -14,6 +14,7 @@
     "menu.settings": "Settings",
     "menu.loading": "Loading",
     "settings.render_distance": "Render distance",
+    "settings.render_distance_vertical": "Vertical render distance",
     "settings.fov": "Field of view",
     "settings.sensitivity": "Mouse sensitivity",
     "settings.ui_scale": "UI size",

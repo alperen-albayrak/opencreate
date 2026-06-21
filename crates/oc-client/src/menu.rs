@@ -457,6 +457,14 @@ impl SettingsScreen {
                     1.0,
                     settings.render_distance as f32,
                 ),
+                slider(
+                    "render_distance_vertical",
+                    "settings.render_distance_vertical",
+                    1,
+                    VERTICAL_RENDER_DISTANCE_RANGE,
+                    1.0,
+                    settings.render_distance_vertical as f32,
+                ),
                 slider("fov", "settings.fov", 1, FOV_RANGE, 1.0, settings.fov),
                 slider(
                     "resolution_scale",
@@ -529,6 +537,9 @@ impl SettingsScreen {
         for slider in &self.sliders {
             match slider.id {
                 "render_distance" => settings.render_distance = slider.value.round() as i32,
+                "render_distance_vertical" => {
+                    settings.render_distance_vertical = slider.value.round() as i32
+                }
                 "fov" => settings.fov = slider.value,
                 "sensitivity" => settings.mouse_sensitivity = slider.value,
                 "ui_scale" => settings.ui_scale = slider.value,
@@ -887,16 +898,17 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 10);
+        assert_eq!(screen.sliders.len(), 11);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");
 
         let (w, h, ui) = (1280.0, 720.0, 1.0);
-        // FOV lives on the Graphics tab (row 1 there, sliders[3]).
+        // FOV lives on the Graphics tab (row 2 there, sliders[4]: render distance,
+        // vertical render distance, then FOV).
         screen.tab = 1;
-        let fov = 3;
-        let (bx, by, bw, bh) = screen.bar_rect(1, w, h, ui);
+        let fov = 4;
+        let (bx, by, bw, bh) = screen.bar_rect(2, w, h, ui);
         let grabbed = screen.slider_at((bx + bw / 2.0, by + bh / 2.0), w, h, ui);
         assert_eq!(grabbed, Some(fov));
         screen.drag(fov, bx + bw + 50.0, w, h, ui);
