@@ -114,22 +114,39 @@ pub fn compute_light(
 
     let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
 
-    // Sky seeding: walk each column down from the open sky. Level-15 light
-    // passes through air without attenuation (the vertical shaft rule). Skipped
-    // for a window whose ceiling is deep underground (`!sky_open`): no skylight
-    // enters, so sky stays 0 and only block light floods.
+    // Sky seeding: a cell sees the open sky when it sits above its column's
+    // highest non-air block — the **heightmap**. Cells above the heightmap take
+    // full sky; from the heightmap down the level attenuates per block (water
+    // dims a level each; an opaque block stops it, the vertical-shaft rule keeps
+    // full-strength sky through clear air). A deep window with no sky (`!sky_open`)
+    // seeds nothing — only block light floods. Deriving the heightmap from the
+    // sampled blocks here reproduces the old top-down walk exactly; the cubic-
+    // streaming work swaps the source to a server-sent heightmap so a vertical
+    // *band* can be lit without loading the whole column above.
     if sky_open {
-        for z in 0..WIDTH {
-            for x in 0..WIDTH {
+        let w = WIDTH as usize;
+        for z in 0..w {
+            for x in 0..w {
+                // Heightmap (window-relative): highest non-air block in the
+                // column; -1 means the column is clear all the way down.
+                let mut heightmap = -1i32;
+                for y in (0..height).rev() {
+                    if field.blocks[(y as usize * w + z) * w + x] != crate::blocks::AIR {
+                        heightmap = y;
+                        break;
+                    }
+                }
                 let mut level = MAX_LIGHT;
                 for y in (0..height).rev() {
-                    let i = (y * WIDTH + z) * WIDTH + x;
-                    let i = i as usize;
+                    let i = (y as usize * w + z) * w + x;
+                    if y > heightmap {
+                        field.sky[i] = MAX_LIGHT; // open sky above the surface
+                        queue.push_back((i, MAX_LIGHT));
+                        continue;
+                    }
                     match field.blocks[i].light_opacity() {
                         None => break,
                         Some(cost) => {
-                            // The free vertical shaft is air-only: water still
-                            // dims a level per block on the way down.
                             let air = field.blocks[i] == crate::blocks::AIR;
                             if !(air && level == MAX_LIGHT) {
                                 level = level.saturating_sub(cost);
