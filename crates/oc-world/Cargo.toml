@@ -12,3 +12,4 @@ zstd.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 ron.workspace = true
+tracing.workspace = true

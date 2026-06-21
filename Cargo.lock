@@ -1853,6 +1853,7 @@ dependencies = [
  "oc-core",
  "ron",
  "serde",
+ "tracing",
  "zstd",
 ]
 

@@ -845,9 +845,7 @@ impl Server {
     }
 
     fn export_for_send(&self, chunk: ChunkPos) -> Option<GeneratedColumn> {
-        self.world
-            .export_column(chunk)
-            .map(|stored| stored.into_generated(chunk))
+        self.world.column_for_send(chunk)
     }
 
     fn integrate_generated(&mut self) {
@@ -886,15 +884,20 @@ impl Server {
             let store = Arc::clone(&self.store);
             let tx = self.gen_tx.clone();
             rayon::spawn(move || {
-                // Saved edits win over fresh generation.
-                let column = match store.load_column(chunk) {
-                    Ok(Some(stored)) => stored.into_generated(chunk),
-                    Ok(None) => generate_column_data(&generator, chunk),
-                    Err(e) => {
-                        warn!("loading column ({}, {}): {e:#}", chunk.x, chunk.z);
-                        generate_column_data(&generator, chunk)
+                // Generate the column, then overlay any saved per-section edits
+                // (a saved section fully replaces the generated one). Pristine
+                // terrain has no saved sections and regenerates from the seed.
+                let mut column = generate_column_data(&generator, chunk);
+                for y in store.saved_section_ys(chunk) {
+                    let pos = IVec3::new(chunk.x, y, chunk.z);
+                    match store.load_section(pos) {
+                        Ok(Some(stored)) => column.overlay_section(pos, stored),
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!("loading section ({}, {}, {}): {e:#}", pos.x, pos.y, pos.z)
+                        }
                     }
-                };
+                }
                 let _ = tx.send(column);
             });
         }
@@ -1095,13 +1098,17 @@ impl Server {
         }
     }
 
+    /// Persists a column's dirty sections individually (the section is the save
+    /// unit); the server still tracks interest by column.
     fn save_column(&mut self, chunk: ChunkPos) {
-        let Some(column) = self.world.export_column(chunk) else {
-            return;
-        };
-        match self.store.save_column(chunk, &column) {
-            Ok(()) => self.world.mark_saved(chunk),
-            Err(e) => warn!("saving column ({}, {}): {e:#}", chunk.x, chunk.z),
+        for pos in self.world.dirty_sections_in(chunk) {
+            let Some(stored) = self.world.export_section(pos) else {
+                continue;
+            };
+            match self.store.save_section(pos, &stored) {
+                Ok(()) => self.world.mark_section_saved(pos),
+                Err(e) => warn!("saving section ({}, {}, {}): {e:#}", pos.x, pos.y, pos.z),
+            }
         }
     }
 
