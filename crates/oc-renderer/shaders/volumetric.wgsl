@@ -1,4 +1,4 @@
-// Volumetric god-rays (graphics roadmap VV stage 3.1): a fullscreen raymarch of
+// Volumetric god-rays (deferred-PBR rendering, graphics stage 3.1): a fullscreen raymarch of
 // the view ray that accumulates sun-lit in-scattering sampled against the sun
 // shadow cascades, then additively blends it into the lit HDR color. Shadowed
 // air contributes nothing, so visible shafts form where the ray crosses sunlit
@@ -111,7 +111,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sun_dir = normalize(scene.sky_sun.xyz);
     let daylight = scene.sky_sun.w;
     let cos_t = dot(ray_dir, sun_dir);
-    // Two-term single scattering (what Vibrant Visuals does — Rayleigh + Mie/HG,
+    // Two-term single scattering (standard atmospheric model — Rayleigh + Mie/HG,
     // not a flat isotropic floor): Rayleigh's phase is near-isotropic and its
     // coefficient is blue-biased, so it gives the broad haze visible in EVERY
     // view direction; Mie's HG phase is the forward lobe → the god-ray shafts

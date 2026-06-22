@@ -4,7 +4,7 @@ Forward **design** for OpenCreate's physically-grounded world model. Unlike the
 rest of [docs/](../README.md) — which describes the game **as built** — these
 pages are mostly **not yet implemented**: they are the locked roadmap for
 terrain, climate, ecology, the three states of matter, temperature, the dynamic
-environment, and the "Vibrant Visuals"-parity renderer. Each page marks what is
+environment, and the deferred-PBR renderer. Each page marks what is
 shipped vs. designed. The complete, unabridged source is the approved plan; this
 folder reorganizes it by subject so it can actually be read.
 
@@ -58,7 +58,7 @@ freezes/melts/boils (lava → stone, ice → water → steam).
 | [dynamic-environment.md](dynamic-environment.md) | Volcanoes, the coarse chunk heatmap, dynamic biomes, generated history (all driven by the [time](time.md) model) |
 | [geology.md](geology.md) | Layered rock strata and data-driven ore veins |
 | [deep-world.md](deep-world.md) | The downward profile: rock → hot rock → lava sea → bedrock floor, lava-driven heat/glow, the reserved hellish layer and temperature HUD |
-| [rendering.md](rendering.md) | The deferred-PBR "Vibrant Visuals"-parity graphics roadmap |
+| [rendering.md](rendering.md) | The deferred-PBR graphics roadmap |
 | [disqualified/](disqualified/README.md) | Ideas and approaches we **considered and moved on from**, each with why — so we don't repeat the dead ends |
 
 ## See also

@@ -88,8 +88,8 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>, n_dot_l: f
     // erode away. Texel-scaled so each cascade self-shadows consistently.
     let offset = texel_world * (1.0 + 2.0 * grazing);
     var pos = world_rel + normal * offset;
-    // Blocky style (VV): snap the sample to the 1/16-block grid (VV
-    // texel_size = 16) so the shadow edge aligns to block texels.
+    // Blocky style: snap the sample to the 1/16-block grid (16 texels per
+    // block) so the shadow edge aligns to block texels.
     let blocky = shadow.splits.w > 0.5;
     if (blocky) {
         pos = floor(pos * 16.0) / 16.0;
@@ -108,7 +108,7 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>, n_dot_l: f
     if (blocky) {
         return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, cascade, d);
     }
-    // Soft PCF (VV default): four bilinear-comparison taps spread one texel
+    // Soft PCF (default): four bilinear-comparison taps spread one texel
     // across and averaged — the LINEAR comparison sampler makes each a 2×2, so
     // this is a smooth ~3×3 kernel, cheap on the fullscreen lighting pass.
     let t = 1.0 / SHADOW_MAP_SIZE;
@@ -235,7 +235,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Sky-ambient fill tinted by the sky colour (horizon→zenith by how
     // up-facing the surface is), so shadowed and indirect-lit surfaces read
-    // sky-blue like Vibrant Visuals, never neutral grey. `sun_vis` darkens only
+    // sky-blue (cool sky fill), never neutral grey. `sun_vis` darkens only
     // the sun term, so a shadowed surface keeps this fill (never pitch black)
     // and it vanishes underground where sky_vis → 0.
     let sky_color = mix(scene.sky_horizon.rgb, scene.sky_zenith.rgb, clamp(normal.y * 0.5 + 0.5, 0.0, 1.0));

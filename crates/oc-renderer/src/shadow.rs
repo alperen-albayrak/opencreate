@@ -535,7 +535,7 @@ unsafe fn create_pipeline(
         // parity differs from the main camera pass (orthographic_rh × rot vs
         // the camera's Y-flip), so BACK/FRONT could silently drop the only
         // caster on flat ground or thin foliage. NONE guarantees every block
-        // casts (the VV look) and removes the winding question; the empty
+        // casts (every block casts) and removes the winding question; the empty
         // depth-only FS makes the extra back-face fills nearly free. Acne is
         // handled by the grazing-scaled normal offset at sampling time, so the
         // depth bias here stays small (over-biasing causes peter-panning).

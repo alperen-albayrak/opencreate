@@ -1,4 +1,4 @@
-//! Volumetric god-rays pass (graphics roadmap VV stage 3.1): a fullscreen
+//! Volumetric god-rays pass (deferred-PBR rendering, graphics stage 3.1): a fullscreen
 //! raymarch that accumulates sun-lit in-scattering sampled against the shadow
 //! cascades and additively blends it into the lit HDR color. Structurally a
 //! clone of [`crate::lighting::LightingPass`], but with only the depth as a

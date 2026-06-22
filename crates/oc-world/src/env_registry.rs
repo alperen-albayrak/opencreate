@@ -59,7 +59,7 @@ pub struct Atmosphere {
     pub rayleigh: (f32, f32, f32),
     pub mie: f32,
     pub mie_g: f32,
-    // --- volumetric god-rays / ground mist (VV stage 3) ---
+    // --- volumetric god-rays / ground mist (graphics stage 3) ---
     /// Game-scale atmospheric scattering strength per block: the renderer scales
     /// the `rayleigh`/`mie` coefficient *ratios* by this to get visible in-scatter
     /// over block (not km) distances. 0 disables the effect (e.g. an airless moon).

@@ -37,10 +37,10 @@ Remaining:
   data/skins.ron. Image skins + a settings picker arrive with texture
   packs.
 
-## Graphics roadmap — "vibrant visuals" (runs alongside phases 3–5)
+## Graphics roadmap — deferred-PBR rendering (runs alongside phases 3–5)
 
 > **The full forward design now lives in [world-building/rendering.md](world-building/rendering.md)** —
-> a deferred-PBR architecture targeting VV parity, part of the broader
+> a deferred-PBR architecture targeting parity with modern voxel renderers, part of the broader
 > [world-building/](world-building/README.md) design set (matter model,
 > temperature, atmosphere, ecology, time). The notes below record what has
 > **shipped** so far against the original forward-renderer plan.
@@ -86,7 +86,7 @@ dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
 rotating with the day. *Later polish:* per-direction fog color,
-per-cloud dusk tinting, sidereal drift; cloud shadows (VV has them,
+per-cloud dusk tinting, sidereal drift; cloud shadows (modern voxel renderers have them,
 players ask for a toggle — if ever added, OFF-able from day one;
 cheap analytically since the cloud pattern is a pure function). **Far terrain LOD** *(shipped, v2 — blocky)*:
 a colored ring generated from the seed on a worker thread (256-block
@@ -105,14 +105,18 @@ Per-vertex ambient occlusion (corner darkening; AO joins the greedy
 merge key, diagonal flip against anisotropy) — the look that makes
 blocks read as solid. *Shipped:* classic side1/side2/corner AO baked
 per vertex (2 bits in word 0), merges only along AO-constant axes,
-brighter-diagonal split. *Shelved:* cascaded sun shadows — built
-(3×2048 texel-snapped cascades, comparison sampling, per-cascade bias,
-cascade cross-fade, twilight fade, diffuse-only darkening) but the
-look never convinced in playtests (smudgy at distance, seams while
-moving); the code sits dormant (forced off, passes skipped, no
-settings entry) awaiting a better design — likely crisper voxel-aware
-shadows (per-block sun visibility baked like AO, or ray-stepped voxel
-shadows) instead of shadow maps.
+brighter-diagonal split. *Shipped (deferred path):* cascaded sun shadows —
+3×2048 texel-snapped cascades, PCF comparison sampling, grazing-scaled
+normal-offset bias, twilight + low-sun fade, blocky (default) / soft-PCF
+styles, a sky-tinted ambient fill (shadows read cool-blue, never black, and
+vanish in caves), and a settings toggle. The earlier "never convinced" was
+**three real bugs, not the approach** (found via research + adversarial
+debugging): the depth-only caster bound the 12-byte packed vertex at an 8-byte
+stride (scrambled caster geometry — the phantom triangular acne); the
+orthographic depth axis was inverted, so the occluder lost the `LESS` depth test
+and nothing ever cast; and the cascade was picked by view-space depth, so
+wide-angle screen-edge pixels fell outside the near cascade's box and dropped
+their shadow. All fixed, with a regression test on occluder clip-z ordering.
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,
@@ -121,12 +125,18 @@ dual-Kawase bloom pyramid (half-res, up to 6 levels, soft-knee
 threshold at HDR 1.0, +0.35 mix before ACES); auto-exposure (16x16
 log-luminance grid, CPU readback two frames later, geometric mean,
 eased at 1.8/s, clamped 0.55-2.4). Ultra tier:
-volumetric clouds, god rays, SSAO, per-biome color grading. *Shipped:*
+volumetric clouds, SSAO, per-biome color grading. *Shipped:*
 SSR water — the opaque color snapshots between passes and top water
 faces march the depth buffer (16 geometric steps, fresnel-gated,
 screen-edge fade, sky fallback); Water reflections toggle in settings.
-PBR texture channels (normal/roughness/emissive per texture) join with
-texture packs in §7.5.
+*Shipped:* **volumetric god-rays + ground mist** — a raymarched fullscreen pass
+after the deferred lighting resolve (depth sampled, additive blend): per-view-ray
+single scattering sampled against the sun cascades — Rayleigh (broad blue haze,
+all view directions) + Mie/Henyey-Greenstein (forward shafts toward the sun),
+driven by per-dimension scattering coefficients, with a height-density mist ramp
+and Beer–Lambert transmittance; caves stay dark (the cascades occlude the air);
+Volumetric fog toggle in settings. PBR texture channels (normal/roughness/emissive
+per texture) join with texture packs in §7.5.
 
 ## Phase 4 — Multiplayer
 `postcard` serialization + QUIC (`quinn`) behind the existing `Transport`
