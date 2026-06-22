@@ -207,9 +207,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // texture is the emissive pattern. Hot matter glows + blooms; cold → 0.
     color += albedo * blackbody_glow(525.0 + g2.a * 975.0);
 
-    // Distance fog: far terrain melts into the sky, same curve as the
-    // forward path (and the water pass).
+    // Distance fog, coloured per-pixel by the destination's baked sky visibility
+    // (the same `sky_vis` that gates lighting): a sky-exposed surface fades into
+    // the real sky colour, while an enclosed one fades into the dark cave medium.
+    // So a deep tunnel melts to black, but the view out a window or up a shaft
+    // stays bright — "the deep is dark" with no camera/depth heuristic. cave_dark
+    // is the per-dimension ambient floor so it's never pitch black.
     let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / scene.fog.w, 2.0));
-    color = mix(color, scene.fog.rgb, fog_amount);
+    let cave_dark = vec3<f32>(scene.params.y);
+    let fog_col = mix(cave_dark, scene.fog.rgb, sky_vis);
+    color = mix(color, fog_col, fog_amount);
     return vec4<f32>(color, 1.0);
 }

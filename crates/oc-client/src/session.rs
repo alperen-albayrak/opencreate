@@ -788,29 +788,18 @@ impl Session {
             // sun-lit one (water) dims with daylight.
             sky = sky::submerged(&sky, glam::Vec3::new(r, g, b), fluid.light_emission > 0);
         }
-        // Sky exposure from the server's per-column heightmap (edit-aware): full
-        // at/above the column's highest sky-blocker, fading out over ~16 blocks
-        // below it. Digging a shaft or shaving a peak drops the heightmap, so the
-        // real sky/sun reappears down the opening; a sealed cave (heightmap far
-        // overhead) stays dark — no generated-surface heuristic. Until the
-        // column's ColumnSky has arrived, fall back to the generated surface.
-        let cam_x = render_pos.x.floor() as i32;
-        let cam_z = render_pos.z.floor() as i32;
-        let exposure = match self.streamer.heightmap_at(cam_x, cam_z) {
-            Some(h) if h == i32::MIN => 1.0,
-            Some(h) => (1.0 - (h as f64 - render_pos.y) / 16.0).clamp(0.0, 1.0),
-            None => {
-                let surface = self.streamer.world().generator().surface_height(cam_x, cam_z);
-                if (render_pos.y.floor() as i32) < surface - 6 { 0.0 } else { 1.0 }
-            }
-        };
-        // Below the opening (and not in a fluid): the background is the dark cave
-        // void, so unloaded gaps and the render-distance edge don't show the day
-        // sky from deep down, and the far-terrain ring is suppressed.
-        let underground = exposure < 0.5;
-        if underground && !underwater {
-            sky = sky::underground(&sky, oc_world::env_registry::active().atmosphere.ambient_floor);
-        }
+        // The sky dome stays the real sky. "The deep is dark" is handled per-pixel
+        // by the deferred/water passes — fog there is coloured by each surface's
+        // baked sky visibility, so enclosed geometry fades to the dark cave medium
+        // while a sky-lit surface (a window, a shaft) fades to the real sky — no
+        // camera-position dome toggle. The far-terrain ring is the distant
+        // *surface*, though, so suppress it when the eye is well below ground (it
+        // would otherwise float in the dark beyond the loaded box).
+        let surface = self.streamer.world().generator().surface_height(
+            render_pos.x.floor() as i32,
+            render_pos.z.floor() as i32,
+        );
+        let underground = (render_pos.y.floor() as i32) < surface - 6;
         let caps = self.caps(registry);
 
         let hotbar_slots = self.hotbar_slots(registry);

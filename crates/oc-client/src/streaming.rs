@@ -211,15 +211,6 @@ impl ChunkStreamer {
         self.resolved.contains(&pos)
     }
 
-    /// The sky-light heightmap at a world column (world Y of the highest
-    /// sky-blocker; `i32::MIN` = open to the void), if the column's `ColumnSky`
-    /// has arrived. Drives the sky-dome exposure.
-    pub fn heightmap_at(&self, x: i32, z: i32) -> Option<i32> {
-        self.heights
-            .get(&(x >> 4, z >> 4))
-            .map(|h| h[((z & 15) * 16 + (x & 15)) as usize])
-    }
-
     /// Runs one frame of streaming work around the camera. Subscription changes
     /// for the server are appended to `outbox`.
     pub fn update(

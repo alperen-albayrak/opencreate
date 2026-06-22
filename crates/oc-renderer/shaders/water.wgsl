@@ -41,6 +41,9 @@ struct VsOut {
     @location(2) shade: f32,
     @location(3) local: vec3<f32>,
     @location(4) @interpolate(flat) face: u32,
+    // Baked sky visibility (0..1), so distance fog fades to the real sky on open
+    // water and to the dark cave medium on submerged/enclosed water.
+    @location(5) sky: f32,
 }
 
 @vertex
@@ -93,6 +96,7 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     out.shade = shade;
     out.local = lowered;
     out.face = face;
+    out.sky = sky_level;
     return out;
 }
 
@@ -263,7 +267,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var color = mix(base, sky_reflect, fresnel) + vec3(glint);
     // The same horizon fog as terrain, so far water melts into the sky.
     let fog_amount = 1.0 - exp(-pow(linearize(in.clip.z) * 2.0 / scene.fog.w, 2.0));
-    color = mix(color, scene.sky_horizon.rgb, fog_amount);
+    // Fog colour by baked sky visibility: open water fades to the real sky,
+    // enclosed/submerged-cave water to the dark cave medium (per-dimension floor).
+    let cave_dark = vec3<f32>(scene.params.y);
+    let fog_col = mix(cave_dark, scene.sky_horizon.rgb, in.sky);
+    color = mix(color, fog_col, fog_amount);
     // Coverage: transparent over shallow bottoms, near-solid when deep or
     // at grazing angles. The waterline itself stays crisp — water meets
     // terrain at block boundaries, so the mesh edge IS the shoreline; a

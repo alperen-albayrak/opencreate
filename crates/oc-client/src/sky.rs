@@ -130,35 +130,6 @@ pub fn submerged(state: &SkyState, color: Vec3, self_lit: bool) -> SkyState {
     }
 }
 
-/// Underground camera: the sky/background is the dark cave void, not the open
-/// sky. Where no geometry is drawn (unloaded chunks, the render-distance edge,
-/// gaps), this dark fills in instead of the star-field — you don't see the
-/// night sky from a deep cave. Flat and near-black, lifted by the ambient floor
-/// so it isn't pure black. The deep is otherwise lit by lava/blocks.
-pub fn underground(state: &SkyState, ambient_floor: f32) -> SkyState {
-    let d = (ambient_floor * 0.6).max(0.008);
-    let dark = [d, d, d * 1.1];
-    SkyState {
-        sky_color: [dark[0], dark[1], dark[2], 1.0],
-        horizon_away: [dark[0], dark[1], dark[2], 1.0],
-        zenith: [dark[0], dark[1], dark[2], 1.0],
-        // No sun/sky light reaches deep underground: kill the directional sun
-        // and sky-ambient so surfaces aren't lit bright through air shafts (the
-        // vertical-shaft rule floods skylight straight down). The deep is lit by
-        // the ambient floor + block light (lava) + the emissive glow only.
-        sun: Vec4::ZERO,
-        // Zero the sky-dome sun (xyz dir + w daylight) so the sky pass draws no
-        // sun disc, warm glow, or moon (moon_dir = -sun_dir = 0) into the dark
-        // void you see through unloaded-chunk gaps at low render distance — you
-        // can't see the sun from a deep cave. Stars and clouds off for the same
-        // reason: the cave void, not the open sky.
-        sun_dir: [0.0; 4],
-        clouds: [0.0; 4],
-        stars: 0.0,
-        ..*state
-    }
-}
-
 fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
