@@ -88,10 +88,10 @@ pub struct FrameCamera {
     pub fog_distance: f32,
     /// Draw the cloud layer this frame (graphics setting).
     pub clouds: bool,
-    /// Cascaded sun shadows. Shelved: forced `false` at every call site
-    /// (the look never convinced), so the renderer keeps the pass dormant.
-    /// There is no settings toggle yet — re-enabling awaits a better design.
+    /// Cast cascaded sun shadows (settings toggle).
     pub shadows: bool,
+    /// Shadow edge style: 0 = soft (PCF), 1 = blocky (1/16-block pixel-aligned).
+    pub shadow_style: u32,
     /// Water reflects the scene (SSR; settings toggle).
     pub water_reflections: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
@@ -424,6 +424,7 @@ impl Renderer {
                 camera.sun,
                 camera.position,
                 camera.shadows,
+                camera.shadow_style,
             );
             if self.shadow.needs_pass() {
                 for cascade in 0..3 {

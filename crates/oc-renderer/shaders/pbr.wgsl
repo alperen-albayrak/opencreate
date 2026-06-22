@@ -36,7 +36,7 @@ struct Scene {
 struct ShadowData {
     // Camera-relative world -> cascade clip.
     matrices: array<mat4x4<f32>, 3>,
-    // Cascade far distances; w unused.
+    // Cascade far distances; w: shadow style (0 = soft PCF, 1 = blocky).
     splits: vec4<f32>,
     // x: strength (0 = off/night); yzw: world units per texel, per cascade.
     params: vec4<f32>,
@@ -55,6 +55,8 @@ var<immediate> pc: LightPush;
 // Must match the projection in camera.rs.
 const NEAR: f32 = 0.05;
 const FAR: f32 = 4096.0;
+// Must match shadow.rs MAP_SIZE.
+const SHADOW_MAP_SIZE: f32 = 2048.0;
 
 fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
@@ -72,21 +74,50 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
 
 // PCF visibility from one cascade (ported verbatim from the forward chunk
 // shader): depth-biased by the cascade's texel size, one bilinear comparison.
-fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>) -> f32 {
+fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>, n_dot_l: f32) -> f32 {
     let texel_world = shadow.params[1u + u32(cascade)];
-    let pos = world_rel + normal * texel_world;
+    // Normal-offset bias is the primary acne lever: push the sample off the
+    // surface along the exact (flat, noise-free) face normal, scaled by the
+    // cascade's world-per-texel and by the grazing factor — the offset a flat
+    // surface needs grows as the sun nears the horizon. Stays < 1 block on
+    // every cascade, so shadows never detach (peter-pan).
+    let grazing = clamp(1.0 - n_dot_l, 0.0, 1.0);
+    // Modest normal offset: enough to keep flat ground off its own surface
+    // (the near-cascade self-shadow that read as a camera-following seam),
+    // small enough that small caster shadows (a tree, a placed block) don't
+    // erode away. Texel-scaled so each cascade self-shadows consistently.
+    let offset = texel_world * (1.0 + 2.0 * grazing);
+    var pos = world_rel + normal * offset;
+    // Blocky style (VV): snap the sample to the 1/16-block grid (VV
+    // texel_size = 16) so the shadow edge aligns to block texels.
+    let blocky = shadow.splits.w > 0.5;
+    if (blocky) {
+        pos = floor(pos * 16.0) / 16.0;
+    }
     let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
     let uv = ndc.xy * 0.5 + vec2(0.5);
     if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
         return 1.0;
     }
-    let bias = 0.0003 + texel_world * 2.5 / 400.0;
-    return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, cascade, ndc.z - bias);
+    // Minimal residual depth bias — the normal offset does the heavy lifting.
+    let d = ndc.z - (0.00015 + texel_world / 400.0);
+    if (blocky) {
+        return textureSampleCompareLevel(shadow_map, shadow_sampler, uv, cascade, d);
+    }
+    // Soft PCF (VV default): four bilinear-comparison taps spread one texel
+    // across and averaged — the LINEAR comparison sampler makes each a 2×2, so
+    // this is a smooth ~3×3 kernel, cheap on the fullscreen lighting pass.
+    let t = 1.0 / SHADOW_MAP_SIZE;
+    var s = textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(-0.5, -0.5) * t, cascade, d);
+    s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(0.5, -0.5) * t, cascade, d);
+    s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(-0.5, 0.5) * t, cascade, d);
+    s += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + vec2<f32>(0.5, 0.5) * t, cascade, d);
+    return s * 0.25;
 }
 
 // How much of the sun reaches this fragment, with cross-faded cascades that
 // ease out at the far cascade and at twilight.
-fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
+fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32, n_dot_l: f32) -> f32 {
     let strength = shadow.params.x;
     if (strength <= 0.0 || view_dist >= shadow.splits.z) {
         return 1.0;
@@ -100,10 +131,10 @@ fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f3
         cascade = 1;
         split = shadow.splits.y;
     }
-    var lit = cascade_lit(cascade, world_rel, normal);
+    var lit = cascade_lit(cascade, world_rel, normal, n_dot_l);
     let blend = smoothstep(split * 0.85, split, view_dist);
     if (blend > 0.0 && cascade < 2) {
-        lit = mix(lit, cascade_lit(cascade + 1, world_rel, normal), blend);
+        lit = mix(lit, cascade_lit(cascade + 1, world_rel, normal, n_dot_l), blend);
     }
     let range_fade = smoothstep(shadow.splits.z * 0.8, shadow.splits.z, view_dist);
     return mix(1.0, mix(lit, 1.0, range_fade), strength);
@@ -185,18 +216,29 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let ndc = vec3<f32>((frag.xy / dims) * 2.0 - 1.0, depth);
     let world_h = pc.inv_view_proj * vec4<f32>(ndc, 1.0);
     let world_rel = world_h.xyz / world_h.w;
-    let sun_vis = sun_visibility(world_rel, normal, view_dist);
+    // Geometric grazing factor from the *unscaled* sun direction (scene.sun.xyz
+    // is daylight-scaled, so normalize it): the shadow normal-offset bias
+    // grows as this falls toward 0.
+    let sun_dir_n = scene.sun.xyz / max(length(scene.sun.xyz), 1e-4);
+    let n_dot_l = max(dot(normal, sun_dir_n), 0.0);
+    let sun_vis = sun_visibility(world_rel, normal, view_dist, n_dot_l);
 
     let ambient = scene.sun.w;
     // scene.sun.xyz is pre-scaled by daylight, so the diffuse dies at night.
     let diffuse = max(dot(normal, scene.sun.xyz), 0.0);
 
-    let sky_term = sky_vis * ambient * ao;
+    // Sky-ambient fill tinted by the sky colour (horizon→zenith by how
+    // up-facing the surface is), so shadowed and indirect-lit surfaces read
+    // sky-blue like Vibrant Visuals, never neutral grey. `sun_vis` darkens only
+    // the sun term, so a shadowed surface keeps this fill (never pitch black)
+    // and it vanishes underground where sky_vis → 0.
+    let sky_color = mix(scene.sky_horizon.rgb, scene.sky_zenith.rgb, clamp(normal.y * 0.5 + 0.5, 0.0, 1.0));
+    let sky_term = sky_vis * ambient * ao * sky_color;
     let sun_term = sky_vis * (1.0 - ambient) * diffuse * ao * sun_vis;
     // Unconditional ambient floor (params.y, per dimension): nothing renders
     // pure black. Added on top of sky/sun + block light, AO-modulated.
     let floor = scene.params.y * ao;
-    let lit = max(vec3<f32>(sky_term + sun_term), block_light) + vec3<f32>(floor);
+    let lit = max(sky_term + vec3<f32>(sun_term), block_light) + vec3<f32>(floor);
     var color = albedo * lit;
 
     // Incandescence: the surface's own blackbody glow past the Draper point,

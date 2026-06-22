@@ -40,6 +40,10 @@ pub struct Settings {
     pub water_reflections: bool,
     /// Coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
+    /// Cast cascaded sun shadows.
+    pub shadows: bool,
+    /// Shadow edge style: 0 = soft (PCF), 1 = blocky (pixel-aligned).
+    pub shadow_style: u32,
     /// Master sound volume, 0..1.
     pub volume: f32,
 }
@@ -57,6 +61,10 @@ impl Default for Settings {
             clouds: true,
             water_reflections: true,
             far_terrain: true,
+            shadows: true,
+            // Default to blocky (crisp, block-aligned) shadows — the voxel look;
+            // soft PCF is one toggle away.
+            shadow_style: 1,
             volume: 0.8,
         }
     }
@@ -78,6 +86,7 @@ impl Settings {
             .clamp(RESOLUTION_SCALE_RANGE.0, RESOLUTION_SCALE_RANGE.1);
         self.max_fps =
             (self.max_fps as f32).clamp(MAX_FPS_RANGE.0, MAX_FPS_RANGE.1) as i32;
+        self.shadow_style = self.shadow_style.min(1);
         self.volume = self.volume.clamp(0.0, 1.0);
         self
     }
@@ -134,6 +143,8 @@ mod tests {
             clouds: true,
             water_reflections: true,
             far_terrain: true,
+            shadows: true,
+            shadow_style: 9,
             volume: 5.0,
         }
         .clamped();
@@ -144,6 +155,7 @@ mod tests {
         assert_eq!(wild.ui_scale, 3.0);
         assert_eq!(wild.resolution_scale, 2.0);
         assert_eq!(wild.max_fps, 240);
+        assert_eq!(wild.shadow_style, 1);
     }
 
     #[test]
@@ -159,6 +171,8 @@ mod tests {
             clouds: false,
             water_reflections: false,
             far_terrain: false,
+            shadows: false,
+            shadow_style: 1,
             volume: 0.5,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();

@@ -500,6 +500,22 @@ impl SettingsScreen {
                     1.0,
                     if settings.far_terrain { 1.0 } else { 0.0 },
                 ),
+                slider(
+                    "shadows",
+                    "settings.shadows",
+                    1,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.shadows { 1.0 } else { 0.0 },
+                ),
+                slider(
+                    "shadow_style",
+                    "settings.shadow_style",
+                    1,
+                    (0.0, 1.0),
+                    1.0,
+                    settings.shadow_style as f32,
+                ),
             ],
             tab: 0,
             back_to_pause,
@@ -548,6 +564,8 @@ impl SettingsScreen {
                 "clouds" => settings.clouds = slider.value > 0.5,
                 "water_reflections" => settings.water_reflections = slider.value > 0.5,
                 "far_terrain" => settings.far_terrain = slider.value > 0.5,
+                "shadows" => settings.shadows = slider.value > 0.5,
+                "shadow_style" => settings.shadow_style = slider.value.round() as u32,
                 "volume" => settings.volume = slider.value,
                 _ => {}
             }
@@ -898,10 +916,13 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 11);
+        assert_eq!(screen.sliders.len(), 13);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");
+        // The sun-shadows toggle defaults On.
+        let shadows = screen.sliders.iter().position(|s| s.id == "shadows").unwrap();
+        assert_eq!(screen.sliders[shadows].display(), "On");
 
         let (w, h, ui) = (1280.0, 720.0, 1.0);
         // FOV lives on the Graphics tab (row 2 there, sliders[4]: render distance,

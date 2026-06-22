@@ -26,6 +26,8 @@
     "settings.clouds": "Clouds",
     "settings.water_reflections": "Water reflections",
     "settings.far_terrain": "Far terrain",
+    "settings.shadows": "Sun shadows",
+    "settings.shadow_style": "Blocky shadows",
     "menu.quit_to_title": "Save and quit to title",
     "menu.quit_game": "Quit game",
     "menu.worlds": "Select World",

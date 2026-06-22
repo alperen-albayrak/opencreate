@@ -14,6 +14,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, 
 
 use crate::chunk_renderer::as_bytes;
 use crate::context::VulkanContext;
+use crate::mesh::PackedVertex;
 
 const SHADOW_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
 
@@ -30,7 +31,7 @@ const DEPTH_RANGE: f32 = 200.0;
 pub struct ShadowData {
     /// Camera-relative world -> cascade clip.
     pub matrices: [Mat4; 3],
-    /// Cascade far distances (x, y, z); w unused.
+    /// Cascade far distances (x, y, z); w = shadow style (0 soft, 1 blocky).
     pub splits: Vec4,
     /// x: shadow strength (0 = off / night); yzw: world units per shadow
     /// texel for each cascade (normal-offset scale).
@@ -283,14 +284,20 @@ impl ShadowPass {
 
     /// Computes the cascades for this frame and writes the slot's UBO.
     /// `sun` is the daylight-scaled direction from FrameCamera (length =
-    /// daylight); `enabled` is the settings toggle.
-    pub fn update(&mut self, slot: usize, sun: Vec4, camera_pos: DVec3, enabled: bool) {
+    /// daylight); `enabled` is the settings toggle; `style` is the shadow
+    /// edge style (0 = soft PCF, 1 = blocky), carried to the shader in
+    /// `splits.w`.
+    pub fn update(&mut self, slot: usize, sun: Vec4, camera_pos: DVec3, enabled: bool, style: u32) {
         let sun_dir = Vec3::new(sun.x, sun.y, sun.z);
         let daylight = sun_dir.length();
         // Fade through twilight: long, unstable shadows aren't worth it.
         let elevation = if daylight > 0.001 { sun_dir.y / daylight } else { 0.0 };
+        // Fade shadows out across the low-sun band (≲ ~17° altitude): there the
+        // light grazes flat ground so the per-texel depth slope — and the bias
+        // needed to beat acne — diverges. Better unshadowed than combed; the
+        // ambient/sky fill carries the lighting through dawn and dusk anyway.
         self.strength = if enabled && daylight > 0.001 {
-            smoothstep(0.06, 0.22, elevation) * smoothstep(0.0, 0.3, daylight)
+            smoothstep(0.12, 0.30, elevation) * smoothstep(0.0, 0.3, daylight)
         } else {
             0.0
         };
@@ -321,13 +328,20 @@ impl ShadowPass {
                 );
                 let snap = |v: f32| (v / texel).floor() * texel;
                 let center = Vec3::new(snap(cam_ls.0) - cam_ls.0, snap(cam_ls.1) - cam_ls.1, 0.0);
+                // near/far are deliberately swapped (+DEPTH_RANGE, -DEPTH_RANGE):
+                // light-space depth is `-dir·p` (rot's third row), so a surface
+                // CLOSER to the sun has the more-negative z. We need closer-to-sun
+                // to map to the SMALLER clip z, because the caster pipeline keeps
+                // the nearest occluder with `depth_compare_op(LESS)`. With the
+                // natural (-,+) order the mapping inverts and the occluder loses
+                // the depth test (it's never stored → nothing ever casts a shadow).
                 let proj = Mat4::orthographic_rh(
                     center.x - radius,
                     center.x + radius,
                     center.y - radius,
                     center.y + radius,
-                    -DEPTH_RANGE,
                     DEPTH_RANGE,
+                    -DEPTH_RANGE,
                 );
                 self.cascades[i] = proj * rot;
             }
@@ -335,7 +349,7 @@ impl ShadowPass {
 
         let data = ShadowData {
             matrices: self.cascades,
-            splits: Vec4::new(RADII[0], RADII[1], RADII[2], 0.0),
+            splits: Vec4::new(RADII[0], RADII[1], RADII[2], style as f32),
             params: Vec4::new(self.strength, texels[0], texels[1], texels[2]),
         };
         if let Some(mapped) = self.uniforms[slot].1.mapped_slice_mut() {
@@ -496,8 +510,14 @@ unsafe fn create_pipeline(
                 .module(module)
                 .name(c"fs_main"),
         ];
+        // Stride MUST match the geometry pass's PackedVertex pitch (12 bytes):
+        // record_shadow binds the same `solid.vertex` buffer. An 8-byte stride
+        // reads every vertex past the first from the wrong offset, rasterizing
+        // scrambled geometry — the real cause of the old "phantom" shadow acne.
+        // The caster only needs word0 (packed position); word1 is read and
+        // ignored (shadow.wgsl uses `.x`).
         let binding = vk::VertexInputBindingDescription::default()
-            .stride(8)
+            .stride(size_of::<PackedVertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX);
         let attribute = vk::VertexInputAttributeDescription::default()
             .location(0)
@@ -510,18 +530,22 @@ unsafe fn create_pipeline(
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        // BACK culling, same as the main pass: greedy meshing emits only
-        // the visible shell (no interior faces), so front-face culling
-        // would leave the sun seeing almost nothing. Acne is handled by
-        // the slope bias here plus the texel-scaled normal offset at
-        // sampling time.
+        // No culling: greedy meshes are shell-only (a flat top is a single
+        // +Y quad with no underside), and the light transform's winding
+        // parity differs from the main camera pass (orthographic_rh × rot vs
+        // the camera's Y-flip), so BACK/FRONT could silently drop the only
+        // caster on flat ground or thin foliage. NONE guarantees every block
+        // casts (the VV look) and removes the winding question; the empty
+        // depth-only FS makes the extra back-face fills nearly free. Acne is
+        // handled by the grazing-scaled normal offset at sampling time, so the
+        // depth bias here stays small (over-biasing causes peter-panning).
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(true)
-            .depth_bias_constant_factor(4.0)
-            .depth_bias_slope_factor(4.0)
+            .depth_bias_constant_factor(1.0)
+            .depth_bias_slope_factor(1.5)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
@@ -588,8 +612,8 @@ mod tests {
                 center.x + radius,
                 center.y - radius,
                 center.y + radius,
-                -DEPTH_RANGE,
                 DEPTH_RANGE,
+                -DEPTH_RANGE,
             );
             let vp = proj * rot;
             let near_cam = vp * Vec4::new(1.0, 2.0, 3.0, 1.0);
@@ -605,6 +629,20 @@ mod tests {
             assert!(
                 (off.x - near_cam.x).abs() > 0.1,
                 "ortho not scaling for r={radius}"
+            );
+            // Occluder ordering: a point CLOSER to the sun (+dir) must map to a
+            // SMALLER clip z than one farther away (-dir), so the caster pipeline's
+            // `depth_compare_op(LESS)` keeps the nearest occluder in the map.
+            // (Regression guard: the natural -near/+far order inverts this, the
+            // occluder loses the depth test, and nothing ever casts a shadow.)
+            let toward_sun = vp * (dir * 5.0).extend(1.0);
+            let away_sun = vp * (-dir * 5.0).extend(1.0);
+            assert!(
+                toward_sun.z < away_sun.z,
+                "closer-to-sun must map to smaller clip z for r={radius}: \
+                 toward {} vs away {}",
+                toward_sun.z,
+                away_sun.z
             );
         }
     }

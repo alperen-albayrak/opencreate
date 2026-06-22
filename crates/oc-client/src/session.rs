@@ -771,6 +771,8 @@ impl Session {
         clouds: bool,
         water_reflections: bool,
         far_terrain: bool,
+        shadows: bool,
+        shadow_style: u32,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -912,11 +914,12 @@ impl Session {
                 None => fog_distance,
             },
             clouds: clouds && !underwater,
-            // Cascaded shadows are shelved (the implementation never looked
-            // right — over-shadowed beyond the near cascade). The deferred
-            // lighting pass is wired to sample them (set 2), so the toggle
-            // works; the quality fix is Step 4. Default off until then.
-            shadows: false,
+            // Cascaded sun shadows (settings toggle). The caster's vertex-stride
+            // bug — the real cause of the old "phantom" acne — is fixed, and the
+            // sampling now uses grazing-scaled normal-offset bias + a low-sun
+            // fade, so this is a real, on-by-default feature.
+            shadows,
+            shadow_style,
             water_reflections,
             far_terrain: far_terrain && !underwater && !underground,
             far_cut: {
