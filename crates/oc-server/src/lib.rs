@@ -457,6 +457,16 @@ impl Server {
             // New world: spawn on land, mid-morning.
             None => (find_spawn(&world), 0.0, -0.4, 0.15),
         };
+        // Dev hook: OC_TIME=<0..1> sets the time of day (0 sunrise, 0.25 noon,
+        // 0.5 sunset, 0.75 midnight), keeping the day count — for checking
+        // lighting/shadows without waiting for the sun to rise.
+        let day_fraction = match std::env::var("OC_TIME").ok().and_then(|s| s.parse::<f64>().ok()) {
+            Some(t) => {
+                info!(time = t, "OC_TIME override");
+                day_fraction.trunc() + t.rem_euclid(1.0)
+            }
+            None => day_fraction,
+        };
 
         transport
             .send(ServerMessage::Welcome {
