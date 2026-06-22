@@ -47,6 +47,12 @@ pub struct SceneData {
     /// packed into 5 vec4), from `texture::EMISSIVE_TEMPS`. The geometry pass
     /// glows a hot block (lava) at its own temperature, not just the ambient.
     pub emissive_temp: [Vec4; 5],
+    /// Surface material per block-texture layer (up to 20 packed into 5 vec4):
+    /// each scalar is `texture::pack_material(roughness, metalness)`, written
+    /// verbatim into `GB1.w` by the geometry pass and decoded in `pbr.wgsl` for
+    /// the specular term. Appended after `emissive_temp`, so passes that read
+    /// only a UBO prefix (everything but `chunk_gbuffer`) are unaffected.
+    pub material: [Vec4; 5],
 }
 
 /// Owns the per-frame scene uniform buffers and their descriptor sets.

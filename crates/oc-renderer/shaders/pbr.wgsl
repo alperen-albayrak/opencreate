@@ -57,6 +57,11 @@ const NEAR: f32 = 0.05;
 const FAR: f32 = 4096.0;
 // Must match shadow.rs MAP_SIZE.
 const SHADOW_MAP_SIZE: f32 = 2048.0;
+const PI: f32 = 3.14159265359;
+// Dev diagnostic: when true, fs_main returns the unpacked GB1.w material
+// (roughness as grayscale, metal tinted red) instead of the lit color, to
+// confirm per-block roughness/metalness flows through the G-buffer.
+const DEBUG_MATERIAL: bool = false;
 
 fn linearize(depth: f32) -> f32 {
     return NEAR * FAR / (FAR - depth * (FAR - NEAR));
@@ -186,6 +191,46 @@ fn blackbody_glow(temp_c: f32) -> vec3<f32> {
     return color * pow(heat, 1.5) * 2.5;
 }
 
+// Cook-Torrance specular BRDF (GGX/Trowbridge-Reitz D, Smith-Schlick G,
+// Fresnel-Schlick F) for one directional light, returned as the reflected
+// radiance per unit incoming radiance — i.e. `D·G·F / (4·n·v)`, the cosine
+// `n·l` already cancelled against the geometry term, so the caller multiplies
+// only by the light's radiance. Dielectrics use F0 = 0.04; metals tint F0 by
+// albedo (their "diffuse" colour becomes the reflection colour). Smooth
+// surfaces (ice, obsidian) get a tight bright glint; a fully rough surface
+// (roughness 1) spreads the lobe so thin the highlight is imperceptible — so
+// matte blocks are visually unchanged without any special-casing.
+fn ggx_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, albedo: vec3<f32>, roughness: f32, metal: bool) -> vec3<f32> {
+    let n_dot_l = dot(n, l);
+    if (n_dot_l <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(v + l);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let n_dot_h = max(dot(n, h), 0.0);
+    let v_dot_h = max(dot(v, h), 0.0);
+
+    // Clamp roughness off zero so the mirror-angle peak stays finite (it still
+    // spikes to a bright, bloom-catching glint, the intended look).
+    let r = max(roughness, 0.045);
+    let a = r * r;
+    let a2 = a * a;
+    let d_denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    let d = a2 / (PI * d_denom * d_denom);
+
+    // Smith geometry with the Schlick-GGX direct-lighting remap of k.
+    let k = (r + 1.0) * (r + 1.0) / 8.0;
+    let g_v = n_dot_v / (n_dot_v * (1.0 - k) + k);
+    let g_l = n_dot_l / (n_dot_l * (1.0 - k) + k);
+    let g = g_v * g_l;
+
+    let f0 = mix(vec3<f32>(0.04), albedo, select(0.0, 1.0, metal));
+    let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - v_dot_h, 5.0);
+
+    // n·l fold: full term is D·G·F/(4·n·v·n·l)·n·l, the n·l cancels.
+    return (d * g) * f / (4.0 * n_dot_v);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     // Oversized fullscreen triangle covering the viewport.
@@ -214,6 +259,19 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sky_vis = g1.z;
     // Block light already carries its 0.95 trim and AO from the geometry pass.
     let block_light = g2.rgb;
+
+    // Surface material unpacked from GB1.w (texture::pack_material): the top
+    // code bit (≥128) is the metal flag, the low 7 bits are roughness×127.
+    let mat_code = round(g1.w * 255.0);
+    let metal = mat_code >= 127.5;
+    let roughness = (mat_code - select(0.0, 128.0, metal)) / 127.0;
+
+    // DEBUG (Stage 4.1 verify): show the unpacked material directly — roughness
+    // as grayscale (dark = smooth/shiny, white = matte), metal tinted red — to
+    // prove per-block material reaches GB1.w before any specular math lands.
+    if (DEBUG_MATERIAL) {
+        return vec4<f32>(select(vec3<f32>(roughness), vec3<f32>(1.0, 0.2, 0.0), metal), 1.0);
+    }
 
     let view_dist = linearize(depth);
     // Rebuild the camera-relative world position from depth for the cascade
@@ -245,7 +303,20 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // pure black. Added on top of sky/sun + block light, AO-modulated.
     let floor = scene.params.y * ao;
     let lit = max(sky_term + vec3<f32>(sun_term), block_light) + vec3<f32>(floor);
-    var color = albedo * lit;
+    // Metals carry no diffuse albedo term — their colour comes from the tinted
+    // specular reflection (the sun glint here + the sky reflection in the IBL
+    // step). Dielectrics keep the full diffuse.
+    let metal_f = select(0.0, 1.0, metal);
+    var color = albedo * lit * (1.0 - metal_f);
+
+    // Cook-Torrance GGX sun specular: a sharp highlight where the smooth
+    // surface mirrors the sun toward the eye. Gated by sky_vis * sun_vis (none
+    // underground or in shadow) and carried by the daylight-scaled sun radiance
+    // (so it dies at night); matte surfaces contribute ~nothing (broad lobe).
+    let view_dir = normalize(-world_rel);
+    let sun_radiance = length(scene.sun.xyz);
+    let spec = ggx_specular(normal, view_dir, sun_dir_n, albedo, roughness, metal);
+    color += spec * (sky_vis * sun_vis * sun_radiance);
 
     // Incandescence: the surface's own blackbody glow past the Draper point,
     // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —

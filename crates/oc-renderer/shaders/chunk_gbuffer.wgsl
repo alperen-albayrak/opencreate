@@ -11,8 +11,8 @@
 //
 // G-buffer (3x RGBA8):
 //   GB0: albedo.rgb (caustics folded in) | ao_mul
-//   GB1: octahedral normal.xy | sky_visibility | roughness (reserved, =1)
-//   GB2: block_light.rgb | metalness (reserved, =0)
+//   GB1: octahedral normal.xy | sky_visibility | packed roughness+metalness
+//   GB2: block_light.rgb | blackbody-glow temperature
 
 struct PushConstants {
     // proj * view * translate(chunk_origin - camera), camera-relative.
@@ -43,6 +43,10 @@ struct Scene {
     // Intrinsic emissive temperature (°C) per block-texture layer, up to 20
     // packed into 5 vec4 (layer L → emissive_temp[L/4][L%4]). Lava ≈ 1200; 0 = none.
     emissive_temp: array<vec4<f32>, 5>,
+    // Surface material per block-texture layer (layer L → material[L/4][L%4]),
+    // each scalar already packed by Rust `pack_material(roughness, metalness)`
+    // and written verbatim into GB1.w. See pbr.wgsl for the decode.
+    material: array<vec4<f32>, 5>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 
@@ -261,9 +265,13 @@ fn fs_main(in: VsOut) -> GBufferOut {
         albedo *= vec3(1.0) + vec3(0.30, 0.44, 0.38) * dapple;
     }
 
+    // Per-layer surface material (roughness + metalness), packed by Rust into a
+    // single 8-bit code and carried in GB1.w for the deferred specular term.
+    let material = scene.material[in.layer / 4u][in.layer % 4u];
+
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
-    out.gb1 = vec4<f32>(oct_encode(in.normal), in.ao_sky.y, 1.0);
+    out.gb1 = vec4<f32>(oct_encode(in.normal), in.ao_sky.y, material);
     // GB2.a carries the blackbody-glow temperature (was metalness-reserved).
     out.gb2 = vec4<f32>(in.block_light, in.emissive);
     return out;

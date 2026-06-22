@@ -97,6 +97,7 @@
     (id: "oc:obsidian", name: "Obsidian",
         solid: true, opaque: true, hardness: 5.0,
         color: (22, 18, 34), textures: All(14),
+        roughness: 0.15,
         heat_capacity: 0.84, conductivity: 1.5),
 
     // Basalt: lava cooled slowly — dark grey volcanic rock, distinct from stone
@@ -111,6 +112,7 @@
     (id: "oc:ice", name: "Ice",
         solid: true, opaque: true,
         color: (165, 205, 240), textures: All(16),
+        roughness: 0.1,
         heat_capacity: 2.0, conductivity: 2.2,
         melting_point: Some(0.0),
         phase_transition: Some((melt: Some("oc:water")))),

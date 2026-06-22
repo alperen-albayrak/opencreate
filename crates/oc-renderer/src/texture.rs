@@ -43,6 +43,41 @@ pub static EMISSIVE_TEMPS: std::sync::LazyLock<[f32; LAYER_COUNT as usize]> =
         temps
     });
 
+/// Surface `(roughness, metalness)` per block-texture layer for specular PBR,
+/// built from the registry exactly like [`EMISSIVE_TEMPS`]: a block stamps its
+/// `roughness`/`metalness` onto every texture layer it uses. When two blocks
+/// share a layer the shiniest (lowest) roughness and any metal flag win — the
+/// visually dominant material. The matte default (roughness 1, metal 0) leaves
+/// a layer's specular off.
+pub static MATERIALS: std::sync::LazyLock<[(f32, f32); LAYER_COUNT as usize]> =
+    std::sync::LazyLock::new(|| {
+        let mut mats = [(1.0f32, 0.0f32); LAYER_COUNT as usize];
+        for i in 0u16.. {
+            let id = oc_world::BlockId(i);
+            let Some(def) = oc_world::registry::def(id) else { break };
+            for face in 0..6 {
+                let layer = def.textures.layer(face) as usize;
+                if layer < mats.len() {
+                    mats[layer].0 = mats[layer].0.min(def.roughness);
+                    mats[layer].1 = mats[layer].1.max(def.metalness);
+                }
+            }
+        }
+        mats
+    });
+
+/// Packs a surface `(roughness, metalness)` into the single free G-buffer
+/// channel `GB1.w` (8-bit UNORM, so 256 codes). The top bit of the code (≥128)
+/// is the metal flag; the low 7 bits are `roughness × 127`. Decoded in
+/// `pbr.wgsl` as `code = round(w*255); metal = code >= 128;
+/// roughness = (code & 127) / 127` — an integer split so a matte dielectric
+/// (roughness 1, code 127) never aliases onto a shiny metal (code 128).
+pub fn pack_material(roughness: f32, metalness: f32) -> f32 {
+    let metal_bit = if metalness >= 0.5 { 128.0 } else { 0.0 };
+    let code = metal_bit + (roughness.clamp(0.0, 1.0) * 127.0).round();
+    code / 255.0
+}
+
 /// RGBA pixels for the block texture array. Layer order must match
 /// `mesh::layers`: grass top, dirt, stone, grass side, sand, water,
 /// log side, log top, leaves, lamp, snow, planks.

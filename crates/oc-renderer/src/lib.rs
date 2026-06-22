@@ -499,6 +499,12 @@ impl Renderer {
             for (i, &t) in crate::texture::EMISSIVE_TEMPS.iter().enumerate() {
                 emissive_temp[i / 4][i % 4] = t;
             }
+            // Per-texture-layer surface material (roughness + metalness) packed
+            // into the one free G-buffer channel GB1.w for the specular pass.
+            let mut material = [Vec4::ZERO; 5];
+            for (i, &(rough, metal)) in crate::texture::MATERIALS.iter().enumerate() {
+                material[i / 4][i % 4] = crate::texture::pack_material(rough, metal);
+            }
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -519,6 +525,7 @@ impl Renderer {
                 ),
                 thermal_profile,
                 emissive_temp,
+                material,
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);
