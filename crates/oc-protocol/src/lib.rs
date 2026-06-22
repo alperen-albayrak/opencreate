@@ -9,9 +9,9 @@
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use glam::DVec3;
-use oc_core::{BlockPos, ChunkPos};
+use oc_core::{BlockPos, SectionPos};
 use oc_world::BlockId;
-use oc_world::world::GeneratedColumn;
+use oc_world::world::GeneratedSection;
 
 /// Everything a client may tell the server.
 pub enum ClientMessage {
@@ -32,10 +32,10 @@ pub enum ClientMessage {
     /// block into the given hotbar slot. The server validates the mode and
     /// reach, maps the block to its item, and resyncs the inventory.
     PickBlock { pos: BlockPos, slot: u8 },
-    /// Interest management (§8): the client wants this column streamed.
-    SubscribeColumn(ChunkPos),
-    /// The column left the client's view; the server may unload it.
-    UnsubscribeColumn(ChunkPos),
+    /// Interest management (§8): the client wants this 16³ section streamed.
+    SubscribeSection(SectionPos),
+    /// The section left the client's view box; the server may unload it.
+    UnsubscribeSection(SectionPos),
     /// A click in the open inventory screen: move/stack/swap items between
     /// slots, or take a crafted result. `right` is the right mouse button.
     /// The server is authoritative and answers with a full Inventory resync.
@@ -77,8 +77,17 @@ pub enum ServerMessage {
         /// client makes it active so sky/gravity match the server's world.
         dimension: String,
     },
-    /// Terrain for a subscribed column.
-    Column(GeneratedColumn),
+    /// Terrain for a subscribed section that contains blocks.
+    Section(GeneratedSection),
+    /// A subscribed section that is all air — so the client marks it resolved
+    /// (its neighbours can mesh, it won't be re-requested) without a 4 KB blob.
+    SectionEmpty(SectionPos),
+    /// A column's sky-light heightmap: the world Y of the highest sky-blocking
+    /// block per (x,z), row-major `dz*16 + dx` (256 entries; `i32::MIN` = open to
+    /// the void). The client seeds band skylight from it (it can't walk a column
+    /// it no longer holds). Sent before/with a column's sections and resent when
+    /// a surface edit changes it.
+    ColumnSky { col: (i32, i32), heights: Vec<i32> },
     /// A block changed (echoes the client's own edits too).
     BlockChanged { pos: BlockPos, block: BlockId },
     /// Tier-3 stored block temperatures (°C) that changed since the last send —
@@ -229,7 +238,7 @@ mod tests {
         let (mut client, server) = in_proc_channel();
         drop(server);
         assert_eq!(
-            client.send(ClientMessage::SubscribeColumn(ChunkPos::new(0, 0))),
+            client.send(ClientMessage::SubscribeSection(IVec3::new(0, 0, 0))),
             Err(Disconnected)
         );
         assert!(matches!(client.try_recv(), Err(Disconnected)));

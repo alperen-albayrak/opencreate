@@ -64,6 +64,34 @@ impl GeneratedColumn {
             .collect()
     }
 
+    /// The column's sky-light heightmap: the world Y of the highest non-air
+    /// block per (x,z), row-major `dz*16 + dx` (256 entries; `i32::MIN` where the
+    /// column is clear to the void). Computed from the generated+overlaid
+    /// sections, before the column is split for sending.
+    pub fn heightmap(&self) -> Vec<i32> {
+        let mut hm = vec![i32::MIN; 256];
+        let mut sorted: Vec<&(SectionPos, Section)> = self.sections.iter().collect();
+        sorted.sort_by_key(|(p, _)| std::cmp::Reverse(p.y));
+        for (pos, section) in sorted {
+            let base_y = pos.y * SECTION_SIZE;
+            for dz in 0..16 {
+                for dx in 0..16 {
+                    let idx = (dz * 16 + dx) as usize;
+                    if hm[idx] != i32::MIN {
+                        continue;
+                    }
+                    for dy in (0..SECTION_SIZE).rev() {
+                        if !section.get(IVec3::new(dx, dy, dz)).is_air() {
+                            hm[idx] = base_y + dy;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        hm
+    }
+
     /// Overlays one saved section onto freshly generated terrain: a saved
     /// section fully replaces the generated one at its position, or is appended
     /// if it sits outside the generated span (e.g. a tower built up high). Its
@@ -370,6 +398,32 @@ impl World {
 
     pub fn loaded_columns(&self) -> impl Iterator<Item = ChunkPos> + '_ {
         self.columns.keys().copied()
+    }
+
+    /// Every loaded section position.
+    pub fn loaded_sections(&self) -> impl Iterator<Item = SectionPos> + '_ {
+        self.sections.keys().copied()
+    }
+
+    /// Whether this exact section is loaded (has stored voxels).
+    pub fn is_section_loaded(&self, pos: SectionPos) -> bool {
+        self.sections.contains_key(&pos)
+    }
+
+    /// Drops one section from memory (the section-streaming unload unit). The
+    /// caller saves it first if dirty. Removes it from the column index (dropping
+    /// the column entry when its last section goes) and forgets its temps.
+    pub fn unload_section(&mut self, pos: SectionPos) {
+        let chunk = ChunkPos::new(pos.x, pos.z);
+        if let Some(ys) = self.columns.get_mut(&chunk) {
+            ys.remove(&pos.y);
+            if ys.is_empty() {
+                self.columns.remove(&chunk);
+            }
+        }
+        self.sections.remove(&pos);
+        self.dirty.remove(&pos);
+        self.temperatures.retain(|p, _| block_to_section(*p) != pos);
     }
 
     /// Topmost solid Y at a block column (pure; works before generation).

@@ -8,7 +8,7 @@ pub mod creatures;
 pub mod falling;
 pub mod stats;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -21,12 +21,12 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World as EcsWorld;
 use glam::{DVec3, IVec3};
 use oc_assets::{ItemId, ModeId, Registry};
-use oc_core::{ChunkPos, TICKS_PER_SECOND};
+use oc_core::{ChunkPos, SectionPos, TICKS_PER_SECOND};
 use oc_protocol::{ClientMessage, Disconnected, InvTarget, ServerMessage, Transport};
 use oc_world::World;
 use oc_world::registry::BlockPalette;
 use oc_world::store::{FolderStore, WorldStore};
-use oc_world::world::{GeneratedColumn, generate_column_data};
+use oc_world::world::{GeneratedSection, generate_column_data};
 use tracing::{info, warn};
 
 use falling::FallTracker;
@@ -345,6 +345,16 @@ struct LevelMeta {
     dimension: String,
 }
 
+/// A transiently generated column, fanned out by the server as per-section
+/// answers: the column's sky heightmap plus its non-empty sections (saved edits
+/// already overlaid). The server inserts/sends only the sections a client
+/// subscribes; the rest are dropped, so no full column is held.
+struct ColumnGen {
+    chunk: ChunkPos,
+    heights: Vec<i32>,
+    sections: Vec<GeneratedSection>,
+}
+
 struct Server {
     transport: Box<dyn Transport<ServerMessage, ClientMessage>>,
     world: World,
@@ -371,10 +381,20 @@ struct Server {
     player_position: DVec3,
     player_yaw: f32,
     player_pitch: f32,
-    subscriptions: HashSet<ChunkPos>,
+    /// The sections clients want streamed (the box around each player).
+    subscriptions: HashSet<SectionPos>,
+    /// Columns currently being generated (generation is a per-column 2D compute).
     gen_inflight: HashSet<ChunkPos>,
-    gen_tx: Sender<GeneratedColumn>,
-    gen_rx: Receiver<GeneratedColumn>,
+    gen_tx: Sender<ColumnGen>,
+    gen_rx: Receiver<ColumnGen>,
+    /// Per-column sky-light heightmaps (world Y of the highest sky-blocker per
+    /// (x,z)), computed at generation and refreshed on surface edits — the one
+    /// per-(x,z) index the section model keeps. Shipped as `ColumnSky`; not block
+    /// data, not persisted (recomputed on load).
+    heightmaps: HashMap<ChunkPos, Vec<i32>>,
+    /// Columns whose current `ColumnSky` the client already holds — avoids
+    /// re-sending the heightmap with every section of a column.
+    sky_sent: HashSet<ChunkPos>,
     tick: u64,
     last_autosave: Instant,
     /// Simulation frozen by the (singleplayer) pause menu.
@@ -486,6 +506,8 @@ impl Server {
             gen_inflight: HashSet::new(),
             gen_tx,
             gen_rx,
+            heightmaps: HashMap::new(),
+            sky_sent: HashSet::new(),
             tick: 0,
             last_autosave: Instant::now(),
             paused: false,
@@ -613,17 +635,18 @@ impl Server {
                         }
                     }
                 }
-                ClientMessage::SubscribeColumn(chunk) => {
-                    self.subscriptions.insert(chunk);
-                    // Already loaded: ship it immediately.
-                    if self.world.is_generated(chunk)
-                        && let Some(column) = self.export_for_send(chunk)
-                    {
-                        self.transport.send(ServerMessage::Column(column))?;
+                ClientMessage::SubscribeSection(pos) => {
+                    self.subscriptions.insert(pos);
+                    // If the column is already generated, answer immediately;
+                    // otherwise dispatch_generation will produce it.
+                    let chunk = ChunkPos::new(pos.x, pos.z);
+                    if self.heightmaps.contains_key(&chunk) {
+                        self.ensure_sky_sent(chunk)?;
+                        self.send_section(pos)?;
                     }
                 }
-                ClientMessage::UnsubscribeColumn(chunk) => {
-                    self.subscriptions.remove(&chunk);
+                ClientMessage::UnsubscribeSection(pos) => {
+                    self.subscriptions.remove(&pos);
                 }
             }
         }
@@ -758,6 +781,8 @@ impl Server {
         if inventory_changed {
             self.send_inventory()?;
         }
+        // A surface edit (dig/stack) moves the column heightmap → re-seed sky.
+        self.refresh_heightmap_at(pos.x, pos.z)?;
         // The edit may have brought lava and water into contact — quench it.
         self.resolve_quench(pos)?;
         Ok(())
@@ -805,6 +830,7 @@ impl Server {
         for (p, block) in swaps {
             if self.world.set_block(p, block) {
                 self.transport.send(ServerMessage::BlockChanged { pos: p, block })?;
+                self.refresh_heightmap_at(p.x, p.z)?;
             }
         }
         Ok(())
@@ -844,18 +870,65 @@ impl Server {
         self.transport.send(ServerMessage::Inventory { slots, craft, cursor })
     }
 
-    fn export_for_send(&self, chunk: ChunkPos) -> Option<GeneratedColumn> {
-        self.world.column_for_send(chunk)
+    /// Sends one section to the client: its blocks if it has any, else an empty
+    /// marker so the client resolves it without a 4 KB blob. The column must be
+    /// generated (the caller checks).
+    fn send_section(&mut self, pos: SectionPos) -> Result<(), Disconnected> {
+        match self.world.export_section(pos) {
+            Some(stored) => self.transport.send(ServerMessage::Section(GeneratedSection {
+                pos,
+                section: stored.voxels,
+                temperatures: stored.temperatures,
+            })),
+            None => self.transport.send(ServerMessage::SectionEmpty(pos)),
+        }
+    }
+
+    /// Ships a column's sky heightmap once (until it changes) so the client can
+    /// seed band light. No-op if the column isn't generated or already sent.
+    fn ensure_sky_sent(&mut self, chunk: ChunkPos) -> Result<(), Disconnected> {
+        if self.sky_sent.contains(&chunk) {
+            return Ok(());
+        }
+        let Some(heights) = self.heightmaps.get(&chunk) else {
+            return Ok(());
+        };
+        self.transport
+            .send(ServerMessage::ColumnSky { col: (chunk.x, chunk.z), heights: heights.clone() })?;
+        self.sky_sent.insert(chunk);
+        Ok(())
     }
 
     fn integrate_generated(&mut self) {
-        while let Ok(column) = self.gen_rx.try_recv() {
-            self.gen_inflight.remove(&column.chunk);
-            if !self.subscriptions.contains(&column.chunk) {
-                continue; // interest moved on while the job ran
+        while let Ok(job) = self.gen_rx.try_recv() {
+            self.gen_inflight.remove(&job.chunk);
+            self.heightmaps.insert(job.chunk, job.heights);
+            self.sky_sent.remove(&job.chunk); // fresh heightmap: (re)ship it
+            // Hold the whole column in memory so a vertical band shift serves
+            // the newly needed sections from RAM — no regeneration (which would
+            // clobber unsaved edits) and no dropped-section confusion. The
+            // client is still sent only the sections it subscribes. (Server RAM
+            // was never the bug; the GPU-residency fix is the client's box mesh.
+            // Transient generation for MP memory is a later optimization.)
+            for gs in job.sections {
+                self.world.insert_section(gs);
             }
-            self.world.insert_column(column.clone());
-            let _ = self.transport.send(ServerMessage::Column(column));
+            if self.ensure_sky_sent(job.chunk).is_err() {
+                return;
+            }
+            let subs: Vec<SectionPos> = self
+                .subscriptions
+                .iter()
+                .filter(|s| s.x == job.chunk.x && s.z == job.chunk.z)
+                .copied()
+                .collect();
+            for pos in subs {
+                // A loaded section ships its blocks; an air one ships an empty
+                // marker so the client resolves it.
+                if self.send_section(pos).is_err() {
+                    return;
+                }
+            }
         }
     }
 
@@ -864,15 +937,20 @@ impl Server {
         if slots == 0 {
             return;
         }
-        // Nearest to the player first — they're standing on (or falling
-        // toward) the closest column.
+        // Columns holding a subscribed section we haven't generated yet, nearest
+        // to the player first (they're standing on / falling toward the closest).
         let player_chunk = oc_core::coords::block_to_chunk(self.player_position.floor().as_ivec3());
-        let mut wanted: Vec<ChunkPos> = self
-            .subscriptions
-            .iter()
-            .filter(|c| !self.world.is_generated(**c) && !self.gen_inflight.contains(c))
-            .copied()
-            .collect();
+        let mut wanted: Vec<ChunkPos> = Vec::new();
+        let mut seen: HashSet<ChunkPos> = HashSet::new();
+        for sp in &self.subscriptions {
+            let chunk = ChunkPos::new(sp.x, sp.z);
+            if self.heightmaps.contains_key(&chunk) || self.gen_inflight.contains(&chunk) {
+                continue; // already generated, or generation in flight
+            }
+            if seen.insert(chunk) {
+                wanted.push(chunk);
+            }
+        }
         wanted.sort_by_key(|c| {
             let (dx, dz) = ((c.x - player_chunk.x) as i64, (c.z - player_chunk.z) as i64);
             dx * dx + dz * dz
@@ -884,9 +962,9 @@ impl Server {
             let store = Arc::clone(&self.store);
             let tx = self.gen_tx.clone();
             rayon::spawn(move || {
-                // Generate the column, then overlay any saved per-section edits
-                // (a saved section fully replaces the generated one). Pristine
-                // terrain has no saved sections and regenerates from the seed.
+                // Generate the column transiently, overlay saved per-section edits
+                // (a saved section fully replaces the generated one), derive its
+                // sky heightmap, and split it into per-section answers.
                 let mut column = generate_column_data(&generator, chunk);
                 for y in store.saved_section_ys(chunk) {
                     let pos = IVec3::new(chunk.x, y, chunk.z);
@@ -898,22 +976,29 @@ impl Server {
                         }
                     }
                 }
-                let _ = tx.send(column);
+                let heights = column.heightmap();
+                let _ = tx.send(ColumnGen { chunk, heights, sections: column.into_sections() });
             });
         }
     }
 
     fn unload_unsubscribed(&mut self) {
+        // The hold unit is the column: drop one only when no client subscribes
+        // any of its sections, saving its dirty sections first.
+        let subscribed_cols: HashSet<ChunkPos> =
+            self.subscriptions.iter().map(|s| ChunkPos::new(s.x, s.z)).collect();
         let far: Vec<ChunkPos> = self
             .world
             .loaded_columns()
-            .filter(|c| !self.subscriptions.contains(c))
+            .filter(|c| !subscribed_cols.contains(c))
             .collect();
         for chunk in far {
-            if self.world.is_dirty(chunk) {
-                self.save_column(chunk);
+            for pos in self.world.dirty_sections_in(chunk) {
+                self.save_section(pos);
             }
             self.world.unload_column(chunk);
+            self.heightmaps.remove(&chunk);
+            self.sky_sent.remove(&chunk);
         }
     }
 
@@ -1098,18 +1183,64 @@ impl Server {
         }
     }
 
-    /// Persists a column's dirty sections individually (the section is the save
-    /// unit); the server still tracks interest by column.
+    /// Persists one dirty section (the save unit). No-op if it's gone.
+    fn save_section(&mut self, pos: SectionPos) {
+        let Some(stored) = self.world.export_section(pos) else {
+            return;
+        };
+        match self.store.save_section(pos, &stored) {
+            Ok(()) => self.world.mark_section_saved(pos),
+            Err(e) => warn!("saving section ({}, {}, {}): {e:#}", pos.x, pos.y, pos.z),
+        }
+    }
+
+    /// Persists a column's dirty sections individually.
     fn save_column(&mut self, chunk: ChunkPos) {
         for pos in self.world.dirty_sections_in(chunk) {
-            let Some(stored) = self.world.export_section(pos) else {
-                continue;
+            self.save_section(pos);
+        }
+    }
+
+    /// After an edit, recompute the column's heightmap at the edited (x,z); if it
+    /// moved, resend `ColumnSky` so clients re-seed sky — digging a shaft drops
+    /// the height and the sun reaches the bottom; stacking blocks raises it.
+    fn refresh_heightmap_at(&mut self, x: i32, z: i32) -> Result<(), Disconnected> {
+        let chunk = ChunkPos::new(x >> 4, z >> 4);
+        if !self.heightmaps.contains_key(&chunk) {
+            return Ok(());
+        }
+        let idx = ((z & 15) * 16 + (x & 15)) as usize;
+        let old = self.heightmaps[&chunk][idx];
+        let new = self.column_height_at(x, z);
+        if old != new {
+            let heights = {
+                let h = self.heightmaps.get_mut(&chunk).expect("present");
+                h[idx] = new;
+                h.clone()
             };
-            match self.store.save_section(pos, &stored) {
-                Ok(()) => self.world.mark_section_saved(pos),
-                Err(e) => warn!("saving section ({}, {}, {}): {e:#}", pos.x, pos.y, pos.z),
+            self.transport
+                .send(ServerMessage::ColumnSky { col: (chunk.x, chunk.z), heights })?;
+        }
+        Ok(())
+    }
+
+    /// Highest non-air block at (x,z) among loaded sections, top-down; falls back
+    /// to the generated surface when the loaded band has nothing there (we can't
+    /// see below it — a good estimate for mostly-untouched terrain).
+    fn column_height_at(&self, x: i32, z: i32) -> i32 {
+        let chunk = ChunkPos::new(x >> 4, z >> 4);
+        let mut ys: Vec<i32> = self.world.column_sections(chunk).iter().map(|s| s.y).collect();
+        ys.sort_unstable();
+        for &sy in ys.iter().rev() {
+            if let Some(section) = self.world.section(IVec3::new(chunk.x, sy, chunk.z)) {
+                for dy in (0..16).rev() {
+                    if !section.get(IVec3::new(x & 15, dy, z & 15)).is_air() {
+                        return sy * 16 + dy;
+                    }
+                }
             }
         }
+        self.world.surface_height(x, z)
     }
 
     fn save_world(&mut self) {
@@ -1376,6 +1507,37 @@ mod tests {
         }
     }
 
+    /// Subscribes a column's sections over a Y range and collects the non-empty
+    /// ones once every subscribed section has been answered (Section or
+    /// SectionEmpty) — the section-streaming stand-in for the old column fetch.
+    fn subscribe_column(
+        client: &mut impl Transport<ClientMessage, ServerMessage>,
+        chunk: ChunkPos,
+        ys: std::ops::RangeInclusive<i32>,
+    ) -> Vec<oc_world::world::GeneratedSection> {
+        let wanted: Vec<IVec3> = ys.map(|y| IVec3::new(chunk.x, y, chunk.z)).collect();
+        for &p in &wanted {
+            client.send(ClientMessage::SubscribeSection(p)).unwrap();
+        }
+        let mut got: std::collections::HashMap<IVec3, Option<oc_world::world::GeneratedSection>> =
+            std::collections::HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while got.len() < wanted.len() {
+            assert!(Instant::now() < deadline, "timed out waiting for sections");
+            match client.try_recv().expect("server alive") {
+                Some(ServerMessage::Section(gs)) if wanted.contains(&gs.pos) => {
+                    got.insert(gs.pos, Some(gs));
+                }
+                Some(ServerMessage::SectionEmpty(p)) if wanted.contains(&p) => {
+                    got.entry(p).or_insert(None);
+                }
+                Some(_) => {}
+                None => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        got.into_values().flatten().collect()
+    }
+
     #[test]
     fn creative_pick_block_fills_the_selected_hotbar_slot() {
         let dir = temp_dir("pick");
@@ -1396,27 +1558,24 @@ mod tests {
             _ => None,
         });
         let spawn_chunk = block_to_chunk(spawn.floor().as_ivec3());
-        client.send(ClientMessage::SubscribeColumn(spawn_chunk)).unwrap();
-        let column = wait_for(&mut client, |m| match m {
-            ServerMessage::Column(c) if c.chunk == spawn_chunk => Some(c),
-            _ => None,
-        });
+        let spawn_sy = (spawn.y.floor() as i32) >> 4;
+        let sections =
+            subscribe_column(&mut client, spawn_chunk, oc_world::terrain::BOTTOM_SECTION_Y..=spawn_sy + 1);
 
         // A solid, item-backed block in the spawn column.
         let registry = Registry::load_default().unwrap();
-        let (pick_pos, pick_block) = column
-            .sections
+        let (pick_pos, pick_block) = sections
             .iter()
-            .find_map(|(pos, section)| {
+            .find_map(|gs| {
                 for y in 0..16 {
                     for z in 0..16 {
                         for x in 0..16 {
-                            let b = section.get(IVec3::new(x, y, z));
+                            let b = gs.section.get(IVec3::new(x, y, z));
                             if b.is_solid() && registry.item_for_block(b).is_some() {
                                 return Some((
                                     IVec3::new(
                                         spawn_chunk.x * 16 + x,
-                                        pos.y * 16 + y,
+                                        gs.pos.y * 16 + y,
                                         spawn_chunk.z * 16 + z,
                                     ),
                                     b,
@@ -1519,31 +1678,28 @@ mod tests {
         });
         assert_eq!(seed, 77);
 
-        // Subscribing the spawn column streams its terrain.
+        // Subscribing the spawn column's sections streams its terrain. The range
+        // reaches up to the high-edit section (y=200 → section 12) tested later.
         let spawn_chunk = block_to_chunk(spawn.floor().as_ivec3());
-        client.send(ClientMessage::SubscribeColumn(spawn_chunk)).unwrap();
-        let column = wait_for(&mut client, |m| match m {
-            ServerMessage::Column(c) if c.chunk == spawn_chunk => Some(c),
-            _ => None,
-        });
-        assert!(!column.sections.is_empty());
+        let sections =
+            subscribe_column(&mut client, spawn_chunk, oc_world::terrain::BOTTOM_SECTION_Y..=13);
+        assert!(!sections.is_empty());
 
         // Survival flow: harvest a solid block from the streamed column...
-        let (mine_pos, mined_block) = column
-            .sections
+        let (mine_pos, mined_block) = sections
             .iter()
-            .find_map(|(pos, section)| {
+            .find_map(|gs| {
                 for y in 0..16 {
                     for z in 0..16 {
                         for x in 0..16 {
-                            let b = section.get(IVec3::new(x, y, z));
+                            let b = gs.section.get(IVec3::new(x, y, z));
                             // Skip bedrock: it's unbreakable, so survival can't
                             // mine it (the deepened column now has a bedrock floor).
                             if b.is_solid() && !oc_world::registry::is_unbreakable(b) {
                                 return Some((
                                     IVec3::new(
                                         spawn_chunk.x * 16 + x,
-                                        pos.y * 16 + y,
+                                        gs.pos.y * 16 + y,
                                         spawn_chunk.z * 16 + z,
                                     ),
                                     b,
@@ -1713,17 +1869,12 @@ mod tests {
         assert_eq!(seed2, 77, "seed persisted");
         assert_eq!(spawn2, DVec3::new(9.5, 80.0, 9.5), "player position persisted");
 
-        client2.send(ClientMessage::SubscribeColumn(spawn_chunk)).unwrap();
-        let column2 = wait_for(&mut client2, |m| match m {
-            ServerMessage::Column(c) if c.chunk == spawn_chunk => Some(c),
-            _ => None,
+        let sections2 =
+            subscribe_column(&mut client2, spawn_chunk, oc_world::terrain::BOTTOM_SECTION_Y..=13);
+        let in_column = sections2.iter().find_map(|gs| {
+            (gs.pos.y == edit.y >> 4)
+                .then(|| gs.section.get(IVec3::new(edit.x & 15, edit.y & 15, edit.z & 15)))
         });
-        let in_column =
-            column2.sections.iter().find_map(|(pos, section)| {
-                (pos.y == edit.y >> 4).then(|| {
-                    section.get(IVec3::new(edit.x & 15, edit.y & 15, edit.z & 15))
-                })
-            });
         assert_eq!(in_column, Some(mined_block), "edit persisted");
 
         drop(client2);

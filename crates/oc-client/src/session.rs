@@ -535,7 +535,11 @@ impl Session {
                 None => return Ok(()),
             };
             match msg {
-                Some(ServerMessage::Column(column)) => self.streamer.insert_column(column),
+                Some(ServerMessage::Section(section)) => self.streamer.insert_section(section),
+                Some(ServerMessage::SectionEmpty(pos)) => self.streamer.resolve_empty(pos),
+                Some(ServerMessage::ColumnSky { col, heights }) => {
+                    self.streamer.set_column_sky(renderer, col, heights)?;
+                }
                 Some(ServerMessage::BlockChanged { pos, block }) => {
                     self.streamer.apply_block_change(renderer, pos, block)?;
                 }
@@ -605,11 +609,11 @@ impl Session {
             let moving = input.forward || input.backward || input.left || input.right;
             let sprinting = input.fast && moving && !self.player.flying;
 
-            // Hold physics until the column under the player has terrain,
-            // so nobody falls through a world that hasn't streamed in yet.
-            let feet_chunk =
-                oc_core::coords::block_to_chunk(self.player.position.floor().as_ivec3());
-            if self.streamer.world().is_generated(feet_chunk) {
+            // Hold physics until the section under the player has streamed in,
+            // so nobody falls through a world box that hasn't arrived yet.
+            let feet_section =
+                oc_core::coords::block_to_section(self.player.position.floor().as_ivec3());
+            if self.streamer.is_resolved(feet_section) {
                 let noclip = self.caps(registry).noclip;
                 self.player
                     .update(self.streamer.world(), &input, self.camera.yaw, dt, noclip);
@@ -784,17 +788,26 @@ impl Session {
             // sun-lit one (water) dims with daylight.
             sky = sky::submerged(&sky, glam::Vec3::new(r, g, b), fluid.light_emission > 0);
         }
-        // The far-terrain ring extends the *surface* horizon; well below ground
-        // (deep caves, the hellish/lava zone) the distant surface can't be seen,
-        // so the ring would just float in the dark — suppress it there.
-        let surface = self.streamer.world().generator().surface_height(
-            render_pos.x.floor() as i32,
-            render_pos.z.floor() as i32,
-        );
-        let underground = (render_pos.y.floor() as i32) < surface - 6;
-        // Underground (and not in a fluid): the background/sky is the dark cave
-        // void, so unloaded-chunk gaps and the render-distance edge don't show
-        // the night sky from deep down.
+        // Sky exposure from the server's per-column heightmap (edit-aware): full
+        // at/above the column's highest sky-blocker, fading out over ~16 blocks
+        // below it. Digging a shaft or shaving a peak drops the heightmap, so the
+        // real sky/sun reappears down the opening; a sealed cave (heightmap far
+        // overhead) stays dark — no generated-surface heuristic. Until the
+        // column's ColumnSky has arrived, fall back to the generated surface.
+        let cam_x = render_pos.x.floor() as i32;
+        let cam_z = render_pos.z.floor() as i32;
+        let exposure = match self.streamer.heightmap_at(cam_x, cam_z) {
+            Some(h) if h == i32::MIN => 1.0,
+            Some(h) => (1.0 - (h as f64 - render_pos.y) / 16.0).clamp(0.0, 1.0),
+            None => {
+                let surface = self.streamer.world().generator().surface_height(cam_x, cam_z);
+                if (render_pos.y.floor() as i32) < surface - 6 { 0.0 } else { 1.0 }
+            }
+        };
+        // Below the opening (and not in a fluid): the background is the dark cave
+        // void, so unloaded gaps and the render-distance edge don't show the day
+        // sky from deep down, and the far-terrain ring is suppressed.
+        let underground = exposure < 0.5;
         if underground && !underwater {
             sky = sky::underground(&sky, oc_world::env_registry::active().atmosphere.ambient_floor);
         }
