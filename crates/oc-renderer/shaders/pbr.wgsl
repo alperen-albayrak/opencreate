@@ -318,6 +318,20 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let spec = ggx_specular(normal, view_dir, sun_dir_n, albedo, roughness, metal);
     color += spec * (sky_vis * sun_vis * sun_radiance);
 
+    // Cheap image-based reflection: a smooth surface mirrors the sky gradient
+    // along its reflection vector (the only environment we can sample without
+    // SSR). Fresnel-Schlick on the view angle gives the bright grazing rim and
+    // a faint face-on sheen; squared smoothness restricts it to genuinely
+    // polished blocks (matte → none); sky_vis keeps it out of caves. F0 = 0.04
+    // for dielectrics, albedo for metals (a metal's colour is its reflection).
+    let refl_dir = reflect(-view_dir, normal);
+    let sky_refl = mix(scene.sky_horizon.rgb, scene.sky_zenith.rgb, clamp(refl_dir.y, 0.0, 1.0));
+    let n_dot_v = max(dot(normal, view_dir), 0.0);
+    let f0_ibl = mix(vec3<f32>(0.04), albedo, metal_f);
+    let fresnel = f0_ibl + (vec3<f32>(1.0) - f0_ibl) * pow(1.0 - n_dot_v, 5.0);
+    let smoothness = 1.0 - roughness;
+    color += sky_refl * fresnel * (smoothness * smoothness * sky_vis);
+
     // Incandescence: the surface's own blackbody glow past the Draper point,
     // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —
     // smooth, so it never bands on depth quantization. Modulated by albedo so
