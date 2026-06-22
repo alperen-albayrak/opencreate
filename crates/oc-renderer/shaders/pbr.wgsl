@@ -96,8 +96,12 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>, n_dot_l: f
     }
     let ndc = shadow.matrices[cascade] * vec4<f32>(pos, 1.0);
     let uv = ndc.xy * 0.5 + vec2(0.5);
+    // Outside this cascade's box: sentinel so the caller falls through to a
+    // larger cascade (NOT "lit" — returning 1.0 here dropped shadows at the
+    // screen edges, where wide-angle pixels sit inside the view-Z split but
+    // outside the near cascade's light-space box).
     if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
-        return 1.0;
+        return -1.0;
     }
     // Minimal residual depth bias — the normal offset does the heavy lifting.
     let d = ndc.z - (0.00015 + texel_world / 400.0);
@@ -115,29 +119,31 @@ fn cascade_lit(cascade: i32, world_rel: vec3<f32>, normal: vec3<f32>, n_dot_l: f
     return s * 0.25;
 }
 
-// How much of the sun reaches this fragment, with cross-faded cascades that
-// ease out at the far cascade and at twilight.
+// How much of the sun reaches this fragment. Picks the FIRST (smallest)
+// cascade whose light-space box actually contains the point, falling through
+// to larger cascades when a point lies outside a smaller one — the near
+// cascade only covers ±radius perpendicular to the sun, so a wide-angle
+// screen-edge pixel (small view-Z, large lateral offset) is outside cascade 0
+// but inside 1 or 2. Selecting by view-Z alone dropped those edge shadows.
 fn sun_visibility(world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32, n_dot_l: f32) -> f32 {
     let strength = shadow.params.x;
-    if (strength <= 0.0 || view_dist >= shadow.splits.z) {
+    if (strength <= 0.0) {
         return 1.0;
     }
-    var cascade = 2;
-    var split = shadow.splits.z;
-    if (view_dist < shadow.splits.x) {
-        cascade = 0;
-        split = shadow.splits.x;
-    } else if (view_dist < shadow.splits.y) {
-        cascade = 1;
-        split = shadow.splits.y;
+    var vis = -1.0;
+    for (var c = 0; c < 3; c = c + 1) {
+        vis = cascade_lit(c, world_rel, normal, n_dot_l);
+        if (vis >= 0.0) {
+            break;
+        }
     }
-    var lit = cascade_lit(cascade, world_rel, normal, n_dot_l);
-    let blend = smoothstep(split * 0.85, split, view_dist);
-    if (blend > 0.0 && cascade < 2) {
-        lit = mix(lit, cascade_lit(cascade + 1, world_rel, normal, n_dot_l), blend);
+    // Beyond every cascade's coverage: fully lit.
+    if (vis < 0.0) {
+        return 1.0;
     }
+    // Ease shadows out toward the far cascade's edge (and twilight via strength).
     let range_fade = smoothstep(shadow.splits.z * 0.8, shadow.splits.z, view_dist);
-    return mix(1.0, mix(lit, 1.0, range_fade), strength);
+    return mix(1.0, mix(vis, 1.0, range_fade), strength);
 }
 
 // Accurate blackbody colour (normalised sRGB) from temperature — the
