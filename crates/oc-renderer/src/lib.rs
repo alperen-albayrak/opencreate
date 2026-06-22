@@ -14,6 +14,7 @@ mod exposure;
 mod far_renderer;
 mod hdr;
 mod lighting;
+mod volumetric;
 mod mesh;
 mod font;
 mod outline;
@@ -41,6 +42,7 @@ use exposure::ExposurePass;
 use far_renderer::FarRenderer;
 use hdr::{HdrTarget, TonemapPass};
 use lighting::LightingPass;
+use volumetric::{VolPush, VolumetricPass};
 use outline::OutlineRenderer;
 use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
@@ -133,6 +135,8 @@ pub struct Renderer {
     hdr: HdrTarget,
     /// Deferred lighting resolve: G-buffer + Scene UBO -> lit HDR color.
     lighting: LightingPass,
+    /// Volumetric god-rays: additive in-scattering sampled vs the cascades.
+    volumetric: VolumetricPass,
     tonemap: TonemapPass,
     /// World render resolution as a fraction of the window.
     resolution_scale: f32,
@@ -228,6 +232,15 @@ impl Renderer {
                 hdr.gb2_view,
                 hdr.depth.view,
             );
+            // Volumetric god-rays run in the lighting pass after the resolve,
+            // reading the same depth + Scene UBO + shadow cascades.
+            let volumetric = VolumetricPass::new(
+                &ctx,
+                hdr.lighting_pass,
+                scene.layout(),
+                shadow.descriptor_layout,
+            )?;
+            volumetric.bind_input(&ctx.device, hdr.depth.view);
             let chunks = ChunkRenderer::new(
                 &ctx,
                 &mut allocator,
@@ -271,6 +284,7 @@ impl Renderer {
                 framebuffers,
                 hdr,
                 lighting,
+                volumetric,
                 tonemap,
                 resolution_scale: 1.0,
                 scale_dirty: false,
@@ -394,6 +408,7 @@ impl Renderer {
                 self.hdr.gb2_view,
                 self.hdr.depth.view,
             );
+            self.volumetric.bind_input(&self.ctx.device, self.hdr.depth.view);
             }
             let device = &self.ctx.device;
 
@@ -551,6 +566,22 @@ impl Renderer {
                 scene_set,
                 self.shadow.descriptor_sets[slot],
                 camera.view_proj.inverse(),
+            );
+            // Volumetric god-rays: additive in-scattering on the lit color,
+            // sampled against the sun cascades (shafts where the ray crosses
+            // sunlit air). Same render pass — depth is a sampled input here.
+            self.volumetric.record(
+                device,
+                cmd,
+                scene_set,
+                self.shadow.descriptor_sets[slot],
+                VolPush {
+                    inv_view_proj: camera.view_proj.inverse(),
+                    // density/block, mie_g, step count, max march distance.
+                    fog_a: Vec4::new(0.006, 0.76, 48.0, 160.0),
+                    // in-scatter tint (warm sun), intensity.
+                    fog_b: Vec4::new(1.0, 0.92, 0.78, 0.5),
+                },
             );
             device.cmd_end_render_pass(cmd);
 
@@ -832,6 +863,7 @@ impl Renderer {
                 self.hdr.gb2_view,
                 self.hdr.depth.view,
             );
+            self.volumetric.bind_input(&self.ctx.device, self.hdr.depth.view);
             self.scale_dirty = false;
             Ok(())
         }
@@ -857,6 +889,7 @@ impl Drop for Renderer {
             self.exposure.destroy(device, &mut allocator);
             self.shadow.destroy(device, &mut allocator);
             self.lighting.destroy(device);
+            self.volumetric.destroy(device);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {
