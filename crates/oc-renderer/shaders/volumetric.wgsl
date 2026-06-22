@@ -35,10 +35,12 @@ struct ShadowData {
 struct VolPush {
     // depth -> camera-relative world (same as the lighting pass).
     inv_view_proj: mat4x4<f32>,
-    // x: density (per block), y: mie_g, z: step count, w: max march distance.
+    // x: unused, y: Mie g, z: step count, w: max march distance.
     fog_a: vec4<f32>,
-    // rgb: in-scatter tint, w: intensity.
+    // rgb: Rayleigh scattering coefficient per block (bluish), w: Mie coefficient.
     fog_b: vec4<f32>,
+    // x: ground-mist altitude (world Y), y: mist fade thickness, z: intensity; w: reserved.
+    fog_c: vec4<f32>,
 }
 var<immediate> pc: VolPush;
 
@@ -46,6 +48,8 @@ var<immediate> pc: VolPush;
 const NEAR: f32 = 0.05;
 const FAR: f32 = 4096.0;
 const FOUR_PI: f32 = 12.5663706;
+// Rayleigh phase normalisation: 3 / (16π).
+const RAYLEIGH_K: f32 = 0.0596831;
 
 fn henyey_greenstein(cos_t: f32, g: f32) -> f32 {
     let g2 = g * g;
@@ -104,17 +108,34 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Per-pixel jitter breaks up step banding.
     let jitter = fract(sin(dot(frag.xy, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 
-    var sunlit = 0.0;
-    for (var i = 0; i < steps; i = i + 1) {
-        let t = (f32(i) + jitter) * step_len;
-        sunlit += sun_vis_at(ray_dir * t, t);
-    }
-    let avg_sunlit = sunlit / f32(steps);
-
     let sun_dir = normalize(scene.sky_sun.xyz);
     let daylight = scene.sky_sun.w;
-    let phase = henyey_greenstein(dot(ray_dir, sun_dir), pc.fog_a.y);
-    // optical depth (density * path) * sunlit fraction * directional phase.
-    let amount = avg_sunlit * phase * (pc.fog_a.x * max_d) * daylight * pc.fog_b.w;
-    return vec4<f32>(pc.fog_b.rgb * amount, 0.0);
+    let cos_t = dot(ray_dir, sun_dir);
+    // Two-term single scattering (what Vibrant Visuals does — Rayleigh + Mie/HG,
+    // not a flat isotropic floor): Rayleigh's phase is near-isotropic and its
+    // coefficient is blue-biased, so it gives the broad haze visible in EVERY
+    // view direction; Mie's HG phase is the forward lobe → the god-ray shafts
+    // toward the sun. The colour is the scattering coefficients, not a tint.
+    let phase_r = RAYLEIGH_K * (1.0 + cos_t * cos_t);
+    let phase_m = henyey_greenstein(cos_t, pc.fog_a.y);
+    let scatter = pc.fog_b.rgb * phase_r + vec3<f32>(pc.fog_b.w * phase_m);
+    let extinction = pc.fog_b.g + pc.fog_b.w; // representative grey extinction/block
+
+    // March the view ray. A height-density ramp pools fog in low ground (full
+    // at/below fog_altitude, fading above; sample world Y = camera Y params.z +
+    // local offset). Sunlit air scatters; shadowed air doesn't (the shafts).
+    // Beer-Lambert transmittance back to the camera weights near samples more
+    // and keeps long rays from blowing out.
+    var weight = 0.0;
+    var tau = 0.0;
+    for (var i = 0; i < steps; i = i + 1) {
+        let t = (f32(i) + jitter) * step_len;
+        let p = ray_dir * t;
+        let world_y = scene.params.z + p.y;
+        let height = exp(-max(world_y - pc.fog_c.x, 0.0) / max(pc.fog_c.y, 0.1));
+        weight += exp(-tau) * sun_vis_at(p, t) * height * step_len;
+        tau += extinction * height * step_len;
+    }
+    let amount = scatter * weight * daylight * pc.fog_c.z;
+    return vec4<f32>(amount, 0.0);
 }

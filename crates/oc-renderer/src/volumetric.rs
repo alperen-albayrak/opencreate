@@ -27,6 +27,8 @@ pub struct VolPush {
     pub fog_a: Vec4,
     /// rgb: in-scatter tint, w: intensity.
     pub fog_b: Vec4,
+    /// x: ground-mist altitude (world Y), y: mist fade thickness; zw: reserved.
+    pub fog_c: Vec4,
 }
 
 pub struct VolumetricPass {

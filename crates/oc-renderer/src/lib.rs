@@ -94,6 +94,8 @@ pub struct FrameCamera {
     pub shadows: bool,
     /// Shadow edge style: 0 = soft (PCF), 1 = blocky (1/16-block pixel-aligned).
     pub shadow_style: u32,
+    /// Draw the volumetric god-rays / ground-mist pass (settings toggle).
+    pub volumetric_fog: bool,
     /// Water reflects the scene (SSR; settings toggle).
     pub water_reflections: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
@@ -567,22 +569,38 @@ impl Renderer {
                 self.shadow.descriptor_sets[slot],
                 camera.view_proj.inverse(),
             );
-            // Volumetric god-rays: additive in-scattering on the lit color,
-            // sampled against the sun cascades (shafts where the ray crosses
-            // sunlit air). Same render pass — depth is a sampled input here.
-            self.volumetric.record(
-                device,
-                cmd,
-                scene_set,
-                self.shadow.descriptor_sets[slot],
-                VolPush {
-                    inv_view_proj: camera.view_proj.inverse(),
-                    // density/block, mie_g, step count, max march distance.
-                    fog_a: Vec4::new(0.006, 0.76, 48.0, 160.0),
-                    // in-scatter tint (warm sun), intensity.
-                    fog_b: Vec4::new(1.0, 0.92, 0.78, 0.5),
-                },
-            );
+            // Volumetric god-rays / ground mist: additive in-scattering on the
+            // lit color, sampled against the sun cascades (shafts where the ray
+            // crosses sunlit air) with a per-dimension height-density ramp. Same
+            // render pass — depth is a sampled input here. Skipped when the
+            // setting is off or the dimension has no air (fog_density 0).
+            let atm = &env.atmosphere;
+            if camera.volumetric_fog && atm.fog_density > 0.0 {
+                // Physically-grounded Rayleigh + Mie coefficients per block: keep
+                // the per-dimension coefficient *ratios* (Rayleigh blue-biased, the
+                // sky's colour; Mie grey) and scale to a visible block-distance
+                // magnitude by fog_density. The shader weights each by its own
+                // phase (Rayleigh near-isotropic haze, Mie HG forward god-rays).
+                let (rr, rg, rb) = atm.rayleigh;
+                let blue = rb.max(1e-4);
+                let beta_r = glam::Vec3::new(rr / blue, rg / blue, 1.0) * atm.fog_density;
+                let beta_m = (atm.mie / blue) * atm.fog_density;
+                self.volumetric.record(
+                    device,
+                    cmd,
+                    scene_set,
+                    self.shadow.descriptor_sets[slot],
+                    VolPush {
+                        inv_view_proj: camera.view_proj.inverse(),
+                        // unused, mie_g, step count, max march distance.
+                        fog_a: Vec4::new(0.0, atm.mie_g, 48.0, 160.0),
+                        // Rayleigh coefficient (rgb, bluish) + Mie coefficient (w).
+                        fog_b: beta_r.extend(beta_m),
+                        // ground-mist altitude, fade thickness, intensity.
+                        fog_c: Vec4::new(atm.fog_altitude, atm.fog_thickness, 0.6, 0.0),
+                    },
+                );
+            }
             device.cmd_end_render_pass(cmd);
 
             // Pass 1c: forward — far terrain, entities, outline, sky, clouds

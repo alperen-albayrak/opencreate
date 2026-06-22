@@ -773,6 +773,7 @@ impl Session {
         far_terrain: bool,
         shadows: bool,
         shadow_style: u32,
+        volumetric_fog: bool,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -920,6 +921,7 @@ impl Session {
             // fade, so this is a real, on-by-default feature.
             shadows,
             shadow_style,
+            volumetric_fog,
             water_reflections,
             far_terrain: far_terrain && !underwater && !underground,
             far_cut: {

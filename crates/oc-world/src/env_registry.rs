@@ -59,6 +59,16 @@ pub struct Atmosphere {
     pub rayleigh: (f32, f32, f32),
     pub mie: f32,
     pub mie_g: f32,
+    // --- volumetric god-rays / ground mist (VV stage 3) ---
+    /// Game-scale atmospheric scattering strength per block: the renderer scales
+    /// the `rayleigh`/`mie` coefficient *ratios* by this to get visible in-scatter
+    /// over block (not km) distances. 0 disables the effect (e.g. an airless moon).
+    pub fog_density: f32,
+    /// Ground-mist band top, world Y: density is full at/below this height and
+    /// fades above it, so mist pools in low ground / valleys (sea level is 0).
+    pub fog_altitude: f32,
+    /// Mist fade scale height in blocks (how fast density falls off above the band).
+    pub fog_thickness: f32,
 }
 
 impl Default for Atmosphere {
@@ -80,6 +90,9 @@ impl Default for Atmosphere {
             rayleigh: (5.8, 13.5, 33.1),
             mie: 21.0,
             mie_g: 0.76,
+            fog_density: 0.03,
+            fog_altitude: 12.0,
+            fog_thickness: 16.0,
         }
     }
 }

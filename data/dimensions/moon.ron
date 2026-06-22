@@ -22,6 +22,8 @@ EnvDef(
         underwater_color: (0.05, 0.05, 0.07),
         underwater_fog_near: 24.0,
         underwater_fog_far: 72.0,
+        // Airless: no volumetric in-scatter / god-rays.
+        fog_density: 0.0,
     ),
     // Vacuum: no breathable mixture, near-zero pressure.
     atmosphere_composition: (pressure_kpa: 0.0, mix: {}),

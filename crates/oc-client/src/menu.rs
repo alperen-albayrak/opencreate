@@ -414,7 +414,8 @@ const LABEL_W: f32 = 150.0;
 const SLIDER_W: f32 = 130.0;
 
 /// The settings screen: sliders + Back. Pure geometry, testable.
-pub const SETTINGS_TABS: [&str; 2] = ["settings.tab_game", "settings.tab_graphics"];
+pub const SETTINGS_TABS: [&str; 3] =
+    ["settings.tab_game", "settings.tab_graphics", "settings.tab_effects"];
 
 pub struct SettingsScreen {
     pub sliders: Vec<Slider>,
@@ -478,7 +479,7 @@ impl SettingsScreen {
                 slider(
                     "clouds",
                     "settings.clouds",
-                    1,
+                    2,
                     (0.0, 1.0),
                     1.0,
                     if settings.clouds { 1.0 } else { 0.0 },
@@ -486,7 +487,7 @@ impl SettingsScreen {
                 slider(
                     "water_reflections",
                     "settings.water_reflections",
-                    1,
+                    2,
                     (0.0, 1.0),
                     1.0,
                     if settings.water_reflections { 1.0 } else { 0.0 },
@@ -495,7 +496,7 @@ impl SettingsScreen {
                 slider(
                     "far_terrain",
                     "settings.far_terrain",
-                    1,
+                    2,
                     (0.0, 1.0),
                     1.0,
                     if settings.far_terrain { 1.0 } else { 0.0 },
@@ -503,7 +504,7 @@ impl SettingsScreen {
                 slider(
                     "shadows",
                     "settings.shadows",
-                    1,
+                    2,
                     (0.0, 1.0),
                     1.0,
                     if settings.shadows { 1.0 } else { 0.0 },
@@ -511,10 +512,18 @@ impl SettingsScreen {
                 slider(
                     "shadow_style",
                     "settings.shadow_style",
-                    1,
+                    2,
                     (0.0, 1.0),
                     1.0,
                     settings.shadow_style as f32,
+                ),
+                slider(
+                    "volumetric_fog",
+                    "settings.volumetric_fog",
+                    2,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.volumetric_fog { 1.0 } else { 0.0 },
                 ),
             ],
             tab: 0,
@@ -566,6 +575,7 @@ impl SettingsScreen {
                 "far_terrain" => settings.far_terrain = slider.value > 0.5,
                 "shadows" => settings.shadows = slider.value > 0.5,
                 "shadow_style" => settings.shadow_style = slider.value.round() as u32,
+                "volumetric_fog" => settings.volumetric_fog = slider.value > 0.5,
                 "volume" => settings.volume = slider.value,
                 _ => {}
             }
@@ -916,7 +926,7 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 13);
+        assert_eq!(screen.sliders.len(), 14);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");
@@ -967,7 +977,7 @@ mod tests {
         // Tab buttons exist and switch.
         assert!(screen.button_hit(&registry, (5.0, 5.0), w, h, ui).is_none());
         let tabs = screen.tab_buttons(&registry, w, h, ui);
-        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.len(), 3);
         assert!(tabs[1].highlighted, "active tab marked");
         // Geometry scales linearly with ui.
         let (bx2, _, bw2, _) = screen.bar_rect(1, w, h, 2.0);
