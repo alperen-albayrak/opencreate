@@ -62,8 +62,11 @@
         emissive: (1.0, 0.87, 0.59), color: (255, 222, 150), textures: All(9),
         heat_capacity: 0.8, conductivity: 1.0),
 
+    // Snow: a faint low-sun sparkle from its ice-crystal facets — high roughness
+    // (a soft, broad sheen at grazing angles, never a mirror), not full matte.
     (id: "oc:snow", name: "Snow",
         solid: true, opaque: true, color: (238, 242, 248), textures: All(10),
+        roughness: 0.7,
         heat_capacity: 2.0, conductivity: 0.1),
 
     (id: "oc:planks", name: "Planks",
@@ -93,7 +96,8 @@
         phase_transition: Some((freeze: Some("oc:basalt"), quench: Some("oc:obsidian")))),
 
     // Obsidian: glassy volcanic rock — lava quenched fast at a water edge. Dense,
-    // very hard, dark. Stable in the current deep (high melting point).
+    // very hard, dark. Stable in the current deep (high melting point). Volcanic
+    // glass → low roughness: a sharp sun glint + a sky-blue reflection sheen.
     (id: "oc:obsidian", name: "Obsidian",
         solid: true, opaque: true, hardness: 5.0,
         color: (22, 18, 34), textures: All(14),
@@ -108,7 +112,9 @@
         heat_capacity: 0.84, conductivity: 2.0),
 
     // Ice: frozen water. Melts back to water above 0 °C (G5 phase transition); a
-    // decent conductor, so a hot neighbour thaws it.
+    // decent conductor, so a hot neighbour thaws it. Smooth → low roughness: it
+    // catches a tight sun glint and a sky reflection (water surface itself is
+    // handled in the water pass, not this opaque path).
     (id: "oc:ice", name: "Ice",
         solid: true, opaque: true,
         color: (165, 205, 240), textures: All(16),
