@@ -104,9 +104,13 @@ then build every lighting/material feature a single time on deferred.
   volumetrics ✅ shipped** (per-pixel `sky_vis` cave fog + raymarched Rayleigh+Mie
   god-rays / ground mist, per-dimension); stars by magnitude + spectral color
   (later).
-- **Stage 3 — materials (NEXT):** **Cook–Torrance + Fresnel–Schlick** PBR
-  (roughness+metal packed into the free `GB1.w`); per-texel **normal + MER(S)**
-  (deferred); leaf/grass SSS; **many clustered dynamic lights**.
+- **Stage 3 — materials (specular ✅ shipped):** **Cook–Torrance/GGX + Fresnel–
+  Schlick** sun specular + a cheap **sky-reflection IBL** ✅ — per-block
+  roughness/metalness packed into the free `GB1.w` (8-bit code: a metal bit +
+  7-bit roughness), sourced from the registry, so smooth blocks (ice, obsidian)
+  catch a sun glint and a sky sheen while matte blocks are unchanged; metalness
+  is plumbed for future metallic blocks. Still ahead: per-texel **normal +
+  MER(S)** maps (deferred), leaf/grass **SSS**, **many clustered dynamic lights**.
 - **Stage 4 — beyond-parity + perf:** IBL reflections, per-biome color grading,
   TAAU, foliage wind; then the **M1 performance phase** (MDI/pooled draws, LOD,
   GPU culling, tier downgrades) — *after* quality lands, never constraining it.
@@ -167,6 +171,9 @@ tonemap**, **dual-Kawase bloom**, **auto-exposure**, **SSR water** + per-channel
 ring, **moon phases** + a real **bright-star catalog**, per-vertex **ambient
 occlusion**, and Step 1's additive colored lighting + ambient floor.
 
-**Shelved:** cascaded sun shadows — built (3×2048 texel-snapped cascades) but
-the look never convinced (smudgy at distance, seams while moving); the code sits
-dormant awaiting a crisper **voxel-aware** redesign, to be revived in Stage 2.
+**On the deferred path (shipped):** **cascaded sun shadows** (3×2048
+texel-snapped cascades, soft-PCF default or blocky, sky-tinted fill — the
+earlier "never convinced" was three real bugs, not the approach; see the
+research notes above), **volumetric god-rays + ground mist** (raymarched
+Rayleigh+Mie), and **GGX specular + sky-reflection IBL** driven by per-block
+roughness/metalness.

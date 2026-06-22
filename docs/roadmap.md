@@ -117,6 +117,12 @@ orthographic depth axis was inverted, so the occluder lost the `LESS` depth test
 and nothing ever cast; and the cascade was picked by view-space depth, so
 wide-angle screen-edge pixels fell outside the near cascade's box and dropped
 their shadow. All fixed, with a regression test on occluder clip-z ordering.
+*Shipped (deferred path):* **Cook–Torrance/GGX specular + a cheap sky-reflection
+IBL** — per-block roughness/metalness packed into the one free G-buffer channel
+(`GB1.w`, an 8-bit metal-bit + roughness code), so ice/obsidian catch a sun
+glint and a sky-blue sheen while matte blocks stay unchanged; metalness is
+plumbed end-to-end for future metallic blocks. Per-texel normal/MER material
+maps remain a later step (join with texture packs, §7.5).
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,
