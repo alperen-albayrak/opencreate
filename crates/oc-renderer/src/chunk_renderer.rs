@@ -857,6 +857,11 @@ impl ChunkRenderer {
                 let _ = allocator.free(allocation);
             }
             device.destroy_image(self.mer_image, None);
+            device.destroy_image_view(self.normal_view, None);
+            if let Some(allocation) = self.normal_allocation.take() {
+                let _ = allocator.free(allocation);
+            }
+            device.destroy_image(self.normal_image, None);
         }
     }
 }

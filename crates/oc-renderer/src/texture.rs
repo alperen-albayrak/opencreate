@@ -144,8 +144,9 @@ pub fn build_block_textures() -> Vec<u8> {
                     // Iron ore: stone matrix with tan-orange ore flecks.
                     22 if n % 5 == 0 => shade([178, 146, 104], n, 14),
                     22 => shade([125, 125, 125], n, 18),
-                    // Cobblestone: heavily mottled broken grey stone.
-                    23 => shade([120, 120, 125], n, 32),
+                    // Cobblestone: a cell pattern of domed stones + dark mortar
+                    // (structured so its normal map reads as real relief).
+                    23 => cobble(x, y),
                     // Granite: pink-grey igneous with lighter crystal flecks.
                     24 if n % 6 == 0 => shade([198, 168, 152], n, 12),
                     24 => shade([150, 110, 102], n, 20),
@@ -287,6 +288,44 @@ pub fn load_block_normals() -> Vec<u8> {
 fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
     let delta = (noise % (2 * amplitude as u32 + 1)) as i32 - amplitude;
     base.map(|c| (c as i32 + delta).clamp(0, 255) as u8)
+}
+
+/// A seamless cobblestone cell pattern: rounded stones that brighten (dome up)
+/// toward each stone's centre, separated by darker mortar gaps. The luminance
+/// reads as height — stones bulge, mortar recesses — so the normal map derives
+/// real cobble relief. Tiles across merged quads: the seed grid wraps modulo
+/// `GRID`, while seed positions stay unwrapped so wrapped neighbours sit at the
+/// correct offset.
+fn cobble(x: usize, y: usize) -> [u8; 3] {
+    const GRID: i32 = 4; // stones per axis across the 16px tile
+    let cell = TEXTURE_SIZE as f32 / GRID as f32;
+    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+    let (gx, gy) = ((px / cell).floor() as i32, (py / cell).floor() as i32);
+    let (mut f1, mut f2, mut tint) = (1e9_f32, 1e9_f32, 0u32);
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (cx, cy) = (gx + dx, gy + dy);
+            let h = hash_noise(cx.rem_euclid(GRID) as u32, cy.rem_euclid(GRID) as u32, 777);
+            let jx = (h & 0xff) as f32 / 255.0;
+            let jy = ((h >> 8) & 0xff) as f32 / 255.0;
+            let sx = (cx as f32 + 0.2 + 0.6 * jx) * cell;
+            let sy = (cy as f32 + 0.2 + 0.6 * jy) * cell;
+            let d = ((px - sx).powi(2) + (py - sy).powi(2)).sqrt();
+            if d < f1 {
+                (f2, f1, tint) = (f1, d, h);
+            } else if d < f2 {
+                f2 = d;
+            }
+        }
+    }
+    // Mortar where two cells meet (small F2-F1); otherwise a domed stone.
+    if f2 - f1 < 0.9 {
+        return [66, 66, 70];
+    }
+    let dome = 1.0 - (f1 / (cell * 0.8)).min(1.0);
+    let per_stone = (tint % 21) as f32 - 10.0;
+    let v = (118.0 + dome * 30.0 + per_stone).clamp(40.0, 210.0);
+    [v as u8, v as u8, (v + 3.0).min(255.0) as u8]
 }
 
 /// Representative color of a block for UI swatches (hotbar icons until
