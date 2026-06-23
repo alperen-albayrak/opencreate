@@ -99,6 +99,9 @@ struct VsOut {
     // point. Per-vertex (smooth) so the glow doesn't band; the lighting pass
     // blooms it. 0 = no glow.
     @location(7) emissive: f32,
+    // Camera-relative fragment position (camera at origin) — the view direction
+    // for parallax occlusion mapping is normalize(-view_rel).
+    @location(8) view_rel: vec3<f32>,
 }
 
 @vertex
@@ -166,6 +169,8 @@ fn vs_main(@location(0) packed: vec3<u32>) -> VsOut {
     }
     out.underwater = (packed.y >> 24u) & 5u;
     out.normal = face_normal[face];
+    // Camera-relative fragment position (pc.rel = chunk origin camera-relative).
+    out.view_rel = pc.rel.xyz + pos;
     // Absolute world Y = camera world Y (params.z) + camera-relative section
     // origin (pc.rel) + local pos. Drives the per-vertex blackbody glow. Hot
     // matter glows at the hotter of its effective ambient temperature (the
@@ -255,9 +260,58 @@ struct GBufferOut {
     @location(2) gb2: vec4<f32>,
 }
 
+// Parallax occlusion mapping: march the heightmap (stored in normal_textures.a)
+// along the tangent-space view direction so the surface shows true
+// view-dependent depth — valleys recede behind ridges, the texture "sinks in"
+// as you look across it. Steepest linear search; returns the offset UV that the
+// albedo / MER / normal samples should use. `textureSampleLevel` (explicit LOD)
+// keeps it valid in the data-dependent loop.
+fn parallax_uv(uv: vec2<f32>, layer: i32, view_ts: vec3<f32>) -> vec2<f32> {
+    let depth_scale = 0.06;     // max recess depth, in texture-tile units
+    let num_layers = 12.0;
+    // UV shift across the full depth, toward the eye in tangent XY (clamp z so
+    // grazing views don't explode the offset).
+    let uv_step = view_ts.xy / max(abs(view_ts.z), 0.2) * depth_scale / num_layers;
+    let layer_step = 1.0 / num_layers;
+    var cur_uv = uv;
+    var cur_layer = 0.0;
+    var cur_depth = 1.0 - textureSampleLevel(normal_textures, block_sampler, cur_uv, layer, 0.0).a;
+    for (var i = 0; i < 12; i = i + 1) {
+        if (cur_layer >= cur_depth) {
+            break;
+        }
+        cur_uv = cur_uv - uv_step;
+        cur_layer = cur_layer + layer_step;
+        cur_depth = 1.0 - textureSampleLevel(normal_textures, block_sampler, cur_uv, layer, 0.0).a;
+    }
+    return cur_uv;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> GBufferOut {
-    let texel = textureSample(block_textures, block_sampler, in.uv, i32(in.layer));
+    // Per-face tangent frame matching the cpos UV projection (±Y: U=x,V=z;
+    // ±Z: U=x,V=y; ±X: U=z,V=y) — drives both parallax and the normal map.
+    var tan_u: vec3<f32>;
+    var tan_v: vec3<f32>;
+    if (abs(in.normal.y) > 0.5) {
+        tan_u = vec3<f32>(1.0, 0.0, 0.0);
+        tan_v = vec3<f32>(0.0, 0.0, 1.0);
+    } else if (abs(in.normal.z) > 0.5) {
+        tan_u = vec3<f32>(1.0, 0.0, 0.0);
+        tan_v = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        tan_u = vec3<f32>(0.0, 0.0, 1.0);
+        tan_v = vec3<f32>(0.0, 1.0, 0.0);
+    }
+
+    // Parallax occlusion: offset the sampling UV by the view direction through
+    // the heightmap, for true view-dependent depth. All texture samples below
+    // use this offset `uv` (caustics stay on the world-space cpos).
+    let view = normalize(-in.view_rel);
+    let view_ts = vec3<f32>(dot(view, tan_u), dot(view, tan_v), dot(view, in.normal));
+    let uv = parallax_uv(in.uv, i32(in.layer), view_ts);
+
+    let texel = textureSample(block_textures, block_sampler, uv, i32(in.layer));
     var albedo = texel.rgb;
 
     // Caustics fold into albedo (multiplicative): albedo*caustic, then * light
@@ -274,31 +328,14 @@ fn fs_main(in: VsOut) -> GBufferOut {
     // Per-texel surface material from the MER array (R = metalness, G =
     // roughness), packed into GB1.w in the same 8-bit code pbr.wgsl decodes
     // (top bit = metal flag, low 7 = roughness × 127). Per-texel, so detail
-    // varies within a face — e.g. the metallic iron-ore flecks. Supersedes the
-    // per-layer `scene.material` lookup (now unused, kept in the UBO for now).
-    let mer = textureSample(mer_textures, block_sampler, in.uv, i32(in.layer));
+    // varies within a face — e.g. the metallic iron-ore flecks.
+    let mer = textureSample(mer_textures, block_sampler, uv, i32(in.layer));
     let metal_code = select(0.0, 128.0, mer.r >= 0.5);
     let material = (metal_code + round(mer.g * 127.0)) / 255.0;
 
-    // Per-face tangent frame matching the cpos UV projection (±Y: U=x,V=z;
-    // ±Z: U=x,V=y; ±X: U=z,V=y). Perturb the flat face normal by the
-    // tangent-space normal map (flat (0,0,1) → unchanged), then octa-encode.
-    var tan_u: vec3<f32>;
-    var tan_v: vec3<f32>;
-    if (abs(in.normal.y) > 0.5) {
-        tan_u = vec3<f32>(1.0, 0.0, 0.0);
-        tan_v = vec3<f32>(0.0, 0.0, 1.0);
-    } else if (abs(in.normal.z) > 0.5) {
-        tan_u = vec3<f32>(1.0, 0.0, 0.0);
-        tan_v = vec3<f32>(0.0, 1.0, 0.0);
-    } else {
-        tan_u = vec3<f32>(0.0, 0.0, 1.0);
-        tan_v = vec3<f32>(0.0, 1.0, 0.0);
-    }
-    let nt = textureSample(normal_textures, block_sampler, in.uv, i32(in.layer)).xyz * 2.0 - 1.0;
-    // Full per-texel perturbation on every surface: smooth blocks (ice, metal)
-    // get the lively specular sparkle, matte blocks get diffuse relief. Sampled
-    // NEAREST (crisp/blocky look); the per-pixel shimmer is left for TAA (P5).
+    // Perturb the flat face normal by the tangent-space normal map (full
+    // per-texel: smooth blocks sparkle, matte get diffuse relief), then encode.
+    let nt = textureSample(normal_textures, block_sampler, uv, i32(in.layer)).xyz * 2.0 - 1.0;
     let normal = normalize(nt.x * tan_u + nt.y * tan_v + nt.z * in.normal);
 
     var out: GBufferOut;

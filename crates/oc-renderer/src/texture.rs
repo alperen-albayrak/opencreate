@@ -241,11 +241,12 @@ pub fn load_block_mer() -> Vec<u8> {
 }
 
 /// Per-texel tangent-space normal map array (RGB = normal·0.5+0.5; flat =
-/// (128,128,255) = no relief). Derived from each layer's albedo luminance as a
-/// heightfield via wrapped central differences (seam-free across merged quads),
-/// so a texture's visible grain lights with matching relief under the moving
-/// sun. Combined with a per-face tangent frame in `chunk_gbuffer.wgsl` and
-/// octa-encoded into GB1.xy. Linear data — upload as UNORM, not SRGB.
+/// (128,128,255) = no relief) with the **heightfield in the alpha channel**.
+/// Derived from each layer's albedo luminance via wrapped central differences
+/// (seam-free across merged quads), so a texture's visible grain lights with
+/// matching relief under the moving sun (RGB), and parallax occlusion mapping
+/// can march the height (A) for true view-dependent depth. Combined with a
+/// per-face tangent frame in `chunk_gbuffer.wgsl`. Linear — upload as UNORM.
 pub fn build_block_normals() -> Vec<u8> {
     let color = build_block_textures();
     let size = TEXTURE_SIZE as usize;
@@ -272,7 +273,7 @@ pub fn build_block_normals() -> Vec<u8> {
                 out.push(((nx * inv * 0.5 + 0.5) * 255.0).round() as u8);
                 out.push(((ny * inv * 0.5 + 0.5) * 255.0).round() as u8);
                 out.push(((nz * inv * 0.5 + 0.5) * 255.0).round() as u8);
-                out.push(255);
+                out.push((height(x, y).clamp(0.0, 1.0) * 255.0).round() as u8);
             }
         }
     }
