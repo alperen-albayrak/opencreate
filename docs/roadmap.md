@@ -132,8 +132,12 @@ alpha), procedurally derived from each texture's grain (overridable by
 `_mer.png`/`_n.png`/`_h.png` packs) — the geometry pass perturbs the normal into
 `GB1.xy` and does **parallax occlusion mapping** for real surface relief and
 depth (metallic ore flecks, recessed cobble mortar), all in the existing
-G-buffer. Per-texel emissive/subsurface (needs a 4th target) + clustered dynamic
-lights remain later steps.
+G-buffer. *Shipped:* **dynamic point lights** — emissive blocks (torches, lava,
+lamps) cast smooth coloured light + GGX specular, derived client-side from the
+loaded sections and added over the baked block-light flood-fill (which supplies
+the wall-respecting taxicab *diamond* shape); the dynamic glow smooths it. Per-
+texel emissive/subsurface (needs a 4th target), per-light shadows, and froxel
+clustering remain later steps.
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,

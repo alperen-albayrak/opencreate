@@ -106,7 +106,9 @@ then build every lighting/material feature a single time on deferred.
   dissolves into the directional sky colour; **physical airmass sun-reddening** —
   the disc reddens & dims through Rayleigh extinction as it sets). The sky **dome**
   stays the artist gradient (a uniform clear-sky look the scattered single-scatter
-  fought); a full analytic dome (Preetham/Hosek) is a later option. Stars by
+  fought); a full analytic dome (Preetham/Hosek) is a later option. **Dynamic
+  point lights ✅ shipped** — emissive blocks cast smooth coloured light + GGX
+  specular (client-derived, added over the baked block-light diamond). Stars by
   magnitude + spectral colour (later).
 - **Stage 3 — materials (✅ shipped, incl. per-texel):** **Cook–Torrance/GGX +
   Fresnel–Schlick** sun specular + a cheap **sky-reflection IBL** ✅ (per-block
