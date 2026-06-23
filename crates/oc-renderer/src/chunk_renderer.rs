@@ -106,6 +106,9 @@ pub struct ChunkRenderer {
     mer_image: vk::Image,
     mer_allocation: Option<Allocation>,
     mer_view: vk::ImageView,
+    normal_image: vk::Image,
+    normal_allocation: Option<Allocation>,
+    normal_view: vk::ImageView,
     sampler: vk::Sampler,
     chunks: HashMap<SectionPos, ChunkMeshGpu>,
     /// Buffers replaced or removed while the GPU may still read them, tagged
@@ -134,6 +137,8 @@ impl ChunkRenderer {
                 upload_block_textures(ctx, allocator, command_pool)?;
             let (mer_image, mer_allocation, mer_view) =
                 upload_block_mer(ctx, allocator, command_pool)?;
+            let (normal_image, normal_allocation, normal_view) =
+                upload_block_normals(ctx, allocator, command_pool)?;
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
                     // NEAREST within a level keeps the crisp blocky look;
@@ -162,11 +167,17 @@ impl ChunkRenderer {
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-                // binding 2 = the MER (per-texel material) array, sampled with
-                // the same block_sampler. Only the geometry shader reads it; the
-                // forward chunk shader leaves it unused (allowed).
+                // binding 2 = the MER (per-texel material) array, binding 3 =
+                // the tangent-space normal map array, both sampled with the same
+                // block_sampler. Only the geometry shader reads them; the forward
+                // chunk shader leaves them unused (allowed).
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(2)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(3)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -178,7 +189,7 @@ impl ChunkRenderer {
             let pool_sizes = [
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(2),
+                    .descriptor_count(3),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1),
@@ -201,6 +212,9 @@ impl ChunkRenderer {
             let mer_image_info = vk::DescriptorImageInfo::default()
                 .image_view(mer_view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            let normal_image_info = vk::DescriptorImageInfo::default()
+                .image_view(normal_view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
             device.update_descriptor_sets(
                 &[
@@ -219,6 +233,11 @@ impl ChunkRenderer {
                         .dst_binding(2)
                         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                         .image_info(std::slice::from_ref(&mer_image_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(3)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(std::slice::from_ref(&normal_image_info)),
                 ],
                 &[],
             );
@@ -386,6 +405,9 @@ impl ChunkRenderer {
                 mer_image,
                 mer_allocation: Some(mer_allocation),
                 mer_view,
+                normal_image,
+                normal_allocation: Some(normal_allocation),
+                normal_view,
                 sampler,
                 chunks: HashMap::new(),
                 retired: Vec::new(),
@@ -1172,6 +1194,25 @@ unsafe fn upload_block_mer(
             &texture::load_block_mer(),
             vk::Format::R8G8B8A8_UNORM,
             "block MER",
+        )
+    }
+}
+
+/// The per-texel tangent-space normal map array: linear UNORM. Sampled in the
+/// geometry pass and combined with the per-face tangent frame.
+unsafe fn upload_block_normals(
+    ctx: &VulkanContext,
+    allocator: &mut Allocator,
+    command_pool: vk::CommandPool,
+) -> Result<(vk::Image, Allocation, vk::ImageView)> {
+    unsafe {
+        upload_block_array(
+            ctx,
+            allocator,
+            command_pool,
+            &texture::load_block_normals(),
+            vk::Format::R8G8B8A8_UNORM,
+            "block normals",
         )
     }
 }

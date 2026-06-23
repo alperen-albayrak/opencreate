@@ -239,6 +239,51 @@ pub fn load_block_mer() -> Vec<u8> {
     build_block_mer()
 }
 
+/// Per-texel tangent-space normal map array (RGB = normal·0.5+0.5; flat =
+/// (128,128,255) = no relief). Derived from each layer's albedo luminance as a
+/// heightfield via wrapped central differences (seam-free across merged quads),
+/// so a texture's visible grain lights with matching relief under the moving
+/// sun. Combined with a per-face tangent frame in `chunk_gbuffer.wgsl` and
+/// octa-encoded into GB1.xy. Linear data — upload as UNORM, not SRGB.
+pub fn build_block_normals() -> Vec<u8> {
+    let color = build_block_textures();
+    let size = TEXTURE_SIZE as usize;
+    let layer_bytes = size * size * 4;
+    let mut out = Vec::with_capacity(layer_bytes * LAYER_COUNT as usize);
+    // Bump depth: relief strength. Modest so blocks read as textured, not lumpy.
+    const STRENGTH: f32 = 1.5;
+    for layer in 0..LAYER_COUNT as usize {
+        let base = layer * layer_bytes;
+        let height = |x: i32, y: i32| -> f32 {
+            let xx = x.rem_euclid(size as i32) as usize;
+            let yy = y.rem_euclid(size as i32) as usize;
+            let p = base + (yy * size + xx) * 4;
+            (0.299 * color[p] as f32 + 0.587 * color[p + 1] as f32 + 0.114 * color[p + 2] as f32)
+                / 255.0
+        };
+        for y in 0..size as i32 {
+            for x in 0..size as i32 {
+                // Central difference → tangent-space gradient → normal.
+                let dx = height(x + 1, y) - height(x - 1, y);
+                let dy = height(x, y + 1) - height(x, y - 1);
+                let (nx, ny, nz) = (-dx * STRENGTH, -dy * STRENGTH, 1.0);
+                let inv = 1.0 / (nx * nx + ny * ny + nz * nz).sqrt();
+                out.push(((nx * inv * 0.5 + 0.5) * 255.0).round() as u8);
+                out.push(((ny * inv * 0.5 + 0.5) * 255.0).round() as u8);
+                out.push(((nz * inv * 0.5 + 0.5) * 255.0).round() as u8);
+                out.push(255);
+            }
+        }
+    }
+    out
+}
+
+/// The normal array with any per-layer `_n.png`/`_h.png` pack overrides applied.
+/// (The override overlay lands in a later sub-step; for now, procedural.)
+pub fn load_block_normals() -> Vec<u8> {
+    build_block_normals()
+}
+
 fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
     let delta = (noise % (2 * amplitude as u32 + 1)) as i32 - amplitude;
     base.map(|c| (c as i32 + delta).clamp(0, 255) as u8)

@@ -221,6 +221,9 @@ fn caustic(p_raw: vec2<f32>, t_raw: f32) -> f32 {
 // Per-texel material (MER) array, sampled with block_sampler: R = metalness,
 // G = roughness (linear UNORM). Packed into GB1.w below.
 @group(0) @binding(2) var mer_textures: texture_2d_array<f32>;
+// Per-texel tangent-space normal map array (linear UNORM); perturbs the flat
+// face normal for surface relief.
+@group(0) @binding(3) var normal_textures: texture_2d_array<f32>;
 
 // Must match the projection in camera.rs.
 const NEAR: f32 = 0.05;
@@ -277,9 +280,30 @@ fn fs_main(in: VsOut) -> GBufferOut {
     let metal_code = select(0.0, 128.0, mer.r >= 0.5);
     let material = (metal_code + round(mer.g * 127.0)) / 255.0;
 
+    // Per-face tangent frame matching the cpos UV projection (±Y: U=x,V=z;
+    // ±Z: U=x,V=y; ±X: U=z,V=y). Perturb the flat face normal by the
+    // tangent-space normal map (flat (0,0,1) → unchanged), then octa-encode.
+    var tan_u: vec3<f32>;
+    var tan_v: vec3<f32>;
+    if (abs(in.normal.y) > 0.5) {
+        tan_u = vec3<f32>(1.0, 0.0, 0.0);
+        tan_v = vec3<f32>(0.0, 0.0, 1.0);
+    } else if (abs(in.normal.z) > 0.5) {
+        tan_u = vec3<f32>(1.0, 0.0, 0.0);
+        tan_v = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        tan_u = vec3<f32>(0.0, 0.0, 1.0);
+        tan_v = vec3<f32>(0.0, 1.0, 0.0);
+    }
+    let nt = textureSample(normal_textures, block_sampler, in.uv, i32(in.layer)).xyz * 2.0 - 1.0;
+    // Scale the tangent tilt by roughness: smooth surfaces (ice, metal) keep
+    // their flat normal so per-texel detail doesn't alias into specular
+    // fireflies; matte surfaces (stone, cobble) get the full relief in diffuse.
+    let normal = normalize((nt.x * tan_u + nt.y * tan_v) * mer.g + nt.z * in.normal);
+
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
-    out.gb1 = vec4<f32>(oct_encode(in.normal), in.ao_sky.y, material);
+    out.gb1 = vec4<f32>(oct_encode(normal), in.ao_sky.y, material);
     // GB2.a carries the blackbody-glow temperature (was metalness-reserved).
     out.gb2 = vec4<f32>(in.block_light, in.emissive);
     return out;
