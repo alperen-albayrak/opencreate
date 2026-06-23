@@ -340,15 +340,26 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // texture is the emissive pattern. Hot matter glows + blooms; cold → 0.
     color += albedo * blackbody_glow(525.0 + g2.a * 975.0);
 
-    // Distance fog, coloured per-pixel by the destination's baked sky visibility
-    // (the same `sky_vis` that gates lighting): a sky-exposed surface fades into
-    // the real sky colour, while an enclosed one fades into the dark cave medium.
-    // So a deep tunnel melts to black, but the view out a window or up a shaft
-    // stays bright — "the deep is dark" with no camera/depth heuristic. cave_dark
-    // is the per-dimension ambient floor so it's never pitch black.
+    // Distance fog with aerial perspective: a sky-exposed surface dissolves into
+    // the sky colour *in its view direction* — warm toward the low sun, cool
+    // away, brightening to the zenith overhead — i.e. atmospheric scattering, not
+    // a flat horizon band. (Mirrors the sky dome's horizon→zenith blend so the
+    // terrain melts seamlessly into the actual sky behind it.) An enclosed
+    // surface still fades into the dark cave medium via baked `sky_vis`, so a
+    // tunnel melts to black while a window/shaft stays bright. cave_dark is the
+    // per-dimension ambient floor so it's never pitch black.
+    let look = normalize(world_rel);
+    let sun_h = scene.sky_sun.xyz;
+    var toward = 0.5;
+    if (length(sun_h.xz) > 1e-4 && length(look.xz) > 1e-4) {
+        let f = dot(normalize(look.xz), normalize(sun_h.xz)) * 0.5 + 0.5;
+        toward = f * f;
+    }
+    let horizon_col = mix(scene.sky_away.rgb, scene.sky_horizon.rgb, toward);
+    let sky_in_dir = mix(horizon_col, scene.sky_zenith.rgb, pow(max(look.y, 0.0), 0.65));
     let fog_amount = 1.0 - exp(-pow(view_dist * 2.0 / scene.fog.w, 2.0));
     let cave_dark = vec3<f32>(scene.params.y);
-    let fog_col = mix(cave_dark, scene.fog.rgb, sky_vis);
+    let fog_col = mix(cave_dark, sky_in_dir, sky_vis);
     color = mix(color, fog_col, fog_amount);
     return vec4<f32>(color, 1.0);
 }
