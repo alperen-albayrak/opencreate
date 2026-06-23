@@ -122,4 +122,65 @@
         heat_capacity: 2.0, conductivity: 2.2,
         melting_point: Some(0.0),
         phase_transition: Some((melt: Some("oc:water")))),
+
+    // --- Tranche 1: refined metals, a gem, ores, and stone variants ---
+    // (placeable in creative; no ore-vein worldgen or smelting yet.) Thermal +
+    // material fields are real values: metals are near-frictionless heat
+    // conductors and read as metal (metalness 1 → albedo-tinted specular, no
+    // diffuse), the gem is a smooth dielectric, the ores/stones are matte.
+
+    // Iron block: refined iron. A strong heat conductor (~80 W/m·K); brushed
+    // metal sheen (moderate roughness).
+    (id: "oc:iron_block", name: "Block of Iron",
+        solid: true, opaque: true, hardness: 4.0,
+        color: (198, 198, 205), textures: All(17),
+        roughness: 0.4, metalness: 1.0,
+        heat_capacity: 0.45, conductivity: 80.0),
+
+    // Copper block: reddish metal, an excellent conductor (~400 W/m·K).
+    (id: "oc:copper_block", name: "Block of Copper",
+        solid: true, opaque: true, hardness: 3.0,
+        color: (184, 115, 51), textures: All(18),
+        roughness: 0.35, metalness: 1.0,
+        heat_capacity: 0.385, conductivity: 400.0),
+
+    // Gold block: soft, dense, lustrous yellow metal (~315 W/m·K).
+    (id: "oc:gold_block", name: "Block of Gold",
+        solid: true, opaque: true, hardness: 2.5,
+        color: (212, 175, 55), textures: All(19),
+        roughness: 0.25, metalness: 1.0,
+        heat_capacity: 0.129, conductivity: 315.0),
+
+    // Diamond block: the hardest natural matter and an extreme heat conductor
+    // (~1000 W/m·K). A smooth dielectric gem (very low roughness → sharp glint).
+    (id: "oc:diamond_block", name: "Block of Diamond",
+        solid: true, opaque: true, hardness: 10.0,
+        color: (130, 210, 225), textures: All(20),
+        roughness: 0.05,
+        heat_capacity: 0.51, conductivity: 1000.0),
+
+    // Coal ore: stone matrix laced with carbon. Stone-like thermally; matte.
+    (id: "oc:coal_ore", name: "Coal Ore",
+        solid: true, opaque: true, hardness: 3.0,
+        color: (90, 88, 90), textures: All(21),
+        heat_capacity: 0.84, conductivity: 2.5),
+
+    // Iron ore: stone matrix with iron-bearing veins. Stone-like; matte.
+    (id: "oc:iron_ore", name: "Iron Ore",
+        solid: true, opaque: true, hardness: 3.0,
+        color: (140, 120, 100), textures: All(22),
+        heat_capacity: 0.84, conductivity: 2.5),
+
+    // Cobblestone: broken, loosely-packed stone — slightly worse conductor.
+    (id: "oc:cobblestone", name: "Cobblestone",
+        solid: true, opaque: true, hardness: 2.0,
+        color: (120, 120, 124), textures: All(23),
+        heat_capacity: 0.84, conductivity: 2.0),
+
+    // Granite: pink-grey igneous rock; a faint mineral sheen (quartz/feldspar).
+    (id: "oc:granite", name: "Granite",
+        solid: true, opaque: true, hardness: 4.0,
+        color: (150, 110, 102), textures: All(24),
+        roughness: 0.85,
+        heat_capacity: 0.79, conductivity: 3.0),
 ]

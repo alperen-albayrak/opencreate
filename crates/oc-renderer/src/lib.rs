@@ -495,13 +495,13 @@ impl Renderer {
             }
             // Per-texture-layer intrinsic emissive temperature (lava → 1200 °C),
             // up to 20 layers packed into 5 vec4 for the geometry pass.
-            let mut emissive_temp = [Vec4::ZERO; 5];
+            let mut emissive_temp = [Vec4::ZERO; 8];
             for (i, &t) in crate::texture::EMISSIVE_TEMPS.iter().enumerate() {
                 emissive_temp[i / 4][i % 4] = t;
             }
             // Per-texture-layer surface material (roughness + metalness) packed
             // into the one free G-buffer channel GB1.w for the specular pass.
-            let mut material = [Vec4::ZERO; 5];
+            let mut material = [Vec4::ZERO; 8];
             for (i, &(rough, metal)) in crate::texture::MATERIALS.iter().enumerate() {
                 material[i / 4][i % 4] = crate::texture::pack_material(rough, metal);
             }

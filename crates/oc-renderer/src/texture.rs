@@ -7,7 +7,7 @@
 use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 17;
+pub const LAYER_COUNT: u32 = 25;
 /// Mip levels for the block array: 16→8→4→2→1 = `floor(log2(16)) + 1`.
 pub const MIP_LEVELS: u32 = 5;
 
@@ -18,6 +18,9 @@ pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
     "grass_top", "dirt", "stone", "grass_side", "sand", "water", "log_side",
     "log_top", "leaves", "lamp", "snow", "planks", "bedrock", "lava",
     "obsidian", "basalt", "ice",
+    // Tranche 1: metals, gem, ores, cobblestone, granite (layers 17..24).
+    "iron_block", "copper_block", "gold_block", "diamond_block",
+    "coal_ore", "iron_ore", "cobblestone", "granite",
 ];
 
 /// Intrinsic emissive (blackbody-glow) temperature in °C per block-texture
@@ -126,6 +129,26 @@ pub fn build_block_textures() -> Vec<u8> {
                     // Ice: pale blue, smooth, with faint brighter cracks.
                     16 if n % 6 == 0 => shade([205, 230, 255], n, 6),
                     16 => shade([165, 205, 240], n, 10),
+                    // Iron block: light steel grey, faint metallic mottle.
+                    17 => shade([198, 198, 205], n, 10),
+                    // Copper block: warm reddish-orange metal.
+                    18 => shade([190, 116, 70], n, 16),
+                    // Gold block: bright warm yellow metal.
+                    19 => shade([224, 184, 72], n, 12),
+                    // Diamond block: pale cyan crystal with brighter facets.
+                    20 if n % 5 == 0 => shade([205, 245, 250], n, 8),
+                    20 => shade([130, 210, 225], n, 14),
+                    // Coal ore: stone matrix with scattered near-black flecks.
+                    21 if n % 4 == 0 => shade([34, 32, 34], n, 8),
+                    21 => shade([125, 125, 125], n, 18),
+                    // Iron ore: stone matrix with tan-orange ore flecks.
+                    22 if n % 5 == 0 => shade([178, 146, 104], n, 14),
+                    22 => shade([125, 125, 125], n, 18),
+                    // Cobblestone: heavily mottled broken grey stone.
+                    23 => shade([120, 120, 125], n, 32),
+                    // Granite: pink-grey igneous with lighter crystal flecks.
+                    24 if n % 6 == 0 => shade([198, 168, 152], n, 12),
+                    24 => shade([150, 110, 102], n, 20),
                     // Unknown layer → magenta (matches the registry's missing tint).
                     _ => shade([255, 0, 255], n, 0),
                 };

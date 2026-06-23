@@ -40,13 +40,13 @@ struct Scene {
     // Temperature-vs-height curve, ascending Y, two points per vec4 as
     // (y0, temp0 °C, y1, temp1) — up to 8 points; params.w is the count.
     thermal_profile: array<vec4<f32>, 4>,
-    // Intrinsic emissive temperature (°C) per block-texture layer, up to 20
-    // packed into 5 vec4 (layer L → emissive_temp[L/4][L%4]). Lava ≈ 1200; 0 = none.
-    emissive_temp: array<vec4<f32>, 5>,
+    // Intrinsic emissive temperature (°C) per block-texture layer, up to 32
+    // packed into 8 vec4 (layer L → emissive_temp[L/4][L%4]). Lava ≈ 1200; 0 = none.
+    emissive_temp: array<vec4<f32>, 8>,
     // Surface material per block-texture layer (layer L → material[L/4][L%4]),
     // each scalar already packed by Rust `pack_material(roughness, metalness)`
     // and written verbatim into GB1.w. See pbr.wgsl for the decode.
-    material: array<vec4<f32>, 5>,
+    material: array<vec4<f32>, 8>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 

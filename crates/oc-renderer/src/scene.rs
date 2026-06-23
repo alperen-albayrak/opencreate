@@ -43,16 +43,17 @@ pub struct SceneData {
     /// lighting pass interpolates it (clamped at the ends) to glow hot matter
     /// past the Draper point (hellish rock, etc.).
     pub thermal_profile: [Vec4; 4],
-    /// Intrinsic emissive temperature (°C) per block-texture layer (up to 20
-    /// packed into 5 vec4), from `texture::EMISSIVE_TEMPS`. The geometry pass
+    /// Intrinsic emissive temperature (°C) per block-texture layer (up to 32
+    /// packed into 8 vec4), from `texture::EMISSIVE_TEMPS`. The geometry pass
     /// glows a hot block (lava) at its own temperature, not just the ambient.
-    pub emissive_temp: [Vec4; 5],
-    /// Surface material per block-texture layer (up to 20 packed into 5 vec4):
+    /// Sized `[Vec4; ceil(LAYER_COUNT/4)]` rounded up — must hold every layer.
+    pub emissive_temp: [Vec4; 8],
+    /// Surface material per block-texture layer (up to 32 packed into 8 vec4):
     /// each scalar is `texture::pack_material(roughness, metalness)`, written
     /// verbatim into `GB1.w` by the geometry pass and decoded in `pbr.wgsl` for
     /// the specular term. Appended after `emissive_temp`, so passes that read
     /// only a UBO prefix (everything but `chunk_gbuffer`) are unaffected.
-    pub material: [Vec4; 5],
+    pub material: [Vec4; 8],
 }
 
 /// Owns the per-frame scene uniform buffers and their descriptor sets.
