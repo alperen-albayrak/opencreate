@@ -103,6 +103,9 @@ pub struct ChunkRenderer {
     texture_image: vk::Image,
     texture_allocation: Option<Allocation>,
     texture_view: vk::ImageView,
+    mer_image: vk::Image,
+    mer_allocation: Option<Allocation>,
+    mer_view: vk::ImageView,
     sampler: vk::Sampler,
     chunks: HashMap<SectionPos, ChunkMeshGpu>,
     /// Buffers replaced or removed while the GPU may still read them, tagged
@@ -125,9 +128,12 @@ impl ChunkRenderer {
         unsafe {
             let device = &ctx.device;
 
-            // Block texture array + sampler.
+            // Block texture array + sampler, plus the per-texel material (MER)
+            // array sampled alongside it in the geometry pass.
             let (texture_image, texture_allocation, texture_view) =
                 upload_block_textures(ctx, allocator, command_pool)?;
+            let (mer_image, mer_allocation, mer_view) =
+                upload_block_mer(ctx, allocator, command_pool)?;
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
                     // NEAREST within a level keeps the crisp blocky look;
@@ -156,6 +162,14 @@ impl ChunkRenderer {
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                // binding 2 = the MER (per-texel material) array, sampled with
+                // the same block_sampler. Only the geometry shader reads it; the
+                // forward chunk shader leaves it unused (allowed).
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             ];
             let descriptor_set_layout = device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -164,7 +178,7 @@ impl ChunkRenderer {
             let pool_sizes = [
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(1),
+                    .descriptor_count(2),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1),
@@ -184,6 +198,9 @@ impl ChunkRenderer {
             let image_info = vk::DescriptorImageInfo::default()
                 .image_view(texture_view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            let mer_image_info = vk::DescriptorImageInfo::default()
+                .image_view(mer_view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
             device.update_descriptor_sets(
                 &[
@@ -197,6 +214,11 @@ impl ChunkRenderer {
                         .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .image_info(std::slice::from_ref(&sampler_info)),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(2)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(std::slice::from_ref(&mer_image_info)),
                 ],
                 &[],
             );
@@ -361,6 +383,9 @@ impl ChunkRenderer {
                 texture_image,
                 texture_allocation: Some(texture_allocation),
                 texture_view,
+                mer_image,
+                mer_allocation: Some(mer_allocation),
+                mer_view,
                 sampler,
                 chunks: HashMap::new(),
                 retired: Vec::new(),
@@ -805,6 +830,11 @@ impl ChunkRenderer {
                 let _ = allocator.free(allocation);
             }
             device.destroy_image(self.texture_image, None);
+            device.destroy_image_view(self.mer_view, None);
+            if let Some(allocation) = self.mer_allocation.take() {
+                let _ = allocator.free(allocation);
+            }
+            device.destroy_image(self.mer_image, None);
         }
     }
 }
@@ -881,14 +911,19 @@ pub(crate) unsafe fn create_filled_buffer(
     }
 }
 
-unsafe fn upload_block_textures(
+/// Uploads a `TEXTURE_SIZE`² × `LAYER_COUNT` block-texture array (with a
+/// generated mip chain) in `format`, returning image/allocation/view. Shared by
+/// the SRGB color array and the linear-UNORM MER (per-texel material) array.
+unsafe fn upload_block_array(
     ctx: &VulkanContext,
     allocator: &mut Allocator,
     command_pool: vk::CommandPool,
+    pixels: &[u8],
+    format: vk::Format,
+    name: &str,
 ) -> Result<(vk::Image, Allocation, vk::ImageView)> {
     unsafe {
         let device = &ctx.device;
-        let pixels = texture::load_block_textures();
         let extent = vk::Extent3D {
             width: texture::TEXTURE_SIZE,
             height: texture::TEXTURE_SIZE,
@@ -898,7 +933,7 @@ unsafe fn upload_block_textures(
         let image = device.create_image(
             &vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(format)
                 .extent(extent)
                 .mip_levels(texture::MIP_LEVELS)
                 .array_layers(texture::LAYER_COUNT)
@@ -915,7 +950,7 @@ unsafe fn upload_block_textures(
         )?;
         let requirements = device.get_image_memory_requirements(image);
         let allocation = allocator.allocate(&AllocationCreateDesc {
-            name: "block textures",
+            name,
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -927,7 +962,7 @@ unsafe fn upload_block_textures(
             ctx,
             allocator,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            &pixels,
+            pixels,
             "texture staging",
         )?;
 
@@ -1096,12 +1131,48 @@ unsafe fn upload_block_textures(
             &vk::ImageViewCreateInfo::default()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(format)
                 .subresource_range(full_range),
             None,
         )?;
 
         Ok((image, allocation, view))
+    }
+}
+
+unsafe fn upload_block_textures(
+    ctx: &VulkanContext,
+    allocator: &mut Allocator,
+    command_pool: vk::CommandPool,
+) -> Result<(vk::Image, Allocation, vk::ImageView)> {
+    unsafe {
+        upload_block_array(
+            ctx,
+            allocator,
+            command_pool,
+            &texture::load_block_textures(),
+            vk::Format::R8G8B8A8_SRGB,
+            "block textures",
+        )
+    }
+}
+
+/// The per-texel material (MER) array: linear UNORM (NOT SRGB — it's data, not
+/// colour). R = metalness, G = roughness; sampled in the geometry pass.
+unsafe fn upload_block_mer(
+    ctx: &VulkanContext,
+    allocator: &mut Allocator,
+    command_pool: vk::CommandPool,
+) -> Result<(vk::Image, Allocation, vk::ImageView)> {
+    unsafe {
+        upload_block_array(
+            ctx,
+            allocator,
+            command_pool,
+            &texture::load_block_mer(),
+            vk::Format::R8G8B8A8_UNORM,
+            "block MER",
+        )
     }
 }
 

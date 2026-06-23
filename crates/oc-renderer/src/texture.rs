@@ -200,6 +200,45 @@ fn load_override(path: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Per-texel surface material (the "MER" array): R = metalness, G = roughness,
+/// B/A reserved (per-texel emissive/subsurface land in a later step). Built from
+/// the per-block [`MATERIALS`] table, but *per-texel* so a block's detail can
+/// vary within one face — e.g. the iron-bearing flecks of iron ore read as raw
+/// metal while the stone matrix stays matte. Sampled in `chunk_gbuffer.wgsl` and
+/// packed into `GB1.w` (the same 8-bit code `pbr.wgsl` decodes), superseding the
+/// per-layer Scene-UBO material lookup. Linear data — upload as UNORM, not SRGB.
+pub fn build_block_mer() -> Vec<u8> {
+    let size = TEXTURE_SIZE as usize;
+    let mut pixels = Vec::with_capacity(size * size * 4 * LAYER_COUNT as usize);
+    for layer in 0..LAYER_COUNT {
+        let (base_rough, base_metal) = MATERIALS[layer as usize];
+        for y in 0..size {
+            for x in 0..size {
+                let n = hash_noise(x as u32, y as u32, layer);
+                let (rough, metal) = match layer {
+                    // Iron ore (layer 22): the iron flecks — the same noise mask
+                    // build_block_textures uses for the tan specks — read as raw
+                    // metal; the surrounding stone matrix stays matte dielectric.
+                    22 if n % 5 == 0 => (0.45_f32, 1.0_f32),
+                    _ => (base_rough, base_metal),
+                };
+                pixels.push((metal.clamp(0.0, 1.0) * 255.0).round() as u8);
+                pixels.push((rough.clamp(0.0, 1.0) * 255.0).round() as u8);
+                pixels.push(0);
+                pixels.push(0);
+            }
+        }
+    }
+    pixels
+}
+
+/// The MER array with any per-layer `_mer.png` pack overrides applied. (The
+/// override overlay lands in a later sub-step; for now this is the procedural
+/// build.)
+pub fn load_block_mer() -> Vec<u8> {
+    build_block_mer()
+}
+
 fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
     let delta = (noise % (2 * amplitude as u32 + 1)) as i32 - amplitude;
     base.map(|c| (c as i32 + delta).clamp(0, 255) as u8)
@@ -253,6 +292,25 @@ mod tests {
             lava[0] > 150 && lava[0] > lava[1] && lava[1] > lava[2],
             "lava not molten-orange: {lava:?}"
         );
+    }
+
+    #[test]
+    fn mer_array_encodes_metal_and_roughness() {
+        let mer = build_block_mer();
+        let size = (TEXTURE_SIZE * TEXTURE_SIZE * 4) as usize;
+        assert_eq!(mer.len(), size * LAYER_COUNT as usize);
+        // Iron block (layer 17) is uniformly metal: R (metalness) = 255 everywhere.
+        let iron_block = &mer[17 * size..18 * size];
+        assert!(iron_block.chunks(4).all(|px| px[0] == 255), "iron block not all metal");
+        // Iron ore (layer 22) is *per-texel*: metallic flecks + matte matrix.
+        let iron_ore = &mer[22 * size..23 * size];
+        let metal = iron_ore.chunks(4).filter(|px| px[0] >= 128).count();
+        let matte = iron_ore.chunks(4).filter(|px| px[0] < 128).count();
+        assert!(metal > 0 && matte > 0, "iron ore not per-texel: {metal} metal / {matte} matte");
+        // Ice (layer 16) is a smooth dielectric: no metal, low roughness (G).
+        let ice = &mer[16 * size..17 * size];
+        assert!(ice.chunks(4).all(|px| px[0] == 0), "ice should not be metal");
+        assert!((ice[1] as f32 / 255.0) < 0.3, "ice should be smooth");
     }
 
     #[test]

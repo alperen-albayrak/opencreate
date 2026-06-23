@@ -218,6 +218,9 @@ fn caustic(p_raw: vec2<f32>, t_raw: f32) -> f32 {
 
 @group(0) @binding(0) var block_textures: texture_2d_array<f32>;
 @group(0) @binding(1) var block_sampler: sampler;
+// Per-texel material (MER) array, sampled with block_sampler: R = metalness,
+// G = roughness (linear UNORM). Packed into GB1.w below.
+@group(0) @binding(2) var mer_textures: texture_2d_array<f32>;
 
 // Must match the projection in camera.rs.
 const NEAR: f32 = 0.05;
@@ -265,9 +268,14 @@ fn fs_main(in: VsOut) -> GBufferOut {
         albedo *= vec3(1.0) + vec3(0.30, 0.44, 0.38) * dapple;
     }
 
-    // Per-layer surface material (roughness + metalness), packed by Rust into a
-    // single 8-bit code and carried in GB1.w for the deferred specular term.
-    let material = scene.material[in.layer / 4u][in.layer % 4u];
+    // Per-texel surface material from the MER array (R = metalness, G =
+    // roughness), packed into GB1.w in the same 8-bit code pbr.wgsl decodes
+    // (top bit = metal flag, low 7 = roughness × 127). Per-texel, so detail
+    // varies within a face — e.g. the metallic iron-ore flecks. Supersedes the
+    // per-layer `scene.material` lookup (now unused, kept in the UBO for now).
+    let mer = textureSample(mer_textures, block_sampler, in.uv, i32(in.layer));
+    let metal_code = select(0.0, 128.0, mer.r >= 0.5);
+    let material = (metal_code + round(mer.g * 127.0)) / 255.0;
 
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
