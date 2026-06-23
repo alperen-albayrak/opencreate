@@ -14,6 +14,7 @@ mod exposure;
 mod far_renderer;
 mod hdr;
 mod lighting;
+mod pointlights;
 mod volumetric;
 mod mesh;
 mod font;
@@ -44,6 +45,7 @@ use hdr::{HdrTarget, TonemapPass};
 use lighting::LightingPass;
 use volumetric::{VolPush, VolumetricPass};
 use outline::OutlineRenderer;
+use pointlights::{PointLight, PointLightData, PointLightUbo};
 use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
 use sky_pass::SkyPass;
@@ -145,6 +147,8 @@ pub struct Renderer {
     scale_dirty: bool,
     /// Per-frame scene/environment UBO, bound by the world passes.
     scene: SceneUbo,
+    /// Per-frame dynamic point-light set (set 3 of the lighting pass).
+    pointlights: PointLightUbo,
     chunks: ChunkRenderer,
     entity: EntityRenderer,
     outline: OutlineRenderer,
@@ -220,12 +224,15 @@ impl Renderer {
             tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
             let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let scene = SceneUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
-            // Deferred lighting resolve reads the G-buffer + the Scene UBO.
+            let pointlights = PointLightUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
+            // Deferred lighting resolve reads the G-buffer + Scene UBO + shadow
+            // cascades + the dynamic point-light set.
             let lighting = LightingPass::new(
                 &ctx,
                 hdr.lighting_pass,
                 scene.layout(),
                 shadow.descriptor_layout,
+                pointlights.layout(),
             )?;
             lighting.bind_input(
                 &ctx.device,
@@ -291,6 +298,7 @@ impl Renderer {
                 resolution_scale: 1.0,
                 scale_dirty: false,
                 scene,
+                pointlights,
                 chunks,
                 entity,
                 outline,
@@ -530,6 +538,16 @@ impl Renderer {
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);
 
+            // P3.1 test light: a warm point light fixed a few blocks ahead of and
+            // below the camera (camera-relative) to prove the dynamic-light path.
+            // Replaced by emissive-block-derived lights in the next sub-step.
+            let test_lights = [PointLight {
+                pos_radius: Vec4::new(0.0, -2.0, -6.0, 14.0),
+                color_intensity: Vec4::new(1.0, 0.55, 0.25, 4.0),
+            }];
+            self.pointlights.update(slot, &PointLightData::new(&test_lights));
+            let pointlight_set = self.pointlights.set(slot);
+
             // Pass 1a: deferred geometry — opaque chunks write their material
             // attributes into the G-buffer (GB0/GB1/GB2) + depth, all cleared.
             let geometry_clears = [
@@ -574,6 +592,7 @@ impl Renderer {
                 cmd,
                 scene_set,
                 self.shadow.descriptor_sets[slot],
+                pointlight_set,
                 camera.view_proj.inverse(),
             );
             // Volumetric god-rays / ground mist: additive in-scattering on the
@@ -903,6 +922,7 @@ impl Drop for Renderer {
             let mut allocator = self.allocator.take().expect("allocator alive");
 
             self.scene.destroy(device, &mut allocator);
+            self.pointlights.destroy(device, &mut allocator);
             self.chunks.destroy(device, &mut allocator);
             self.entity.destroy(device, &mut allocator);
             self.outline.destroy(device, &mut allocator);

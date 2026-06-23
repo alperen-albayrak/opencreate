@@ -25,6 +25,7 @@ impl LightingPass {
         lighting_pass: vk::RenderPass,
         scene_layout: vk::DescriptorSetLayout,
         shadow_layout: vk::DescriptorSetLayout,
+        pointlight_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         unsafe {
             let device = &ctx.device;
@@ -59,9 +60,10 @@ impl LightingPass {
             )?[0];
 
             // Set 0 = G-buffer, set 1 = the shared Scene UBO, set 2 = shadow
-            // cascades. The push constant carries the inverse view-projection
-            // (depth -> camera-relative world for the cascade lookup).
-            let set_layouts = [descriptor_layout, scene_layout, shadow_layout];
+            // cascades, set 3 = dynamic point lights. The push constant carries
+            // the inverse view-projection (depth -> camera-relative world).
+            let set_layouts =
+                [descriptor_layout, scene_layout, shadow_layout, pointlight_layout];
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<glam::Mat4>() as u32);
@@ -123,6 +125,7 @@ impl LightingPass {
         cmd: vk::CommandBuffer,
         scene_set: vk::DescriptorSet,
         shadow_set: vk::DescriptorSet,
+        pointlight_set: vk::DescriptorSet,
         inv_view_proj: glam::Mat4,
     ) {
         unsafe {
@@ -132,7 +135,7 @@ impl LightingPass {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set, scene_set, shadow_set],
+                &[self.descriptor_set, scene_set, shadow_set, pointlight_set],
                 &[],
             );
             device.cmd_push_constants(

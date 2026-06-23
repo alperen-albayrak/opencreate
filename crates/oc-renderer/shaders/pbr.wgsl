@@ -45,6 +45,22 @@ struct ShadowData {
 @group(2) @binding(1) var shadow_map: texture_depth_2d_array;
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 
+// Dynamic point lights (set 3): emissive blocks casting real coloured light +
+// specular. Positions are camera-relative — the same space `world_rel` is
+// rebuilt in. Mirrors `pointlights::PointLightData`.
+struct PointLight {
+    // xyz: camera-relative position; w: radius (blocks).
+    pos_radius: vec4<f32>,
+    // rgb: colour; w: peak intensity.
+    color_intensity: vec4<f32>,
+}
+struct PointLights {
+    // x: active light count (0..=64).
+    header: vec4<f32>,
+    lights: array<PointLight, 64>,
+}
+@group(3) @binding(0) var<uniform> point_lights: PointLights;
+
 // Rebuilds the camera-relative world position from the G-buffer depth for the
 // cascade lookup (the inverse of the view-projection the chunks rendered with).
 struct LightPush {
@@ -331,6 +347,27 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let fresnel = f0_ibl + (vec3<f32>(1.0) - f0_ibl) * pow(1.0 - n_dot_v, 5.0);
     let smoothness = 1.0 - roughness;
     color += sky_refl * fresnel * (smoothness * smoothness * sky_vis);
+
+    // Dynamic point lights: emissive blocks (torches, lava, lamps) casting real
+    // coloured light + specular glints, distance-attenuated to a hard radius
+    // cutoff (bounded cost). Camera-relative positions match `world_rel`. The
+    // double-count-safe combine vs the baked block light lands with the
+    // data-driven light derivation step; additive here.
+    var pl_diffuse = vec3<f32>(0.0);
+    var pl_specular = vec3<f32>(0.0);
+    let pl_count = min(u32(point_lights.header.x), 64u);
+    for (var i = 0u; i < pl_count; i = i + 1u) {
+        let pl = point_lights.lights[i];
+        let to_light = pl.pos_radius.xyz - world_rel;
+        let dist = length(to_light);
+        let l = to_light / max(dist, 1e-3);
+        let ndl = max(dot(normal, l), 0.0);
+        let atten = clamp(1.0 - dist / max(pl.pos_radius.w, 1e-3), 0.0, 1.0);
+        let radiance = pl.color_intensity.rgb * (pl.color_intensity.w * atten * atten);
+        pl_diffuse += radiance * ndl;
+        pl_specular += ggx_specular(normal, view_dir, l, albedo, roughness, metal) * radiance;
+    }
+    color += albedo * pl_diffuse * (1.0 - metal_f) + pl_specular;
 
     // Incandescence: the surface's own blackbody glow past the Draper point,
     // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —
