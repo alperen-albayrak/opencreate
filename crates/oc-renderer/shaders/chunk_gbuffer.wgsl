@@ -296,10 +296,10 @@ fn fs_main(in: VsOut) -> GBufferOut {
         tan_v = vec3<f32>(0.0, 1.0, 0.0);
     }
     let nt = textureSample(normal_textures, block_sampler, in.uv, i32(in.layer)).xyz * 2.0 - 1.0;
-    // Scale the tangent tilt by roughness: smooth surfaces (ice, metal) keep
-    // their flat normal so per-texel detail doesn't alias into specular
-    // fireflies; matte surfaces (stone, cobble) get the full relief in diffuse.
-    let normal = normalize((nt.x * tan_u + nt.y * tan_v) * mer.g + nt.z * in.normal);
+    // Full per-texel perturbation on every surface: smooth blocks (ice, metal)
+    // get the lively specular sparkle, matte blocks get diffuse relief. Sampled
+    // NEAREST (crisp/blocky look); the per-pixel shimmer is left for TAA (P5).
+    let normal = normalize(nt.x * tan_u + nt.y * tan_v + nt.z * in.normal);
 
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
