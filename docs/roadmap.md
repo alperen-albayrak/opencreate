@@ -118,11 +118,16 @@ and nothing ever cast; and the cascade was picked by view-space depth, so
 wide-angle screen-edge pixels fell outside the near cascade's box and dropped
 their shadow. All fixed, with a regression test on occluder clip-z ordering.
 *Shipped (deferred path):* **Cook–Torrance/GGX specular + a cheap sky-reflection
-IBL** — per-block roughness/metalness packed into the one free G-buffer channel
-(`GB1.w`, an 8-bit metal-bit + roughness code), so ice/obsidian catch a sun
-glint and a sky-blue sheen while matte blocks stay unchanged; metalness is
-plumbed end-to-end for future metallic blocks. Per-texel normal/MER material
-maps remain a later step (join with texture packs, §7.5).
+IBL** — roughness/metalness packed into the one free G-buffer channel (`GB1.w`,
+an 8-bit metal-bit + roughness code), so ice/obsidian catch a sun glint and a
+sky-blue sheen while matte blocks stay unchanged. Now **per-texel**: a linear
+**MER** map (metalness/roughness) and a **normal map** (RGB + heightfield in
+alpha), procedurally derived from each texture's grain (overridable by
+`_mer.png`/`_n.png`/`_h.png` packs) — the geometry pass perturbs the normal into
+`GB1.xy` and does **parallax occlusion mapping** for real surface relief and
+depth (metallic ore flecks, recessed cobble mortar), all in the existing
+G-buffer. Per-texel emissive/subsurface (needs a 4th target) + clustered dynamic
+lights remain later steps.
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,

@@ -104,13 +104,20 @@ then build every lighting/material feature a single time on deferred.
   volumetrics ✅ shipped** (per-pixel `sky_vis` cave fog + raymarched Rayleigh+Mie
   god-rays / ground mist, per-dimension); stars by magnitude + spectral color
   (later).
-- **Stage 3 — materials (specular ✅ shipped):** **Cook–Torrance/GGX + Fresnel–
-  Schlick** sun specular + a cheap **sky-reflection IBL** ✅ — per-block
-  roughness/metalness packed into the free `GB1.w` (8-bit code: a metal bit +
-  7-bit roughness), sourced from the registry, so smooth blocks (ice, obsidian)
-  catch a sun glint and a sky sheen while matte blocks are unchanged; metalness
-  is plumbed for future metallic blocks. Still ahead: per-texel **normal +
-  MER(S)** maps (deferred), leaf/grass **SSS**, **many clustered dynamic lights**.
+- **Stage 3 — materials (✅ shipped, incl. per-texel):** **Cook–Torrance/GGX +
+  Fresnel–Schlick** sun specular + a cheap **sky-reflection IBL** ✅ (per-block
+  roughness/metalness packed into `GB1.w` as an 8-bit metal-bit + 7-bit-roughness
+  code), **now per-texel** ✅ — a linear-UNORM **MER** array (R=metalness,
+  G=roughness) and a **normal map** array (RGB normal + heightfield in alpha),
+  both procedurally derived from each texture's grain (no authored art) and
+  overridable by `_mer.png`/`_n.png`/`_h.png` packs. The geometry pass perturbs
+  the face normal (per-face tangent frame, octa-encoded into the existing
+  `GB1.xy`) and does **parallax occlusion mapping** (marches the heightmap along
+  the tangent-space view dir for true view-dependent depth) — so e.g. iron-ore's
+  iron flecks read as metal while the stone matrix stays matte, and cobblestone
+  shows real recessed mortar. All with **zero new G-buffer targets**. Still
+  ahead: per-texel **emissive/subsurface** (wants a 4th target — evaluated once,
+  later), leaf/grass **SSS**, **many clustered dynamic lights**.
 - **Stage 4 — beyond-parity + perf:** IBL reflections, per-biome color grading,
   TAAU, foliage wind; then the **M1 performance phase** (MDI/pooled draws, LOD,
   GPU culling, tier downgrades) — *after* quality lands, never constraining it.
@@ -175,5 +182,7 @@ occlusion**, and Step 1's additive colored lighting + ambient floor.
 texel-snapped cascades, soft-PCF default or blocky, sky-tinted fill — the
 earlier "never convinced" was three real bugs, not the approach; see the
 research notes above), **volumetric god-rays + ground mist** (raymarched
-Rayleigh+Mie), and **GGX specular + sky-reflection IBL** driven by per-block
-roughness/metalness.
+Rayleigh+Mie), **GGX specular + sky-reflection IBL**, and **per-texel materials**
+— procedural normal + MER maps with **parallax occlusion mapping** for real
+surface relief and depth (metallic ore flecks, recessed cobble mortar), all in
+the existing G-buffer.
