@@ -174,13 +174,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     if (daylight > 0.005) {
         let cos_sun = dot(dir, sun_dir);
-        // Warm glow widens and strengthens when the sun rides low.
+        // Airmass: the sun's optical path through the atmosphere — ~1 overhead,
+        // rising sharply near the horizon. Rayleigh extinction (∝ 1/λ⁴, so blue
+        // scatters away first) reddens and dims the sun as it sets — physical,
+        // not a hand-picked tint. The disc takes the full extinction (the direct
+        // beam dims to deep red); the broad glow is forward-scattered light, so
+        // it keeps more brightness while still warming toward orange.
+        let airmass = 1.0 / max(sun_dir.y + 0.05, 0.05);
+        let beta = vec3<f32>(0.058, 0.135, 0.331);
+        let disc_tint = exp(-beta * airmass);
+        let glow_tint = exp(-beta * airmass * 0.25);
         let low_sun = 1.0 - smoothstep(0.05, 0.45, sun_dir.y);
         let glow = pow(max(cos_sun, 0.0), 24.0) * (0.18 + 0.55 * low_sun);
-        color += vec3(1.0, 0.55, 0.25) * glow * daylight;
+        color += glow_tint * (glow * daylight * 1.3);
         // The disc itself: ~1 degree across, HDR-bright.
         let disc = smoothstep(0.99975, 0.99989, cos_sun);
-        color += vec3(4.5, 3.9, 3.0) * disc * daylight;
+        color += disc_tint * (disc * daylight * 5.0);
     }
 
     // The moon rides opposite the sun; its lit shape steps through the
