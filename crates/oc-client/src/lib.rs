@@ -751,6 +751,7 @@ impl App {
                 ui_texts: Vec::new(),
                 ui_quads: Vec::new(),
                 ui_polys: Vec::new(),
+                point_lights: Vec::new(),
             }
         };
 

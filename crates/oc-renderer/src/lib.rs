@@ -45,7 +45,7 @@ use hdr::{HdrTarget, TonemapPass};
 use lighting::LightingPass;
 use volumetric::{VolPush, VolumetricPass};
 use outline::OutlineRenderer;
-use pointlights::{PointLight, PointLightData, PointLightUbo};
+use pointlights::PointLightUbo;
 use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
 use sky_pass::SkyPass;
@@ -53,6 +53,7 @@ use swapchain::Swapchain;
 use ui::UiRenderer;
 
 pub use far_renderer::{FarTile, FarVertex};
+pub use pointlights::{MAX_POINT_LIGHTS, PointLight, PointLightData};
 pub use mesh::{ChunkMesh, HEAT_DELTA_MAX, SectionMeshes, mesh_section, quantize_heat};
 pub use texture::block_swatch;
 pub use entity::EntityDraw;
@@ -116,6 +117,9 @@ pub struct FrameCamera {
     pub ui_polys: Vec<UiPoly>,
     /// Entities to draw this frame (placeholder cuboids).
     pub entities: Vec<EntityDraw>,
+    /// Dynamic point lights (emissive blocks), camera-relative. Capped to
+    /// `MAX_POINT_LIGHTS` by the renderer.
+    pub point_lights: Vec<PointLight>,
 }
 
 /// Renderer counters for the perf log (§11).
@@ -538,14 +542,11 @@ impl Renderer {
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);
 
-            // P3.1 test light: a warm point light fixed a few blocks ahead of and
-            // below the camera (camera-relative) to prove the dynamic-light path.
-            // Replaced by emissive-block-derived lights in the next sub-step.
-            let test_lights = [PointLight {
-                pos_radius: Vec4::new(0.0, -2.0, -6.0, 14.0),
-                color_intensity: Vec4::new(1.0, 0.55, 0.25, 4.0),
-            }];
-            self.pointlights.update(slot, &PointLightData::new(&test_lights));
+            // Dynamic point lights from the client's emissive blocks (already
+            // camera-relative + culled/capped). PointLightData truncates to the
+            // shader's cap.
+            self.pointlights
+                .update(slot, &PointLightData::new(&camera.point_lights));
             let pointlight_set = self.pointlights.set(slot);
 
             // Pass 1a: deferred geometry — opaque chunks write their material

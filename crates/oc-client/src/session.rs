@@ -963,6 +963,70 @@ impl Session {
             ui_texts: texts,
             ui_quads: quads,
             ui_polys: polys,
+            point_lights: self.collect_point_lights(render_pos),
         }
+    }
+
+    /// Gathers dynamic point lights from the emissive blocks in the loaded
+    /// sections near the camera, as **camera-relative** `PointLight`s (nearest
+    /// first, capped to the renderer's max). A per-frame scan of the nearby
+    /// sections with an early-out on non-emissive blocks; a per-section cache
+    /// (built on remesh) is the optimisation if this shows in the profile.
+    fn collect_point_lights(&self, camera_pos: glam::DVec3) -> Vec<oc_renderer::PointLight> {
+        let world = self.streamer.world();
+        let cam_section = oc_core::coords::block_to_section(camera_pos.floor().as_ivec3());
+        const R: i32 = 2; // ±2 sections (~40 blocks); unloaded sections skipped
+        let mut lights: Vec<(f64, oc_renderer::PointLight)> = Vec::new();
+        for sy in -R..=R {
+            for sz in -R..=R {
+                for sx in -R..=R {
+                    let sp = cam_section + glam::IVec3::new(sx, sy, sz);
+                    let Some(section) = world.section(sp) else { continue };
+                    let origin = sp * oc_core::SECTION_SIZE;
+                    for ly in 0..oc_core::SECTION_SIZE {
+                        for lz in 0..oc_core::SECTION_SIZE {
+                            for lx in 0..oc_core::SECTION_SIZE {
+                                let block = section.get(glam::IVec3::new(lx, ly, lz));
+                                let emission = block.light_emission();
+                                if emission == 0 {
+                                    continue;
+                                }
+                                // Block centre, camera-relative (f64 → f32 loss
+                                // is negligible at this range).
+                                let rel = (origin + glam::IVec3::new(lx, ly, lz)).as_dvec3()
+                                    + glam::DVec3::splat(0.5)
+                                    - camera_pos;
+                                let [r, g, b] = block.light_color();
+                                lights.push((
+                                    rel.length_squared(),
+                                    oc_renderer::PointLight {
+                                        // Radius = the light *level* in blocks:
+                                        // the taxicab diamond reaches `emission`
+                                        // blocks (light drops 1 per Manhattan
+                                        // step, like the block-light flood-fill).
+                                        pos_radius: glam::Vec4::new(
+                                            rel.x as f32,
+                                            rel.y as f32,
+                                            rel.z as f32,
+                                            emission as f32,
+                                        ),
+                                        // Colour = the block's light colour 0..1.
+                                        color_intensity: glam::Vec4::new(
+                                            r as f32 / 15.0,
+                                            g as f32 / 15.0,
+                                            b as f32 / 15.0,
+                                            3.5,
+                                        ),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        lights.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        lights.truncate(oc_renderer::MAX_POINT_LIGHTS);
+        lights.into_iter().map(|(_, l)| l).collect()
     }
 }
