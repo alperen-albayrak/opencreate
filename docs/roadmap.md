@@ -85,7 +85,13 @@ toggle; 2.5D raymarched slab as a later "volumetric" tier.
 dusk (the anti-sun horizon darkens first), moon with 8 phases and a
 halo, procedural star field plus a real bright-star catalog (Orion,
 Big Dipper, Cassiopeia, Southern Cross... ~46 stars from RA/Dec)
-rotating with the day. *Later polish:* per-direction fog color,
+rotating with the day, **aerial perspective** (distant terrain dissolves
+into the sky colour in its view direction — warm toward a low sun, cool
+away), and **physical airmass sun-reddening** (the disc reddens and dims
+through Rayleigh extinction as it sets, ∝1/λ⁴ — no hand tint). The sky
+dome itself stays the artist gradient (a uniform clear-sky look a
+from-scratch single-scatter dome fought); a full analytic atmosphere
+(Preetham/Hosek) is a possible later upgrade. *Later polish:* per-direction fog color,
 per-cloud dusk tinting, sidereal drift; cloud shadows (modern voxel renderers have them,
 players ask for a toggle — if ever added, OFF-able from day one;
 cheap analytically since the cloud pattern is a pure function). **Far terrain LOD** *(shipped, v2 — blocky)*:

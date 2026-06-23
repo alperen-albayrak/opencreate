@@ -102,8 +102,12 @@ then build every lighting/material feature a single time on deferred.
   directional **sun/moon + shadows ✅ shipped** (cascades fixed + restyled — see
   the shadow bug story in [../roadmap.md](../roadmap.md) §D); **atmosphere &
   volumetrics ✅ shipped** (per-pixel `sky_vis` cave fog + raymarched Rayleigh+Mie
-  god-rays / ground mist, per-dimension); stars by magnitude + spectral color
-  (later).
+  god-rays / ground mist, per-dimension; **aerial perspective** — distant terrain
+  dissolves into the directional sky colour; **physical airmass sun-reddening** —
+  the disc reddens & dims through Rayleigh extinction as it sets). The sky **dome**
+  stays the artist gradient (a uniform clear-sky look the scattered single-scatter
+  fought); a full analytic dome (Preetham/Hosek) is a later option. Stars by
+  magnitude + spectral colour (later).
 - **Stage 3 — materials (✅ shipped, incl. per-texel):** **Cook–Torrance/GGX +
   Fresnel–Schlick** sun specular + a cheap **sky-reflection IBL** ✅ (per-block
   roughness/metalness packed into `GB1.w` as an 8-bit metal-bit + 7-bit-roughness
