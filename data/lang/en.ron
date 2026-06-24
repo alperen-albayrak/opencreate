@@ -31,6 +31,7 @@
     "settings.shadow_style": "Blocky shadows",
     "settings.volumetric_fog": "Volumetric fog",
     "settings.foliage_sss": "Foliage glow",
+    "settings.taa": "Temporal AA",
     "menu.quit_to_title": "Save and quit to title",
     "menu.quit_game": "Quit game",
     "menu.worlds": "Select World",

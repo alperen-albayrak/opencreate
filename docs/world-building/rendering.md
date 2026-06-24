@@ -204,7 +204,10 @@ research notes above), **volumetric god-rays + ground mist** (raymarched
 Rayleigh+Mie), **GGX specular + sky-reflection IBL**, **per-texel materials**
 — procedural normal + MER maps with **parallax occlusion mapping** for real
 surface relief and depth (metallic ore flecks, recessed cobble mortar), **foliage
-subsurface scattering** (backlit leaves glow), and an **alpha-tested cutout layer**
+subsurface scattering** (backlit leaves glow), an **alpha-tested cutout layer**
 — glass and holed leaves render in the G-buffer with their transparent texels
 discarded (see-through panes, airy layered canopies), all in the existing
-G-buffer.
+G-buffer, and **temporal anti-aliasing** — Halton sub-pixel jitter + a
+camera-only reprojection resolve under a YCoCg variance clamp (the crisp
+NEAREST textures stay; the jitter only feeds the temporal accumulator, and
+cutout foliage is back-face culled so it doesn't z-fight under the jitter).

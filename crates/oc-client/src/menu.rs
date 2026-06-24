@@ -533,6 +533,14 @@ impl SettingsScreen {
                     1.0,
                     if settings.foliage_sss { 1.0 } else { 0.0 },
                 ),
+                slider(
+                    "taa",
+                    "settings.taa",
+                    2,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.taa { 1.0 } else { 0.0 },
+                ),
             ],
             tab: 0,
             back_to_pause,
@@ -585,6 +593,7 @@ impl SettingsScreen {
                 "shadow_style" => settings.shadow_style = slider.value.round() as u32,
                 "volumetric_fog" => settings.volumetric_fog = slider.value > 0.5,
                 "foliage_sss" => settings.foliage_sss = slider.value > 0.5,
+                "taa" => settings.taa = slider.value > 0.5,
                 "volume" => settings.volume = slider.value,
                 _ => {}
             }
@@ -935,7 +944,7 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 15);
+        assert_eq!(screen.sliders.len(), 16);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");

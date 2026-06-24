@@ -48,6 +48,8 @@ pub struct Settings {
     pub volumetric_fog: bool,
     /// Backlit foliage subsurface scattering (leaves/grass glow toward a low sun).
     pub foliage_sss: bool,
+    /// Temporal anti-aliasing (sub-pixel jitter + reprojected history).
+    pub taa: bool,
     /// Master sound volume, 0..1.
     pub volume: f32,
 }
@@ -71,6 +73,7 @@ impl Default for Settings {
             shadow_style: 1,
             volumetric_fog: true,
             foliage_sss: true,
+            taa: true,
             volume: 0.8,
         }
     }
@@ -153,6 +156,7 @@ mod tests {
             shadow_style: 9,
             volumetric_fog: true,
             foliage_sss: true,
+            taa: true,
             volume: 5.0,
         }
         .clamped();
@@ -183,6 +187,7 @@ mod tests {
             shadow_style: 1,
             volumetric_fog: false,
             foliage_sss: false,
+            taa: false,
             volume: 0.5,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();

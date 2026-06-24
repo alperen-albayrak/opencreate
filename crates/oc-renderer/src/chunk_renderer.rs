@@ -145,9 +145,11 @@ impl ChunkRenderer {
                 upload_block_normals(ctx, allocator, command_pool)?;
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
-                    // NEAREST within a level keeps the crisp blocky look;
-                    // LINEAR mipmap_mode blends between levels so distant
-                    // blocks stop shimmering (trilinear-ish, Minecraft-style).
+                    // NEAREST within a level keeps the crisp pixel-art look (what
+                    // VV actually does — its softness is in the *lighting*, not
+                    // blurred textures); LINEAR mipmap_mode filters minified/
+                    // distant texels so they don't shimmer (trilinear-ish). TAA
+                    // stability comes from the variance clamp, not from blurring.
                     .mag_filter(vk::Filter::NEAREST)
                     .min_filter(vk::Filter::NEAREST)
                     .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
@@ -1392,13 +1394,15 @@ unsafe fn create_geometry_pipeline(
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
-        // Cutout faces (single-sided quads) must show from both sides — a thin
-        // leaf, the inside of a glass pane — so the cutout pipeline disables
-        // face culling; the opaque path keeps back-face culling.
-        let cull = if cutout { vk::CullModeFlags::NONE } else { vk::CullModeFlags::BACK };
+        // Back-face culling for both paths. Cutout (leaves) renders internal
+        // faces against its own kind for layered depth, so adjacent leaf blocks
+        // share a coplanar boundary — culling the back-facing one leaves exactly
+        // one face there (no z-fight, the flicker-on-motion bug), exactly how
+        // Minecraft's "fancy" leaves work. A thin (1-block) leaf/glass wall still
+        // shows from both sides via its two opposite faces, which aren't coplanar.
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(cull)
+            .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()

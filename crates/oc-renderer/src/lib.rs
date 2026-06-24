@@ -23,6 +23,7 @@ mod scene;
 mod shadow;
 mod sky_pass;
 mod swapchain;
+mod taa;
 mod texture;
 mod ui;
 
@@ -50,6 +51,7 @@ use scene::{SceneData, SceneUbo};
 use shadow::ShadowPass;
 use sky_pass::SkyPass;
 use swapchain::Swapchain;
+use taa::TaaPass;
 use ui::UiRenderer;
 
 pub use far_renderer::{FarTile, FarVertex};
@@ -61,6 +63,19 @@ pub use ui::{UiPoly, UiQuad, UiText};
 
 /// Number of frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
+
+/// Radical-inverse Halton low-discrepancy value in `[0, 1)` — the TAA jitter
+/// sequence, which fills the pixel evenly over a handful of frames.
+fn halton(mut index: u32, base: u32) -> f32 {
+    let mut f = 1.0_f32;
+    let mut r = 0.0_f32;
+    while index > 0 {
+        f /= base as f32;
+        r += f * (index % base) as f32;
+        index /= base;
+    }
+    r
+}
 
 /// Per-frame camera state, camera-relative (§3): `view_proj` contains no
 /// translation; world-space translation happens in f64 against `position`.
@@ -104,6 +119,9 @@ pub struct FrameCamera {
     /// Backlit foliage subsurface scattering — leaves/grass glow with light
     /// transmitted from their sunlit far side (settings toggle).
     pub foliage_sss: bool,
+    /// Temporal anti-aliasing — sub-pixel jitter + reprojected history blend
+    /// (settings toggle). Off = no jitter, the resolve passes the frame through.
+    pub taa: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
     /// Loaded-chunk square, camera-relative (min x, min z, max x, max z):
@@ -148,6 +166,14 @@ pub struct Renderer {
     lighting: LightingPass,
     /// Volumetric god-rays: additive in-scattering sampled vs the cascades.
     volumetric: VolumetricPass,
+    /// Temporal AA resolve (P5): blends the jittered frame with reprojected
+    /// history into a stable image that exposure/bloom/tonemap then read.
+    taa: TaaPass,
+    /// Previous frame's (jittered) view-projection + camera position, for TAA
+    /// reprojection; `taa_valid` is false until a usable history exists.
+    prev_view_proj: Mat4,
+    prev_cam_pos: DVec3,
+    taa_valid: bool,
     tonemap: TonemapPass,
     /// World render resolution as a fraction of the window.
     resolution_scale: f32,
@@ -224,11 +250,17 @@ impl Renderer {
             // World pipelines target the HDR pass; the tonemap resolve and
             // UI target the swapchain pass.
             let hdr = HdrTarget::new(&ctx, &mut allocator, swapchain.extent)?;
-            let bloom = BloomPass::new(&ctx, &mut allocator, hdr.view, hdr.extent)?;
+            // TAA resolves the jittered scene HDR into a stable image; exposure,
+            // bloom and tonemap read *that* (not the raw scene HDR) so they see
+            // the anti-aliased, temporally-stable result.
+            let taa = TaaPass::new(&ctx, &mut allocator, command_pool, hdr.extent)?;
+            taa.bind_inputs(&ctx.device, hdr.view, hdr.depth.view);
+            let resolved = taa.resolved_view();
+            let bloom = BloomPass::new(&ctx, &mut allocator, resolved, hdr.extent)?;
             let exposure =
-                ExposurePass::new(&ctx, &mut allocator, hdr.view, FRAMES_IN_FLIGHT)?;
+                ExposurePass::new(&ctx, &mut allocator, resolved, FRAMES_IN_FLIGHT)?;
             let tonemap = TonemapPass::new(&ctx, render_pass)?;
-            tonemap.bind_input(&ctx.device, hdr.view, bloom.output());
+            tonemap.bind_input(&ctx.device, resolved, bloom.output());
             let shadow = ShadowPass::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let scene = SceneUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
             let pointlights = PointLightUbo::new(&ctx, &mut allocator, FRAMES_IN_FLIGHT)?;
@@ -301,6 +333,10 @@ impl Renderer {
                 hdr,
                 lighting,
                 volumetric,
+                taa,
+                prev_view_proj: Mat4::IDENTITY,
+                prev_cam_pos: DVec3::ZERO,
+                taa_valid: false,
                 tonemap,
                 resolution_scale: 1.0,
                 scale_dirty: false,
@@ -413,10 +449,14 @@ impl Renderer {
                 let extent = self.scaled_extent();
                 let allocator = self.allocator.as_mut().expect("allocator alive");
                 self.hdr.recreate(&self.ctx, allocator, extent)?;
-                self.bloom.recreate(&self.ctx, allocator, self.hdr.view, extent)?;
-                self.exposure.bind_input(&self.ctx.device, self.hdr.view);
+                self.taa.resize(&self.ctx, allocator, self.command_pool, extent)?;
+                self.taa.bind_inputs(&self.ctx.device, self.hdr.view, self.hdr.depth.view);
+                self.taa_valid = false;
+                let resolved = self.taa.resolved_view();
+                self.bloom.recreate(&self.ctx, allocator, resolved, extent)?;
+                self.exposure.bind_input(&self.ctx.device, resolved);
                 self.tonemap
-                    .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
+                    .bind_input(&self.ctx.device, resolved, self.bloom.output());
                 self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
             self.lighting.bind_input(
                 &self.ctx.device,
@@ -488,6 +528,28 @@ impl Renderer {
                     .max_depth(1.0)],
             );
             device.cmd_set_scissor(cmd, 0, &[world_extent.into()]);
+
+            // TAA sub-pixel jitter: a Halton(2,3) offset folded into the
+            // projection as a clip-space translation (left-multiply), so every
+            // world pass this frame samples a slightly shifted grid. The TAA
+            // resolve accumulates the jittered frames into an anti-aliased image;
+            // the jitter must therefore feed *all* world matrices and the depth
+            // reconstruction (lighting/volumetric use `world_vp_inv`). Off → no
+            // jitter (identity), so the resolve's passthrough is pixel-exact.
+            let (jx, jy) = if camera.taa {
+                let i = (self.frame % 8) as u32 + 1;
+                (
+                    (halton(i, 2) - 0.5) * 2.0 / world_extent.width as f32,
+                    (halton(i, 3) - 0.5) * 2.0 / world_extent.height as f32,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            let mut jitter_mat = Mat4::IDENTITY;
+            jitter_mat.w_axis.x = jx;
+            jitter_mat.w_axis.y = jy;
+            let world_vp = jitter_mat * camera.view_proj;
+            let world_vp_inv = world_vp.inverse();
 
             // Fill this frame's scene/environment UBO once; every world pass
             // reads sun/fog/sky/time from it instead of per-draw push constants.
@@ -584,7 +646,7 @@ impl Renderer {
             );
             self.chunks_drawn =
                 self.chunks
-                    .record_geometry(device, cmd, camera.view_proj, camera.position, scene_set);
+                    .record_geometry(device, cmd, world_vp, camera.position, scene_set);
             device.cmd_end_render_pass(cmd);
 
             // Pass 1b: deferred lighting — a fullscreen resolve of the
@@ -608,7 +670,7 @@ impl Renderer {
                 scene_set,
                 self.shadow.descriptor_sets[slot],
                 pointlight_set,
-                camera.view_proj.inverse(),
+                world_vp_inv,
             );
             // Volumetric god-rays / ground mist: additive in-scattering on the
             // lit color, sampled against the sun cascades (shafts where the ray
@@ -632,7 +694,7 @@ impl Renderer {
                     scene_set,
                     self.shadow.descriptor_sets[slot],
                     VolPush {
-                        inv_view_proj: camera.view_proj.inverse(),
+                        inv_view_proj: world_vp_inv,
                         // unused, mie_g, step count, max march distance.
                         fog_a: Vec4::new(0.0, atm.mie_g, 48.0, 160.0),
                         // Rayleigh coefficient (rgb, bluish) + Mie coefficient (w).
@@ -661,7 +723,7 @@ impl Renderer {
                 self.far.record(
                     device,
                     cmd,
-                    camera.view_proj,
+                    world_vp,
                     camera.position,
                     camera.sun.w + (1.0 - camera.sun.w) * daylight * 0.8,
                     Vec4::from_array(camera.far_cut),
@@ -669,18 +731,18 @@ impl Renderer {
                 );
             }
             self.entity
-                .record(device, cmd, camera.view_proj, camera.position, &camera.entities);
+                .record(device, cmd, world_vp, camera.position, &camera.entities);
             if let Some(block) = camera.highlight {
                 self.outline
-                    .record(device, cmd, camera.view_proj, camera.position, block);
+                    .record(device, cmd, world_vp, camera.position, block);
             }
             // The sky dome shades only pixels no geometry wrote.
-            self.sky.record(device, cmd, camera.view_proj, scene_set);
+            self.sky.record(device, cmd, world_vp, scene_set);
             if camera.clouds {
                 self.clouds_layer.record(
                     device,
                     cmd,
-                    camera.view_proj,
+                    world_vp,
                     camera.position,
                     camera.time,
                     Vec4::from_array(camera.cloud_color),
@@ -787,7 +849,7 @@ impl Renderer {
             self.chunks.record_water(
                 device,
                 cmd,
-                camera.view_proj,
+                world_vp,
                 camera.position,
                 slot,
                 world_extent,
@@ -795,6 +857,25 @@ impl Renderer {
                 scene_set,
             );
             device.cmd_end_render_pass(cmd);
+
+            // Pass 1b-taa: temporal resolve. Reproject this frame's pixels into
+            // last frame's resolved image (depth + a single matrix that folds in
+            // the camera translation), neighborhood-clamp the history, blend.
+            // History is invalid the first frame after a reset and on a large
+            // camera jump (teleport/respawn) — a passthrough then, no smear.
+            let cam_delta = (camera.position - self.prev_cam_pos).as_vec3();
+            let teleported = cam_delta.length() > 16.0;
+            let valid = camera.taa && self.taa_valid && !teleported;
+            // current NDC -> world (cur) -> world (prev, via +cam_delta) -> prev NDC.
+            let reproj = self.prev_view_proj
+                * Mat4::from_translation(cam_delta)
+                * world_vp_inv;
+            self.taa.record(device, cmd, reproj, valid, 0.95);
+            self.taa.copy_to_history(device, cmd);
+            // Next frame reprojects against this frame's (jittered) matrix + pose.
+            self.prev_view_proj = world_vp;
+            self.prev_cam_pos = camera.position;
+            self.taa_valid = camera.taa;
 
             // Pass 1c: luminance measurement (for the next frames'
             // exposure), then the bloom pyramid.
@@ -910,10 +991,14 @@ impl Renderer {
             let scaled = self.scaled_extent();
             let allocator = self.allocator.as_mut().expect("allocator alive");
             self.hdr.recreate(&self.ctx, allocator, scaled)?;
-            self.bloom.recreate(&self.ctx, allocator, self.hdr.view, scaled)?;
-            self.exposure.bind_input(&self.ctx.device, self.hdr.view);
+            self.taa.resize(&self.ctx, allocator, self.command_pool, scaled)?;
+            self.taa.bind_inputs(&self.ctx.device, self.hdr.view, self.hdr.depth.view);
+            self.taa_valid = false;
+            let resolved = self.taa.resolved_view();
+            self.bloom.recreate(&self.ctx, allocator, resolved, scaled)?;
+            self.exposure.bind_input(&self.ctx.device, resolved);
             self.tonemap
-                .bind_input(&self.ctx.device, self.hdr.view, self.bloom.output());
+                .bind_input(&self.ctx.device, resolved, self.bloom.output());
             self.chunks.bind_water_inputs(&self.ctx.device, self.hdr.depth.view, self.hdr.scene_copy_view);
             self.lighting.bind_input(
                 &self.ctx.device,
@@ -950,6 +1035,7 @@ impl Drop for Renderer {
             self.shadow.destroy(device, &mut allocator);
             self.lighting.destroy(device);
             self.volumetric.destroy(device);
+            self.taa.destroy(device, &mut allocator);
             self.tonemap.destroy(device);
             self.hdr.destroy(device, &mut allocator);
             for &sem in self.image_available.iter().chain(&self.render_finished) {

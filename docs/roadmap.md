@@ -163,6 +163,15 @@ driven by per-dimension scattering coefficients, with a height-density mist ramp
 and Beer–Lambert transmittance; caves stay dark (the cascades occlude the air);
 Volumetric fog toggle in settings. PBR texture channels (normal/roughness/emissive
 per texture) join with texture packs in §7.5.
+*Shipped:* **temporal anti-aliasing (TAA)** — a Halton(2,3) sub-pixel jitter folded
+into the projection, then a resolve pass that reprojects the previous frame
+(camera-only: depth + a single matrix that folds in the camera translation, no
+velocity buffer) and blends it under a **YCoCg variance clamp** (mean ± σ, which
+keeps a still screen stable where a min/max box pumps). Exposure/bloom/tonemap read
+the resolved image; history invalidates on resize/teleport; Temporal AA toggle in
+settings. The crisp NEAREST pixel-art textures stay (VV's softness is in the
+*lighting*, not blurred textures); cutout foliage uses back-face culling so adjacent
+leaf faces don't z-fight under the jitter.
 
 ## Phase 4 — Multiplayer
 `postcard` serialization + QUIC (`quinn`) behind the existing `Transport`
