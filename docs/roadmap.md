@@ -189,6 +189,19 @@ per-pixel kernel rotation dithers the estimate and **TAA accumulates it clean**,
 so no blur pass is needed. Ambient occlusion toggle in settings. Half-res +
 bilateral-blur GTAO and quality-tier presets remain the last polish step.
 
+**Status — the visual deferred-PBR roadmap (P1–P7.1) is complete and verified
+in-game:** per-texel materials, physical sky (aerial perspective + airmass),
+dynamic point lights, foliage subsurface scattering, alpha-tested cutout layer
+(glass + holed leaves), temporal AA, colour grade + Purkinje night-shift, and
+SSAO — all shipped. **Next is the performance phase** (MDI/pooled draws, LOD, GPU
+culling, the M1 low tier). The remaining graphics polish is **deferred until
+after performance work** so it's built against the optimised pipeline: **opaque
+SSR** (extend the water-style screen-space march to smooth opaque blocks — ice,
+obsidian, polished stone — roughness-gated, sky fallback, the VV reflection
+approach), **quality-tier presets** (only meaningful once the perf tiers exist),
+GTAO, the AgX tone-map operator, per-dimension colour-grade data, `_n/_mer/_h`
+PNG texture overrides, and a full analytic sky dome.
+
 ## Phase 4 — Multiplayer
 `postcard` serialization + QUIC (`quinn`) behind the existing `Transport`
 trait; dedicated headless server binary; prediction/reconciliation
