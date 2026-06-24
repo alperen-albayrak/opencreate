@@ -32,8 +32,13 @@ what makes the eventual M1 pass cheap):
 - **Hybrid lighting** — the existing **per-vertex baked sky/block flood-fill
   stays** and feeds the lighting pass as the ambient/indirect term; we keep that
   near-free GI-ish light *and* gain deferred direct lighting.
-- **Transparency stays forward** (water, cutout leaves, sky, clouds), composited
-  after the lighting resolve — exactly as modern voxel renderers do.
+- **Cutout transparency renders in the G-buffer** (glass, holed leaves): an
+  alpha-tested geometry pipeline (the `fs_cutout` entry discards transparent
+  texels; cull NONE so both sides of a thin leaf/pane show) writes the same
+  G-buffer as the solids, so cutout surfaces get the full deferred PBR +
+  subsurface lighting and depth-sort for free — no blend, no extra pass.
+- **Blended transparency stays forward** (water, sky, clouds), composited after
+  the lighting resolve — exactly as modern voxel renderers do.
 
 ## Lighting — the baked-vs-dynamic contract
 
@@ -196,7 +201,10 @@ occlusion**, and Step 1's additive colored lighting + ambient floor.
 texel-snapped cascades, soft-PCF default or blocky, sky-tinted fill — the
 earlier "never convinced" was three real bugs, not the approach; see the
 research notes above), **volumetric god-rays + ground mist** (raymarched
-Rayleigh+Mie), **GGX specular + sky-reflection IBL**, and **per-texel materials**
+Rayleigh+Mie), **GGX specular + sky-reflection IBL**, **per-texel materials**
 — procedural normal + MER maps with **parallax occlusion mapping** for real
-surface relief and depth (metallic ore flecks, recessed cobble mortar), all in
-the existing G-buffer.
+surface relief and depth (metallic ore flecks, recessed cobble mortar), **foliage
+subsurface scattering** (backlit leaves glow), and an **alpha-tested cutout layer**
+— glass and holed leaves render in the G-buffer with their transparent texels
+discarded (see-through panes, airy layered canopies), all in the existing
+G-buffer.

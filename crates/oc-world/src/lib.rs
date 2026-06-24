@@ -48,6 +48,13 @@ impl BlockId {
         registry::props(self).fluid
     }
 
+    /// A non-opaque block whose internal faces against its own kind are hidden
+    /// (seamless panes / fluid bodies). False for "cutout" foliage, which keeps
+    /// them for layered canopy depth. See [`registry::BlockProps::cull_self`].
+    pub fn culls_self(self) -> bool {
+        registry::props(self).cull_self
+    }
+
     /// Cost of light passing through this block, or `None` if it blocks
     /// light entirely.
     pub fn light_opacity(self) -> Option<u8> {

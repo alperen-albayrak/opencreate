@@ -39,17 +39,22 @@ pub struct ChunkMesh {
     pub indices: Vec<u32>,
 }
 
-/// One section's geometry, split by pipeline: solid faces draw opaque,
-/// water draws later in the blended water pass (stage B).
+/// One section's geometry, split by pipeline: solid faces draw opaque in the
+/// deferred G-buffer; cutout faces (glass, holed leaves) draw in the same
+/// G-buffer with an alpha-test (transparent texels discarded); water draws
+/// later in the blended water pass (stage B).
 #[derive(Default)]
 pub struct SectionMeshes {
     pub solid: ChunkMesh,
+    pub cutout: ChunkMesh,
     pub water: ChunkMesh,
 }
 
 impl SectionMeshes {
     pub fn is_empty(&self) -> bool {
-        self.solid.indices.is_empty() && self.water.indices.is_empty()
+        self.solid.indices.is_empty()
+            && self.cutout.indices.is_empty()
+            && self.water.indices.is_empty()
     }
 }
 
@@ -152,8 +157,13 @@ struct FaceKey {
     /// face looks into, quantized `0..HEAT_DELTA_MAX → 0..=65535`. Part of the
     /// merge key so quads split at heat gradients (like `light`); 0 = no source.
     heat: u16,
-    /// Non-opaque (water) faces are emitted double-sided.
+    /// Routes the quad to the right mesh/pipeline: opaque → solid G-buffer
+    /// pass; else fluid → blended water pass; else → alpha-tested cutout pass.
     opaque: bool,
+    /// A fluid (water/lava) face: routed to the water pass and emitted
+    /// double-sided. Non-fluid non-opaque faces (glass/leaves) are the cutout
+    /// layer (single-sided; the cutout pipeline renders both faces, cull NONE).
+    fluid: bool,
     /// Solid face submerged in water: the chunk shader plays caustics
     /// (sun dapples) over it.
     underwater: bool,
@@ -192,11 +202,16 @@ fn corner_ao(
 
 /// True when a face of `block` against `neighbor` is visible.
 fn face_visible(block: BlockId, neighbor: BlockId) -> bool {
-    // A neighbour hides the face only if it's an opaque *solid* — fluids
-    // (water, lava) render but don't occlude, so a solid block keeps its face
-    // at a lava/water boundary (no holes). A fluid/transparent block still
-    // hides its own kind (no internal faces inside a volume of it).
-    !(occludes(neighbor) || (!occludes(block) && neighbor == block))
+    // An opaque *solid* neighbour hides the face — fluids (water, lava) and
+    // cutout blocks (glass, leaves) render but don't occlude, so a solid block
+    // keeps its face at a fluid/glass boundary (no holes).
+    if occludes(neighbor) {
+        return false;
+    }
+    // A volume of a self-culling non-opaque block (water, glass) hides its
+    // internal faces; "cutout" foliage (leaves) keeps them, so a dense canopy
+    // shows layered depth through the texture gaps instead of a hollow shell.
+    !(neighbor == block && block.culls_self())
 }
 
 /// A block occludes its neighbours' faces: opaque and not a fluid.
@@ -255,9 +270,11 @@ pub fn mesh_section(
                     }
                     let block_ref = &block;
                     let neighbor = sample(pos + *normal);
-                    let is_water = !block.is_opaque();
+                    // Fluids (water) shade uniform; opaque solids and cutout
+                    // blocks (glass/leaves) take real corner AO.
+                    let is_water = block.is_fluid();
                     let underwater = block.is_opaque() && neighbor == blocks::WATER;
-                    // AO only shades solid faces; water stays uniform.
+                    // AO only shades non-fluid faces; water stays uniform.
                     let ao = if is_water {
                         [3; 4]
                     } else {
@@ -285,6 +302,7 @@ pub fn mesh_section(
                         light: light(pos + *normal),
                         heat: heat(pos),
                         opaque: block.is_opaque(),
+                        fluid: block.is_fluid(),
                         underwater,
                         // Top faces are always the open surface (no
                         // internal water faces exist); side faces only
@@ -330,8 +348,13 @@ pub fn mesh_section(
                         }
                     }
 
-                    let target =
-                        if key.opaque { &mut meshes.solid } else { &mut meshes.water };
+                    let target = if key.opaque {
+                        &mut meshes.solid
+                    } else if key.fluid {
+                        &mut meshes.water
+                    } else {
+                        &mut meshes.cutout
+                    };
                     emit_quad(
                         &mut target.vertices,
                         &mut target.indices,
@@ -410,9 +433,10 @@ fn emit_quad(
     } else {
         indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
     }
-    if !key.opaque {
+    if key.fluid {
         // Water surfaces are visible from both sides (e.g. looking up at
-        // the surface from underwater).
+        // the surface from underwater). Cutout faces (glass/leaves) instead
+        // rely on the cutout pipeline's cull-NONE to show both sides.
         indices.extend_from_slice(&[base, base + 2, base + 1, base + 2, base + 3, base + 1]);
     }
 }
@@ -430,6 +454,7 @@ mod tests {
             .solid
             .vertices
             .chunks(4)
+            .chain(meshes.cutout.vertices.chunks(4))
             .chain(meshes.water.vertices.chunks(4))
         {
             let w0 = quad[0].0;

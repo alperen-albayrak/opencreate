@@ -215,6 +215,13 @@ pub struct BlockProps {
     /// flood-fill never touches the heavy `BlockDef`. Insulators (wood/wool/snow)
     /// are low and shield heat; stone/metal are high and conduct it.
     pub conductivity: f32,
+    /// A non-opaque block hides the face it shares with its own kind — a body of
+    /// water or a wall of glass meshes as a single seamless shell, not a grid of
+    /// cube faces. Leaves are the exception (`render_layer: "cutout"`): they keep
+    /// internal faces so a canopy reads as layered depth through the gaps
+    /// ("fancy" foliage). Meaningless for opaque blocks (they cull via
+    /// [`occludes`](crate::mesh) on the opacity flag).
+    pub cull_self: bool,
 }
 
 /// Fallback for ids the registry doesn't know (out-of-range/stale): treated as a
@@ -227,6 +234,7 @@ const DEFAULT_PROPS: BlockProps = BlockProps {
     light_color: [0, 0, 0],
     fluid: false,
     conductivity: 2.5,
+    cull_self: false,
 };
 
 /// The loaded block registry: full defs + the hot-path props table + the
@@ -264,6 +272,14 @@ impl BlockRegistry {
                     (e * eb / m).round().clamp(0.0, 15.0) as u8,
                 ]
             };
+            // Internal-face culling for non-opaque blocks: seamless panes (glass)
+            // and fluids hide faces against their own kind; "cutout" foliage
+            // (leaves) keeps them so the canopy shows layered depth.
+            let cull_self = match d.render_layer.as_deref() {
+                Some("cutout") => false,
+                Some("glass") => true,
+                _ => !d.opaque,
+            };
             props.push(BlockProps {
                 solid: d.solid,
                 opaque: d.opaque,
@@ -272,6 +288,7 @@ impl BlockRegistry {
                 light_color,
                 fluid: d.fluid.is_some(),
                 conductivity: d.conductivity,
+                cull_self,
             });
         }
         Ok(Self { defs, props, by_id })

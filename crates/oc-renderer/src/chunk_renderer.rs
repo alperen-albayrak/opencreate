@@ -79,6 +79,7 @@ struct DrawBuf {
 
 struct ChunkMeshGpu {
     solid: Option<DrawBuf>,
+    cutout: Option<DrawBuf>,
     water: Option<DrawBuf>,
     origin: DVec3,
 }
@@ -93,6 +94,9 @@ pub struct ChunkRenderer {
     /// Deferred geometry pipeline: writes the G-buffer instead of shading.
     geometry_pipeline_layout: vk::PipelineLayout,
     geometry_pipeline: vk::Pipeline,
+    /// Cutout variant of the geometry pipeline: alpha-tests the texture (glass,
+    /// holed leaves) and renders both faces (cull NONE). Same layout + G-buffer.
+    geometry_cutout_pipeline: vk::Pipeline,
     water_pipeline_layout: vk::PipelineLayout,
     water_pipeline: vk::Pipeline,
     water_depth_layout: vk::DescriptorSetLayout,
@@ -266,7 +270,9 @@ impl ChunkRenderer {
                 None,
             )?;
             let geometry_pipeline =
-                create_geometry_pipeline(device, geometry_pass, geometry_pipeline_layout)?;
+                create_geometry_pipeline(device, geometry_pass, geometry_pipeline_layout, false)?;
+            let geometry_cutout_pipeline =
+                create_geometry_pipeline(device, geometry_pass, geometry_pipeline_layout, true)?;
 
             // Water set 1: opaque depth + scene-color snapshot (rebound on
             // resize), a sampler, and a per-slot UBO for the SSR march.
@@ -392,6 +398,7 @@ impl ChunkRenderer {
                 pipeline,
                 geometry_pipeline_layout,
                 geometry_pipeline,
+                geometry_cutout_pipeline,
                 water_pipeline_layout,
                 water_pipeline,
                 water_depth_layout,
@@ -460,9 +467,11 @@ impl ChunkRenderer {
                 return Ok(());
             }
             let solid = Self::upload_part(ctx, allocator, &meshes.solid, "chunk solid")?;
+            let cutout = Self::upload_part(ctx, allocator, &meshes.cutout, "chunk cutout")?;
             let water = Self::upload_part(ctx, allocator, &meshes.water, "chunk water")?;
             self.chunks.insert(pos, ChunkMeshGpu {
                 solid,
+                cutout,
                 water,
                 origin: (pos * SECTION_SIZE).as_dvec3(),
             });
@@ -481,6 +490,7 @@ impl ChunkRenderer {
     pub fn remove_chunk(&mut self, pos: SectionPos, frame: u64) {
         if let Some(old) = self.chunks.remove(&pos) {
             self.retire(frame, old.solid);
+            self.retire(frame, old.cutout);
             self.retire(frame, old.water);
         }
     }
@@ -490,6 +500,7 @@ impl ChunkRenderer {
         let drained: Vec<_> = self.chunks.drain().map(|(_, old)| old).collect();
         for old in drained {
             self.retire(frame, old.solid);
+            self.retire(frame, old.cutout);
             self.retire(frame, old.water);
         }
     }
@@ -650,6 +661,46 @@ impl ChunkRenderer {
                 );
                 device.cmd_draw_indexed(cmd, solid.index_count, 1, 0, 0, 0);
                 drawn += 1;
+            }
+
+            // Cutout pass: alpha-tested glass / holed leaves into the same
+            // G-buffer (sets stay bound; the pipeline only swaps the fragment
+            // entry + cull mode). Drawn after the solids so opaque depth is
+            // already laid down — a cutout fragment behind a wall is culled, and
+            // its discarded texels leave whatever opaque surface is behind it.
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.geometry_cutout_pipeline,
+            );
+            for chunk in self.chunks.values() {
+                let Some(cutout) = &chunk.cutout else { continue };
+                let rel = (chunk.origin - camera_pos).as_vec3();
+                if !aabb_intersects_frustum(&frustum, rel, rel + Vec3::splat(SECTION_SIZE as f32))
+                {
+                    continue;
+                }
+                device.cmd_bind_vertex_buffers(cmd, 0, &[cutout.vertex.buffer], &[0]);
+                device.cmd_bind_index_buffer(cmd, cutout.index.buffer, 0, vk::IndexType::UINT32);
+                let origin = chunk.origin;
+                let phase = Vec3::new(
+                    origin.x.rem_euclid(256.0) as f32,
+                    origin.y.rem_euclid(256.0) as f32,
+                    origin.z.rem_euclid(256.0) as f32,
+                );
+                let push = ChunkPush {
+                    mvp: view_proj * Mat4::from_translation(rel),
+                    params: phase.extend(0.0),
+                    rel: rel.extend(0.0),
+                };
+                device.cmd_push_constants(
+                    cmd,
+                    self.geometry_pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    as_bytes(std::slice::from_ref(&push)),
+                );
+                device.cmd_draw_indexed(cmd, cutout.index_count, 1, 0, 0, 0);
             }
             drawn
         }
@@ -822,7 +873,7 @@ impl ChunkRenderer {
             // Caller has already waited for device idle; everything is safe
             // to free immediately.
             for (_, chunk) in self.chunks.drain() {
-                for part in [chunk.solid, chunk.water].into_iter().flatten() {
+                for part in [chunk.solid, chunk.cutout, chunk.water].into_iter().flatten() {
                     let mut part = part;
                     part.vertex.destroy(device, allocator);
                     part.index.destroy(device, allocator);
@@ -834,6 +885,7 @@ impl ChunkRenderer {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_pipeline(self.geometry_pipeline, None);
+            device.destroy_pipeline(self.geometry_cutout_pipeline, None);
             device.destroy_pipeline_layout(self.geometry_pipeline_layout, None);
             device.destroy_pipeline(self.water_pipeline, None);
             device.destroy_pipeline_layout(self.water_pipeline_layout, None);
@@ -1307,11 +1359,15 @@ unsafe fn create_geometry_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     layout: vk::PipelineLayout,
+    cutout: bool,
 ) -> Result<vk::Pipeline> {
     unsafe {
         let code = ash::util::read_spv(&mut std::io::Cursor::new(CHUNK_GBUFFER_SPV))?;
         let module = device
             .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
+        // Cutout (glass/leaves) uses the alpha-testing `fs_cutout` entry; the
+        // opaque path keeps `fs_main` so its early-z stays enabled.
+        let fs_entry: &std::ffi::CStr = if cutout { c"fs_cutout" } else { c"fs_main" };
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
@@ -1320,7 +1376,7 @@ unsafe fn create_geometry_pipeline(
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(module)
-                .name(c"fs_main"),
+                .name(fs_entry),
         ];
         let binding = vk::VertexInputBindingDescription::default()
             .stride(size_of::<PackedVertex>() as u32)
@@ -1336,9 +1392,13 @@ unsafe fn create_geometry_pipeline(
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
+        // Cutout faces (single-sided quads) must show from both sides — a thin
+        // leaf, the inside of a glass pane — so the cutout pipeline disables
+        // face culling; the opaque path keeps back-face culling.
+        let cull = if cutout { vk::CullModeFlags::NONE } else { vk::CullModeFlags::BACK };
         let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(cull)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0);
         let multisample = vk::PipelineMultisampleStateCreateInfo::default()

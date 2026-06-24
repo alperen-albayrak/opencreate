@@ -26,6 +26,7 @@
     (id: "oc:iron_ore",     name: "Iron Ore",         block: Some(21), category: "minerals"),
     (id: "oc:cobblestone",  name: "Cobblestone",      block: Some(22), category: "building"),
     (id: "oc:granite",      name: "Granite",          block: Some(23), category: "building"),
+    (id: "oc:glass",        name: "Glass",            block: Some(24), category: "building"),
     (id: "oc:stick",  name: "Stick",       block: None,     category: "items"),
     (id: "oc:apple",  name: "Apple",       block: None,     food: 3, category: "food"),
 ]

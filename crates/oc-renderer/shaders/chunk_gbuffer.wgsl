@@ -291,8 +291,21 @@ fn parallax_uv(uv: vec2<f32>, layer: i32, view_ts: vec3<f32>) -> vec2<f32> {
     return cur_uv;
 }
 
-@fragment
-fn fs_main(in: VsOut) -> GBufferOut {
+// Geometry-pass shading result: the three G-buffer values plus the sampled
+// albedo alpha, so the cutout entry can alpha-test while the opaque entry
+// ignores it. (Plain struct — `GBufferOut` carries `@location` attributes and
+// can only appear as an entry-point output, not as a nested field.)
+struct Shaded {
+    gb0: vec4<f32>,
+    gb1: vec4<f32>,
+    gb2: vec4<f32>,
+    alpha: f32,
+}
+
+// Shared geometry shading. `do_parallax` is off for the cutout layer (glass /
+// holed leaves are flat; parallax would smear the alpha holes and costs a march
+// the foliage doesn't benefit from).
+fn shade(in: VsOut, do_parallax: bool) -> Shaded {
     // Per-face tangent frame matching the cpos UV projection (±Y: U=x,V=z;
     // ±Z: U=x,V=y; ±X: U=z,V=y) — drives both parallax and the normal map.
     var tan_u: vec3<f32>;
@@ -311,9 +324,12 @@ fn fs_main(in: VsOut) -> GBufferOut {
     // Parallax occlusion: offset the sampling UV by the view direction through
     // the heightmap, for true view-dependent depth. All texture samples below
     // use this offset `uv` (caustics stay on the world-space cpos).
-    let view = normalize(-in.view_rel);
-    let view_ts = vec3<f32>(dot(view, tan_u), dot(view, tan_v), dot(view, in.normal));
-    let uv = parallax_uv(in.uv, i32(in.layer), view_ts);
+    var uv = in.uv;
+    if (do_parallax) {
+        let view = normalize(-in.view_rel);
+        let view_ts = vec3<f32>(dot(view, tan_u), dot(view, tan_v), dot(view, in.normal));
+        uv = parallax_uv(in.uv, i32(in.layer), view_ts);
+    }
 
     let texel = textureSample(block_textures, block_sampler, uv, i32(in.layer));
     var albedo = texel.rgb;
@@ -353,9 +369,31 @@ fn fs_main(in: VsOut) -> GBufferOut {
         gb2a = 0.5 - sss * 0.5;
     }
 
-    var out: GBufferOut;
-    out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
-    out.gb1 = vec4<f32>(oct_encode(normal), in.ao_sky.y, material);
-    out.gb2 = vec4<f32>(in.block_light, gb2a);
-    return out;
+    return Shaded(
+        vec4<f32>(albedo, in.ao_sky.x),
+        vec4<f32>(oct_encode(normal), in.ao_sky.y, material),
+        vec4<f32>(in.block_light, gb2a),
+        texel.a,
+    );
+}
+
+// Opaque geometry: solid chunks. No alpha test, so early-z stays enabled.
+@fragment
+fn fs_main(in: VsOut) -> GBufferOut {
+    let s = shade(in, true);
+    return GBufferOut(s.gb0, s.gb1, s.gb2);
+}
+
+// Cutout geometry: glass, holed leaves. Alpha-tests the texture's alpha (the
+// transparent texels are punched out by the procedural builder) so the pixels
+// behind a hole show through, while the kept pixels write the G-buffer like any
+// opaque surface and get full deferred PBR + subsurface lighting. Drawn with
+// cull NONE so both sides of a thin leaf / glass pane are visible.
+@fragment
+fn fs_cutout(in: VsOut) -> GBufferOut {
+    let s = shade(in, false);
+    if (s.alpha < 0.5) {
+        discard;
+    }
+    return GBufferOut(s.gb0, s.gb1, s.gb2);
 }

@@ -52,7 +52,12 @@
         heat_capacity: 1.7, conductivity: 0.12),
 
     (id: "oc:leaves", name: "Leaves",
-        solid: true, opaque: true, color: (58, 134, 52), textures: All(8),
+        // Cutout foliage: rendered with transparent gaps in the texture so a
+        // canopy reads as airy layered leaves, not a solid green wall. Non-opaque
+        // (doesn't hide the trunk/leaves behind it) and lets light filter through
+        // (gentle dappled shade, light_opacity 1).
+        solid: true, opaque: false, render_layer: Some("cutout"),
+        light_opacity: Some(1), color: (58, 134, 52), textures: All(8),
         // Thin enough (~1 block) to transmit sunlight: backlit leaves glow with
         // their chlorophyll colour (foliage subsurface scattering, P4).
         subsurface: 0.8,
@@ -186,4 +191,14 @@
         color: (150, 110, 102), textures: All(24),
         roughness: 0.85,
         heat_capacity: 0.79, conductivity: 3.0),
+
+    // Glass: a clear, solid block. Renders in the alpha-tested cutout layer
+    // (transparent pane + a framed border, layer 25), doesn't occlude its
+    // neighbours' faces, and lets light through almost unattenuated. Smooth
+    // dielectric, so it catches a sun glint and a sky sheen.
+    (id: "oc:glass", name: "Glass",
+        solid: true, opaque: false, render_layer: Some("glass"),
+        light_opacity: Some(0), color: (205, 228, 240), textures: All(25),
+        roughness: 0.05, hardness: 0.3, sound_set: Some("oc:stone"),
+        heat_capacity: 0.84, conductivity: 1.0),
 ]

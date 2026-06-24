@@ -7,7 +7,7 @@
 use std::path::Path;
 
 pub const TEXTURE_SIZE: u32 = 16;
-pub const LAYER_COUNT: u32 = 25;
+pub const LAYER_COUNT: u32 = 26;
 /// Mip levels for the block array: 16→8→4→2→1 = `floor(log2(16)) + 1`.
 pub const MIP_LEVELS: u32 = 5;
 
@@ -21,6 +21,8 @@ pub const LAYER_NAMES: [&str; LAYER_COUNT as usize] = [
     // Tranche 1: metals, gem, ores, cobblestone, granite (layers 17..24).
     "iron_block", "copper_block", "gold_block", "diamond_block",
     "coal_ore", "iron_ore", "cobblestone", "granite",
+    // Cutout layer: glass (transparent centre + framed border, layer 25).
+    "glass",
 ];
 
 /// Intrinsic emissive (blackbody-glow) temperature in °C per block-texture
@@ -171,10 +173,29 @@ pub fn build_block_textures() -> Vec<u8> {
                     // Granite: pink-grey igneous with lighter crystal flecks.
                     24 if n % 6 == 0 => shade([198, 168, 152], n, 12),
                     24 => shade([150, 110, 102], n, 20),
+                    // Glass: a pale blue-white frame; the centre texels are
+                    // transparent (alpha below), so only the border + glint show.
+                    25 => shade([205, 228, 240], n, 8),
                     // Unknown layer → magenta (matches the registry's missing tint).
                     _ => shade([255, 0, 255], n, 0),
                 };
-                pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                // Alpha: cutout layers punch transparent texels. Everything else
+                // is fully opaque (alpha 255), so the shared alpha-test never
+                // discards them.
+                let alpha: u8 = match layer {
+                    // Leaves: organic transparent gaps (clumped, ~22%) so the
+                    // canopy reads as airy foliage — sky and inner leaves show
+                    // through the holes.
+                    8 => {
+                        if leaf_hole(x as u32, y as u32) { 0 } else { 255 }
+                    }
+                    // Glass: clear pane with an opaque border frame + corner glint.
+                    25 => {
+                        if glass_solid(x, y, size) { 255 } else { 0 }
+                    }
+                    _ => 255,
+                };
+                pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha]);
             }
         }
     }
@@ -310,6 +331,23 @@ pub fn load_block_normals() -> Vec<u8> {
 fn shade(base: [u8; 3], noise: u32, amplitude: i32) -> [u8; 3] {
     let delta = (noise % (2 * amplitude as u32 + 1)) as i32 - amplitude;
     base.map(|c| (c as i32 + delta).clamp(0, 255) as u8)
+}
+
+/// True where a leaf texel is a transparent gap. Sampled on a 2×2-downscaled
+/// grid so holes form small organic clumps (not salt-and-pepper); ~22% of the
+/// tile is carved away, giving the canopy its airy, see-through cutout look.
+fn leaf_hole(x: u32, y: u32) -> bool {
+    hash_noise(x / 2, y / 2, 8) % 100 < 22
+}
+
+/// True where a glass texel is opaque: the 1-px border frame plus a short
+/// diagonal corner glint. Everything inside is transparent, so a pane reads as
+/// a clear sheet with a visible edge — the classic glass-block look.
+fn glass_solid(x: usize, y: usize, size: usize) -> bool {
+    let border = x == 0 || y == 0 || x == size - 1 || y == size - 1;
+    // A two-texel glint stepping in from the top-left corner.
+    let glint = (x + y == 4) && (1..=3).contains(&x);
+    border || glint
 }
 
 /// A seamless cobblestone cell pattern: rounded stones that brighten (dome up)
