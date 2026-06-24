@@ -135,9 +135,14 @@ depth (metallic ore flecks, recessed cobble mortar), all in the existing
 G-buffer. *Shipped:* **dynamic point lights** — emissive blocks (torches, lava,
 lamps) cast smooth coloured light + GGX specular, derived client-side from the
 loaded sections and added over the baked block-light flood-fill (which supplies
-the wall-respecting taxicab *diamond* shape); the dynamic glow smooths it. Per-
-texel emissive/subsurface (needs a 4th target), per-light shadows, and froxel
-clustering remain later steps.
+the wall-respecting taxicab *diamond* shape); the dynamic glow smooths it.
+*Shipped:* **foliage subsurface scattering** — backlit leaves glow with their own
+chlorophyll colour (wrap-translucency, gated by daylight + sky exposure), from a
+per-block `subsurface` field folded into the spare half of the signed `GB2.a`
+channel (it shares the slot with the blackbody emissive temperature — mutually
+exclusive — so no new G-buffer target); `foliage_sss` setting toggles it. Per-
+texel emissive/subsurface *maps* (need a 4th target), per-light shadows, and
+froxel clustering remain later steps.
 
 **E. Post & polish**
 Bloom (downsample chain — the sun halo), auto-exposure (dark caves,

@@ -69,6 +69,27 @@ pub static MATERIALS: std::sync::LazyLock<[(f32, f32); LAYER_COUNT as usize]> =
         mats
     });
 
+/// Subsurface (translucency) amount per block-texture layer for foliage SSS,
+/// built from the registry like [`MATERIALS`]: a block stamps its `subsurface`
+/// onto every texture layer it uses (the strongest wins when layers are shared).
+/// 0 = opaque (no transmission, the default). Drives the backlit-leaf glow: light
+/// reaching the lit far side of a thin leaf/blade scatters through to the eye.
+pub static SUBSURFACE: std::sync::LazyLock<[f32; LAYER_COUNT as usize]> =
+    std::sync::LazyLock::new(|| {
+        let mut sss = [0.0f32; LAYER_COUNT as usize];
+        for i in 0u16.. {
+            let id = oc_world::BlockId(i);
+            let Some(def) = oc_world::registry::def(id) else { break };
+            for face in 0..6 {
+                let layer = def.textures.layer(face) as usize;
+                if layer < sss.len() {
+                    sss[layer] = sss[layer].max(def.subsurface);
+                }
+            }
+        }
+        sss
+    });
+
 /// Packs a surface `(roughness, metalness)` into the single free G-buffer
 /// channel `GB1.w` (8-bit UNORM, so 256 codes). The top bit of the code (≥128)
 /// is the metal flag; the low 7 bits are `roughness × 127`. Decoded in

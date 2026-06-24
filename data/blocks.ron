@@ -53,6 +53,9 @@
 
     (id: "oc:leaves", name: "Leaves",
         solid: true, opaque: true, color: (58, 134, 52), textures: All(8),
+        // Thin enough (~1 block) to transmit sunlight: backlit leaves glow with
+        // their chlorophyll colour (foliage subsurface scattering, P4).
+        subsurface: 0.8,
         heat_capacity: 1.5, conductivity: 0.05),
 
     // Lamp: full-strength light source. `emissive` is the warm glow hue (also

@@ -47,6 +47,10 @@ struct Scene {
     // each scalar already packed by Rust `pack_material(roughness, metalness)`
     // and written verbatim into GB1.w. See pbr.wgsl for the decode.
     material: array<vec4<f32>, 8>,
+    // Subsurface (translucency) amount per block-texture layer (layer L →
+    // subsurface[L/4][L%4]); 0 = opaque. Folded into the signed GB2.a below;
+    // pbr.wgsl reads it back for the backlit-foliage transmittance glow.
+    subsurface: array<vec4<f32>, 8>,
 }
 @group(1) @binding(0) var<uniform> scene: Scene;
 
@@ -338,10 +342,20 @@ fn fs_main(in: VsOut) -> GBufferOut {
     let nt = textureSample(normal_textures, block_sampler, uv, i32(in.layer)).xyz * 2.0 - 1.0;
     let normal = normalize(nt.x * tan_u + nt.y * tan_v + nt.z * in.normal);
 
+    // GB2.a is a signed channel centred on 0.5: the upper half (>0.5) carries
+    // the blackbody-glow temperature (emissive), the lower half (<0.5) carries
+    // foliage subsurface (translucency). A block is one or the other — hot
+    // matter never has foliage SSS — so they share one channel with no extra
+    // G-buffer target. Emissive wins if both are somehow set. pbr.wgsl decodes.
+    let sss = clamp(scene.subsurface[in.layer / 4u][in.layer % 4u], 0.0, 1.0);
+    var gb2a = 0.5 + in.emissive * 0.5;
+    if (in.emissive <= 0.0 && sss > 0.0) {
+        gb2a = 0.5 - sss * 0.5;
+    }
+
     var out: GBufferOut;
     out.gb0 = vec4<f32>(albedo, in.ao_sky.x);
     out.gb1 = vec4<f32>(oct_encode(normal), in.ao_sky.y, material);
-    // GB2.a carries the blackbody-glow temperature (was metalness-reserved).
-    out.gb2 = vec4<f32>(in.block_light, in.emissive);
+    out.gb2 = vec4<f32>(in.block_light, gb2a);
     return out;
 }

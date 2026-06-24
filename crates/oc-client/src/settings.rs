@@ -46,6 +46,8 @@ pub struct Settings {
     pub shadow_style: u32,
     /// Volumetric god-rays / ground mist (raymarched; has a per-frame cost).
     pub volumetric_fog: bool,
+    /// Backlit foliage subsurface scattering (leaves/grass glow toward a low sun).
+    pub foliage_sss: bool,
     /// Master sound volume, 0..1.
     pub volume: f32,
 }
@@ -68,6 +70,7 @@ impl Default for Settings {
             // soft PCF is one toggle away.
             shadow_style: 1,
             volumetric_fog: true,
+            foliage_sss: true,
             volume: 0.8,
         }
     }
@@ -149,6 +152,7 @@ mod tests {
             shadows: true,
             shadow_style: 9,
             volumetric_fog: true,
+            foliage_sss: true,
             volume: 5.0,
         }
         .clamped();
@@ -178,6 +182,7 @@ mod tests {
             shadows: false,
             shadow_style: 1,
             volumetric_fog: false,
+            foliage_sss: false,
             volume: 0.5,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();

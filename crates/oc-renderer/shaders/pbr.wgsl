@@ -276,6 +276,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Block light already carries its 0.95 trim and AO from the geometry pass.
     let block_light = g2.rgb;
 
+    // GB2.a is a signed channel centred on 0.5 (see chunk_gbuffer.wgsl): the
+    // upper half is the blackbody emissive temperature (525..1500 °C), the lower
+    // half is foliage subsurface (translucency 0..1). They're mutually exclusive
+    // (hot matter never has foliage SSS), so only one is ever non-neutral.
+    let emissive_temp_c = 525.0 + max(g2.a - 0.5, 0.0) * 1950.0;
+    let subsurface = max(0.5 - g2.a, 0.0) * 2.0;
+
     // Surface material unpacked from GB1.w (texture::pack_material): the top
     // code bit (≥128) is the metal flag, the low 7 bits are roughness×127.
     let mat_code = round(g1.w * 255.0);
@@ -369,13 +376,29 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     color += albedo * pl_diffuse * (1.0 - metal_f) + pl_specular;
 
+    // Foliage subsurface scattering: a thin leaf or grass blade lit from its far
+    // (sunlit) side transmits a soft glow toward the eye — the signature
+    // backlit-foliage look. Wrap-translucency (DICE/Frostbite "Approximating
+    // Translucency"): the transmission direction is the sun dir bent slightly
+    // outward by the surface normal (distortion), and a forward lobe (pow) peaks
+    // when you look toward the sun *through* the surface. Tinted by albedo so the
+    // glow takes the leaf's own chlorophyll colour; scaled by the daylight sun
+    // radiance (dies at night) and gated by sky_vis (none underground). NOT gated
+    // by sun_vis or n·l — the lit face is the *back* of a thin leaf, so the front
+    // (camera-side) being the shadow side is exactly when this should glow.
+    if (subsurface > 0.0) {
+        let lt_dir = sun_dir_n + normal * 0.4;
+        let lt = pow(max(dot(view_dir, -lt_dir), 0.0), 3.0);
+        color += albedo * (lt * subsurface * sky_vis * sun_radiance);
+    }
+
     // Incandescence: the surface's own blackbody glow past the Draper point,
-    // baked per-vertex into GB2.a by the geometry pass (0..1 = 525..1500 °C) —
-    // smooth, so it never bands on depth quantization. Modulated by albedo so
-    // the surface's texture (lava's molten/crust pattern, the rock grain) shows
-    // *in* the glow instead of being washed out by a flat bright colour — the
-    // texture is the emissive pattern. Hot matter glows + blooms; cold → 0.
-    color += albedo * blackbody_glow(525.0 + g2.a * 975.0);
+    // decoded from the signed GB2.a (upper half, 525..1500 °C; the lower half is
+    // foliage subsurface above) — smooth per-vertex, so it never bands on depth
+    // quantization. Modulated by albedo so the surface's texture (lava's
+    // molten/crust pattern, the rock grain) shows *in* the glow instead of being
+    // washed out by a flat bright colour. Hot matter glows + blooms; cold → 0.
+    color += albedo * blackbody_glow(emissive_temp_c);
 
     // Distance fog with aerial perspective: a sky-exposed surface dissolves into
     // the sky colour *in its view direction* — warm toward the low sun, cool

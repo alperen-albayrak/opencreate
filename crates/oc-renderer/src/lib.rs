@@ -101,6 +101,9 @@ pub struct FrameCamera {
     pub volumetric_fog: bool,
     /// Water reflects the scene (SSR; settings toggle).
     pub water_reflections: bool,
+    /// Backlit foliage subsurface scattering — leaves/grass glow with light
+    /// transmitted from their sunlit far side (settings toggle).
+    pub foliage_sss: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
     /// Loaded-chunk square, camera-relative (min x, min z, max x, max z):
@@ -517,6 +520,16 @@ impl Renderer {
             for (i, &(rough, metal)) in crate::texture::MATERIALS.iter().enumerate() {
                 material[i / 4][i % 4] = crate::texture::pack_material(rough, metal);
             }
+            // Per-texture-layer subsurface (foliage translucency), folded into
+            // GB2.a by the geometry pass. Zeroing the whole table when the
+            // setting is off makes `foliage_sss` a free toggle (no shader flag,
+            // no extra branch in the hot lighting loop — the SSS term reads 0).
+            let mut subsurface = [Vec4::ZERO; 8];
+            if camera.foliage_sss {
+                for (i, &s) in crate::texture::SUBSURFACE.iter().enumerate() {
+                    subsurface[i / 4][i % 4] = s;
+                }
+            }
             let scene_data = SceneData {
                 sun: camera.sun,
                 fog,
@@ -538,6 +551,7 @@ impl Renderer {
                 thermal_profile,
                 emissive_temp,
                 material,
+                subsurface,
             };
             self.scene.update(slot, &scene_data);
             let scene_set = self.scene.set(slot);

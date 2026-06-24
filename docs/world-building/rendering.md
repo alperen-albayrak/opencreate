@@ -121,9 +121,17 @@ then build every lighting/material feature a single time on deferred.
   `GB1.xy`) and does **parallax occlusion mapping** (marches the heightmap along
   the tangent-space view dir for true view-dependent depth) — so e.g. iron-ore's
   iron flecks read as metal while the stone matrix stays matte, and cobblestone
-  shows real recessed mortar. All with **zero new G-buffer targets**. Still
-  ahead: per-texel **emissive/subsurface** (wants a 4th target — evaluated once,
-  later), leaf/grass **SSS**, **many clustered dynamic lights**.
+  shows real recessed mortar. All with **zero new G-buffer targets**. **Foliage
+  subsurface scattering ✅ shipped** — backlit leaves transmit a soft glow in
+  their own chlorophyll colour (wrap-translucency: a forward lobe peaking when
+  the eye looks toward the sun *through* the canopy; gated by daylight + sky
+  exposure, dying at night/underground), driven by a per-block `subsurface`
+  field folded into the spare half of `GB2.a` (signed: the upper half stays the
+  blackbody emissive temperature, the lower half the subsurface amount —
+  mutually exclusive, hot matter never has foliage SSS — so still **zero new
+  G-buffer targets**); a `foliage_sss` setting zeroes the table to toggle it.
+  Still ahead: per-texel **emissive/subsurface** maps (want a 4th target —
+  evaluated once, later), **many clustered dynamic lights**.
 - **Stage 4 — beyond-parity + perf:** IBL reflections, per-biome color grading,
   TAAU, foliage wind; then the **M1 performance phase** (MDI/pooled draws, LOD,
   GPU culling, tier downgrades) — *after* quality lands, never constraining it.

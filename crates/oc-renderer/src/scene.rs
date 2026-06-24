@@ -54,6 +54,12 @@ pub struct SceneData {
     /// the specular term. Appended after `emissive_temp`, so passes that read
     /// only a UBO prefix (everything but `chunk_gbuffer`) are unaffected.
     pub material: [Vec4; 8],
+    /// Subsurface (translucency) amount per block-texture layer (up to 32 packed
+    /// into 8 vec4), from `texture::SUBSURFACE` — 0 = opaque. The geometry pass
+    /// folds it into `GB2.a` (signed: <0.5 = subsurface, >0.5 = emissive temp),
+    /// and `pbr.wgsl` adds the backlit-foliage transmittance glow. Zeroed when
+    /// the `foliage_sss` setting is off (a free runtime toggle, no shader flag).
+    pub subsurface: [Vec4; 8],
 }
 
 /// Owns the per-frame scene uniform buffers and their descriptor sets.
