@@ -210,4 +210,8 @@ discarded (see-through panes, airy layered canopies), all in the existing
 G-buffer, and **temporal anti-aliasing** — Halton sub-pixel jitter + a
 camera-only reprojection resolve under a YCoCg variance clamp (the crisp
 NEAREST textures stay; the jitter only feeds the temporal accumulator, and
-cutout foliage is back-face culled so it doesn't z-fight under the jitter).
+cutout foliage is back-face culled so it doesn't z-fight under the jitter), and a
+**colour grade + Purkinje night-shift** in the tonemap — white-balance + contrast
++ saturation, plus a physical scotopic shift (desaturated, cool blue-grey,
+red-weak) that fades in as the measured scene luminance drops at night/in caves,
+gated so daylight is untouched.

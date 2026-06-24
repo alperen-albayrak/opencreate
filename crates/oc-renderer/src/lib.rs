@@ -122,6 +122,9 @@ pub struct FrameCamera {
     /// Temporal anti-aliasing — sub-pixel jitter + reprojected history blend
     /// (settings toggle). Off = no jitter, the resolve passes the frame through.
     pub taa: bool,
+    /// Colour grade — contrast/saturation/white-balance + Purkinje night-shift
+    /// in the tonemap (settings toggle). Off = plain ACES.
+    pub color_grade: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
     /// Loaded-chunk square, camera-relative (min x, min z, max x, max z):
@@ -910,7 +913,13 @@ impl Renderer {
                     .clear_values(&clears),
                 vk::SubpassContents::INLINE,
             );
-            self.tonemap.record(device, cmd, frame_exposure);
+            self.tonemap.record(
+                device,
+                cmd,
+                frame_exposure,
+                self.exposure.scene_luminance(),
+                camera.color_grade,
+            );
             if !camera.hud.is_empty() || !camera.ui_quads.is_empty() || !camera.ui_texts.is_empty()
             {
                 let mut texts = Vec::with_capacity(camera.ui_texts.len() + 1);

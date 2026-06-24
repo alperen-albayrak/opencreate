@@ -172,6 +172,14 @@ the resolved image; history invalidates on resize/teleport; Temporal AA toggle i
 settings. The crisp NEAREST pixel-art textures stay (VV's softness is in the
 *lighting*, not blurred textures); cutout foliage uses back-face culling so adjacent
 leaf faces don't z-fight under the jitter.
+*Shipped:* **colour grade + Purkinje night-shift** (in the tonemap) — a gentle
+white-balance + contrast S-curve + saturation grade (so daylight reads a touch
+richer), and a physically-grounded **Purkinje scotopic shift**: as the *measured
+scene luminance* falls (night, caves) human vision moves to the rods — the image
+desaturates, shifts cool blue-grey and goes red-weak. Gated on absolute scene
+luminance (from the auto-exposure metre) so daylight is untouched even after the
+eye adapts; Colour grade toggle in settings (off = plain ACES). Operator select
+(AgX) and per-dimension grade data remain later options.
 
 ## Phase 4 — Multiplayer
 `postcard` serialization + QUIC (`quinn`) behind the existing `Transport`

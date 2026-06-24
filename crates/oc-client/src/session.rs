@@ -776,6 +776,7 @@ impl Session {
         volumetric_fog: bool,
         foliage_sss: bool,
         taa: bool,
+        color_grade: bool,
         frame_time_ema: f64,
         hud_visible: bool,
         active: bool,
@@ -927,6 +928,7 @@ impl Session {
             water_reflections,
             foliage_sss,
             taa,
+            color_grade,
             far_terrain: far_terrain && !underwater && !underground,
             far_cut: {
                 // The loaded-chunk square, camera-relative: the far ring

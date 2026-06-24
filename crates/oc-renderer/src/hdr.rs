@@ -814,7 +814,7 @@ impl TonemapPass {
 
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-                .size(16);
+                .size(32);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(std::slice::from_ref(&descriptor_layout))
@@ -867,8 +867,17 @@ impl TonemapPass {
     }
 
     /// Records the fullscreen resolve. Must run inside the swapchain pass
-    /// with viewport/scissor set to the native extent.
-    pub unsafe fn record(&self, device: &ash::Device, cmd: vk::CommandBuffer, exposure: f32) {
+    /// with viewport/scissor set to the native extent. `scene_lum` is the
+    /// measured scene luminance (for the Purkinje gate); `grade` enables the
+    /// P6 colour grade + night-shift (off → neutral params = plain ACES).
+    pub unsafe fn record(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        exposure: f32,
+        scene_lum: f32,
+        grade: bool,
+    ) {
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_bind_descriptor_sets(
@@ -879,7 +888,14 @@ impl TonemapPass {
                 &[self.descriptor_set],
                 &[],
             );
-            let push = [exposure, 0.0, 0.0, 0.0];
+            // params: exposure, scene luminance, contrast, saturation.
+            // grade:  white-balance rgb, Purkinje strength. Neutral (identity)
+            // when the grade is off, so the shader runs unconditionally.
+            let push: [f32; 8] = if grade {
+                [exposure, scene_lum, 0.12, 1.10, 1.02, 1.0, 0.97, 0.85]
+            } else {
+                [exposure, scene_lum, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+            };
             device.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,

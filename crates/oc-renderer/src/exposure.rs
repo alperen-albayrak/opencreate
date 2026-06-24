@@ -44,6 +44,10 @@ pub struct ExposurePass {
     /// One host-visible readback buffer per frame in flight.
     readbacks: Vec<(vk::Buffer, Allocation)>,
     exposure: f32,
+    /// The last measured geometric-mean scene luminance (HDR linear), before the
+    /// exposure clamp/ease — the absolute-darkness signal the tonemap's Purkinje
+    /// night-shift gates on (low = night/cave → scotopic vision).
+    luminance: f32,
     last_time: Option<f32>,
 }
 
@@ -193,6 +197,7 @@ impl ExposurePass {
                 framebuffer,
                 readbacks,
                 exposure: 1.0,
+                luminance: 1.0,
                 last_time: None,
             };
             pass.bind_input(device, scene);
@@ -246,6 +251,7 @@ impl ExposurePass {
             }
             if count > 0 {
                 let average = (sum / count as f32).exp2();
+                self.luminance = average;
                 let target = (KEY / average.max(0.0001)).clamp(MIN_EXPOSURE, MAX_EXPOSURE);
                 let dt = self
                     .last_time
@@ -256,6 +262,12 @@ impl ExposurePass {
         }
         self.last_time = Some(time);
         self.exposure
+    }
+
+    /// The last measured geometric-mean scene luminance (HDR linear, pre-clamp)
+    /// — the tonemap's Purkinje night-shift gate.
+    pub fn scene_luminance(&self) -> f32 {
+        self.luminance
     }
 
     /// Records the measurement: the tiny pass plus the copy into this
