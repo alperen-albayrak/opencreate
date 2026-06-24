@@ -549,6 +549,14 @@ impl SettingsScreen {
                     1.0,
                     if settings.color_grade { 1.0 } else { 0.0 },
                 ),
+                slider(
+                    "ssao",
+                    "settings.ssao",
+                    2,
+                    (0.0, 1.0),
+                    1.0,
+                    if settings.ssao { 1.0 } else { 0.0 },
+                ),
             ],
             tab: 0,
             back_to_pause,
@@ -603,6 +611,7 @@ impl SettingsScreen {
                 "foliage_sss" => settings.foliage_sss = slider.value > 0.5,
                 "taa" => settings.taa = slider.value > 0.5,
                 "color_grade" => settings.color_grade = slider.value > 0.5,
+                "ssao" => settings.ssao = slider.value > 0.5,
                 "volume" => settings.volume = slider.value,
                 _ => {}
             }
@@ -953,7 +962,7 @@ mod tests {
         use crate::settings::Settings;
         let registry = registry();
         let mut screen = SettingsScreen::from_settings(&Settings::default(), false);
-        assert_eq!(screen.sliders.len(), 17);
+        assert_eq!(screen.sliders.len(), 18);
         // The clouds toggle reads On/Off and round-trips.
         let clouds = screen.sliders.iter().position(|s| s.id == "clouds").unwrap();
         assert_eq!(screen.sliders[clouds].display(), "On");

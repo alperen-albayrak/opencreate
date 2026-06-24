@@ -65,6 +65,8 @@ struct PointLights {
 // cascade lookup (the inverse of the view-projection the chunks rendered with).
 struct LightPush {
     inv_view_proj: mat4x4<f32>,
+    // x: SSAO strength (0 = off); y: world radius (blocks); z: unused; w: bias.
+    ssao: vec4<f32>,
 }
 var<immediate> pc: LightPush;
 
@@ -247,6 +249,50 @@ fn ggx_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, albedo: vec3<f32>, rou
     return (d * g) * f / (4.0 * n_dot_v);
 }
 
+// Screen-space ambient occlusion, computed inline from the G-buffer depth +
+// normal (no separate pass). For 8 rotated taps around the pixel, reconstruct
+// each neighbour's camera-relative world position and measure how far it rises
+// above this surface's tangent plane (horizon-style occlusion), distance-faded.
+// The per-pixel rotation dithers the estimate; TAA accumulates it clean over
+// frames, so no blur pass is needed. Returns 1 (unoccluded) when disabled.
+fn compute_ssao(px: vec2<f32>, dims: vec2<f32>, world_rel: vec3<f32>, normal: vec3<f32>, view_dist: f32) -> f32 {
+    let strength = pc.ssao.x;
+    if (strength <= 0.0) {
+        return 1.0;
+    }
+    let radius = pc.ssao.y;
+    let bias = pc.ssao.w;
+    // World radius → screen pixels (approximate; the world-space falloff below
+    // corrects oversampling, so this only needs to be in the ballpark).
+    let radius_px = clamp(radius / max(view_dist, 0.5) * dims.y * 0.6, 3.0, 48.0);
+    // Per-pixel rotation so the 8-tap ring dithers (TAA cleans the noise).
+    let rnd = fract(sin(dot(px, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+    let cs = cos(rnd);
+    let sn = sin(rnd);
+    var occ = 0.0;
+    for (var i = 0; i < 8; i = i + 1) {
+        let a = (f32(i) + 0.5) / 8.0 * 6.2831853;
+        let d0 = vec2<f32>(cos(a), sin(a));
+        let dir = vec2<f32>(d0.x * cs - d0.y * sn, d0.x * sn + d0.y * cs);
+        // Spread the taps along the radius (sqrt → even area coverage).
+        let r = radius_px * sqrt((f32(i) + 0.5) / 8.0);
+        let suv = px + dir * r;
+        let sd = textureLoad(gbuf_depth, vec2<i32>(suv), 0);
+        if (sd >= 1.0) {
+            continue;
+        }
+        let sndc = vec3<f32>((suv / dims) * 2.0 - 1.0, sd);
+        let swh = pc.inv_view_proj * vec4<f32>(sndc, 1.0);
+        let sworld = swh.xyz / swh.w;
+        let v = sworld - world_rel;
+        let dist = length(v);
+        let ndl = max(dot(v / max(dist, 1e-4), normal) - bias, 0.0);
+        let falloff = 1.0 - smoothstep(0.0, radius, dist);
+        occ += ndl * falloff;
+    }
+    return clamp(1.0 - (occ / 8.0) * strength, 0.0, 1.0);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     // Oversized fullscreen triangle covering the viewport.
@@ -319,12 +365,16 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // sky-blue (cool sky fill), never neutral grey. `sun_vis` darkens only
     // the sun term, so a shadowed surface keeps this fill (never pitch black)
     // and it vanishes underground where sky_vis → 0.
+    // Screen-space AO darkens the *indirect* terms (sky fill + ambient floor +
+    // sky-IBL) in crevices and block junctions; direct sun and local block light
+    // are left untouched. Multiplies the coarse baked per-vertex AO.
+    let ssao = compute_ssao(frag.xy, dims, world_rel, normal, view_dist);
     let sky_color = mix(scene.sky_horizon.rgb, scene.sky_zenith.rgb, clamp(normal.y * 0.5 + 0.5, 0.0, 1.0));
-    let sky_term = sky_vis * ambient * ao * sky_color;
+    let sky_term = sky_vis * ambient * ao * ssao * sky_color;
     let sun_term = sky_vis * (1.0 - ambient) * diffuse * ao * sun_vis;
     // Unconditional ambient floor (params.y, per dimension): nothing renders
     // pure black. Added on top of sky/sun + block light, AO-modulated.
-    let floor = scene.params.y * ao;
+    let floor = scene.params.y * ao * ssao;
     let lit = max(sky_term + vec3<f32>(sun_term), block_light) + vec3<f32>(floor);
     // Metals carry no diffuse albedo term — their colour comes from the tinted
     // specular reflection (the sun glint here + the sky reflection in the IBL
@@ -353,7 +403,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let f0_ibl = mix(vec3<f32>(0.04), albedo, metal_f);
     let fresnel = f0_ibl + (vec3<f32>(1.0) - f0_ibl) * pow(1.0 - n_dot_v, 5.0);
     let smoothness = 1.0 - roughness;
-    color += sky_refl * fresnel * (smoothness * smoothness * sky_vis);
+    color += sky_refl * fresnel * (smoothness * smoothness * sky_vis * ssao);
 
     // Dynamic point lights: emissive blocks (torches, lava, lamps) casting real
     // coloured light + specular glints, distance-attenuated to a hard radius

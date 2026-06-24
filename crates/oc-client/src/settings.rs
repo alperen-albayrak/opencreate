@@ -52,6 +52,8 @@ pub struct Settings {
     pub taa: bool,
     /// Colour grade (contrast/saturation/white-balance + Purkinje night-shift).
     pub color_grade: bool,
+    /// Screen-space ambient occlusion (contact darkening in crevices/junctions).
+    pub ssao: bool,
     /// Master sound volume, 0..1.
     pub volume: f32,
 }
@@ -77,6 +79,7 @@ impl Default for Settings {
             foliage_sss: true,
             taa: true,
             color_grade: true,
+            ssao: true,
             volume: 0.8,
         }
     }
@@ -161,6 +164,7 @@ mod tests {
             foliage_sss: true,
             taa: true,
             color_grade: true,
+            ssao: true,
             volume: 5.0,
         }
         .clamped();
@@ -193,6 +197,7 @@ mod tests {
             foliage_sss: false,
             taa: false,
             color_grade: false,
+            ssao: false,
             volume: 0.5,
         };
         let text = ron::ser::to_string_pretty(&settings, Default::default()).unwrap();

@@ -180,6 +180,14 @@ desaturates, shifts cool blue-grey and goes red-weak. Gated on absolute scene
 luminance (from the auto-exposure metre) so daylight is untouched even after the
 eye adapts; Colour grade toggle in settings (off = plain ACES). Operator select
 (AgX) and per-dimension grade data remain later options.
+*Shipped:* **SSAO** — screen-space ambient occlusion computed inline in the
+deferred lighting pass (no separate pass) from the G-buffer depth + normal +
+inverse view-projection: an 8-tap rotated horizon-occlusion kernel that darkens
+only the *indirect* terms (sky fill + ambient floor + sky-IBL), leaving direct
+sun and block light untouched, layered on the coarse baked per-vertex AO. The
+per-pixel kernel rotation dithers the estimate and **TAA accumulates it clean**,
+so no blur pass is needed. Ambient occlusion toggle in settings. Half-res +
+bilateral-blur GTAO and quality-tier presets remain the last polish step.
 
 ## Phase 4 — Multiplayer
 `postcard` serialization + QUIC (`quinn`) behind the existing `Transport`

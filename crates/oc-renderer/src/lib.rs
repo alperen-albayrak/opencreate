@@ -125,6 +125,9 @@ pub struct FrameCamera {
     /// Colour grade — contrast/saturation/white-balance + Purkinje night-shift
     /// in the tonemap (settings toggle). Off = plain ACES.
     pub color_grade: bool,
+    /// Screen-space ambient occlusion — darkens the indirect light in crevices
+    /// and block junctions (settings toggle).
+    pub ssao: bool,
     /// Draw the coarse far-terrain ring beyond the loaded chunks.
     pub far_terrain: bool,
     /// Loaded-chunk square, camera-relative (min x, min z, max x, max z):
@@ -667,6 +670,14 @@ impl Renderer {
                     .clear_values(&sky_clear),
                 vk::SubpassContents::INLINE,
             );
+            // SSAO params (x: strength, y: world radius, w: bias); strength 0
+            // disables it in-shader. Inline in the lighting pass off the depth +
+            // normal G-buffer; TAA accumulates the dithered taps clean.
+            let ssao = if camera.ssao {
+                Vec4::new(1.0, 1.1, 0.0, 0.02)
+            } else {
+                Vec4::ZERO
+            };
             self.lighting.record(
                 device,
                 cmd,
@@ -674,6 +685,7 @@ impl Renderer {
                 self.shadow.descriptor_sets[slot],
                 pointlight_set,
                 world_vp_inv,
+                ssao,
             );
             // Volumetric god-rays / ground mist: additive in-scattering on the
             // lit color, sampled against the sun cascades (shafts where the ray

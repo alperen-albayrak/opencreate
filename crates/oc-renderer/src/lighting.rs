@@ -6,10 +6,21 @@
 
 use anyhow::Result;
 use ash::vk;
+use glam::{Mat4, Vec4};
 
 use crate::context::VulkanContext;
 
 const PBR_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pbr.spv"));
+
+/// Lighting-pass push constants (mirrors `LightPush` in pbr.wgsl): the inverse
+/// view-projection (depth → camera-relative world) + SSAO params.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LightPush {
+    inv_view_proj: Mat4,
+    /// x: SSAO strength (0 = off); y: world radius; z: unused; w: bias.
+    ssao: Vec4,
+}
 
 pub struct LightingPass {
     descriptor_layout: vk::DescriptorSetLayout,
@@ -66,7 +77,7 @@ impl LightingPass {
                 [descriptor_layout, scene_layout, shadow_layout, pointlight_layout];
             let push_range = vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-                .size(size_of::<glam::Mat4>() as u32);
+                .size(size_of::<LightPush>() as u32);
             let pipeline_layout = device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
                     .set_layouts(&set_layouts)
@@ -126,7 +137,8 @@ impl LightingPass {
         scene_set: vk::DescriptorSet,
         shadow_set: vk::DescriptorSet,
         pointlight_set: vk::DescriptorSet,
-        inv_view_proj: glam::Mat4,
+        inv_view_proj: Mat4,
+        ssao: Vec4,
     ) {
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -138,12 +150,13 @@ impl LightingPass {
                 &[self.descriptor_set, scene_set, shadow_set, pointlight_set],
                 &[],
             );
+            let push = LightPush { inv_view_proj, ssao };
             device.cmd_push_constants(
                 cmd,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT,
                 0,
-                crate::chunk_renderer::as_bytes(std::slice::from_ref(&inv_view_proj)),
+                crate::chunk_renderer::as_bytes(std::slice::from_ref(&push)),
             );
             device.cmd_draw(cmd, 3, 1, 0, 0);
         }

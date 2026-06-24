@@ -214,4 +214,7 @@ cutout foliage is back-face culled so it doesn't z-fight under the jitter), and 
 **colour grade + Purkinje night-shift** in the tonemap — white-balance + contrast
 + saturation, plus a physical scotopic shift (desaturated, cool blue-grey,
 red-weak) that fades in as the measured scene luminance drops at night/in caves,
-gated so daylight is untouched.
+gated so daylight is untouched, and **SSAO** — an 8-tap horizon-occlusion kernel
+computed inline in the lighting pass off the depth + normal G-buffer, darkening
+the indirect terms in crevices/junctions (TAA accumulates its dither clean, so no
+blur pass).
